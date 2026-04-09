@@ -1,2 +1,2 @@
-// Package config defines runtime configuration for the Godis server.
+// Package config defines runtime configuration for the RuneDB server.
 package config

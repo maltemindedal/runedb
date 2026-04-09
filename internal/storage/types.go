@@ -26,7 +26,7 @@ type StreamEntry struct {
 	Values [][]byte
 }
 
-// StoredValue is the internal representation of an item stored in Godis.
+// StoredValue is the internal representation of an item stored in RuneDB.
 //
 // ExpiresAt is stored as a Unix timestamp in milliseconds. A value of 0 means
 // the key does not expire.

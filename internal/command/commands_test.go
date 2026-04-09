@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/server"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/server"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 func TestExecutorExecute(t *testing.T) {
@@ -60,7 +60,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "GET returns stored value",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "godis")); err != nil {
+				if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "RuneDB")); err != nil {
 					t.Fatalf("SET error = %v", err)
 				}
 			},
@@ -70,7 +70,7 @@ func TestExecutorExecute(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Execute() error = %v", err)
 				}
-				assertValueEqual(t, value, protocol.BulkString{Data: []byte("godis")})
+				assertValueEqual(t, value, protocol.BulkString{Data: []byte("RuneDB")})
 			},
 		},
 		{
@@ -537,7 +537,7 @@ func TestExecutorTransactions(t *testing.T) {
 		}
 		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
 
-		value, err = executor.Execute(ctx, requestValue("SET", "name", "godis"))
+		value, err = executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
 		if err != nil {
 			t.Fatalf("queued SET error = %v", err)
 		}
@@ -555,7 +555,7 @@ func TestExecutorTransactions(t *testing.T) {
 		}
 		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
 			protocol.SimpleString{Value: "OK"},
-			protocol.BulkString{Data: []byte("godis")},
+			protocol.BulkString{Data: []byte("RuneDB")},
 		}})
 	})
 
@@ -654,7 +654,7 @@ func TestExecutorTransactions(t *testing.T) {
 		if _, err := executor.Execute(ctx, requestValue("NOPE")); err == nil || err.Error() != "unknown command \"NOPE\"" {
 			t.Fatalf("unknown command error = %v, want unknown command \"NOPE\"", err)
 		}
-		value, err := executor.Execute(ctx, requestValue("SET", "name", "godis"))
+		value, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
 		if err != nil {
 			t.Fatalf("queued SET after invalid command error = %v", err)
 		}
@@ -730,8 +730,8 @@ func TestDecodeRequest(t *testing.T) {
 	}{
 		{
 			name:  "bulk string command",
-			value: requestValue("SET", "name", "godis"),
-			want:  &Request{Name: "SET", Args: [][]byte{[]byte("name"), []byte("godis")}},
+			value: requestValue("SET", "name", "RuneDB"),
+			want:  &Request{Name: "SET", Args: [][]byte{[]byte("name"), []byte("RuneDB")}},
 			assert: func(t *testing.T, err error) {
 				t.Helper()
 				if err != nil {

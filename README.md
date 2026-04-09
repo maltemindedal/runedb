@@ -1,4 +1,4 @@
-# godis
+# RuneDB
 
 A high-performance, concurrent Redis-compatible key-value store built from scratch in Go.
 
@@ -6,7 +6,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 
 - raw TCP listener with one goroutine per client
 - RESP parser and writer
-- thread-safe in-memory store with TTL support
+- thread-safe in-memory store with TTL **support**
 - active connection registry for cleaner shutdowns
 - Phase 1 commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `INCR`
 - Redis-style execution error prefixes for command failures
@@ -65,7 +65,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 
 ## Project layout
 
-- `cmd/godis` — application entrypoint
+- `cmd/runedb` — application entrypoint
 - `internal/config` — runtime config and flags
 - `internal/logger` — shared `log/slog` setup
 - `internal/protocol` — RESP parsing and encoding
@@ -77,11 +77,11 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 
 ## Running locally
 
-From `d:\10_personal\godis`:
+From `d:\10_personal\runedb`:
 
 ### Start the server
 
-- `go run ./cmd/godis --port 6379`
+- `go run ./cmd/runedb --port 6379`
 
 ### Validate the project
 
@@ -106,8 +106,8 @@ Then try:
 
 - `PING` → `PONG`
 - `ECHO hello` → `hello`
-- `SET name godis` → `OK`
-- `GET name` → `godis`
+- `SET name RuneDB` → `OK`
+- `GET name` → `RuneDB`
 - `DEL name` → `(integer) 1`
 - `INCR counter` → `(integer) 1`
 - `INCR counter` → `(integer) 2`

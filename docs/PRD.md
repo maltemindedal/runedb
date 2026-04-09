@@ -1,4 +1,4 @@
-# Product Requirements Document (PRD): Godis
+# Product Requirements Document (PRD): RuneDB
 
 - **Status:** Draft
 - **Target Language:** Go (Golang)
@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-This project aims to build **Godis**, a production-ready, highly concurrent, in-memory key-value data store from scratch, fully compliant with the **Redis Serialization Protocol (RESP)**.
+This project aims to build **RuneDB**, a production-ready, highly concurrent, in-memory key-value data store from scratch, fully compliant with the **Redis Serialization Protocol (RESP)**.
 
 The goal is to demonstrate advanced systems engineering capabilities, including:
 

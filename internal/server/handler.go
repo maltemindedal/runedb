@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 
-	"github.com/maltemindedal/godis/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/protocol"
 )
 
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {

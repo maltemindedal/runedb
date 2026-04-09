@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/godis/internal/command"
-	"github.com/maltemindedal/godis/internal/config"
-	godislogger "github.com/maltemindedal/godis/internal/logger"
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/server"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/command"
+	"github.com/maltemindedal/runedb/internal/config"
+	runedblogger "github.com/maltemindedal/runedb/internal/logger"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/server"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 func TestServerHandlesPhaseOneCommands(t *testing.T) {
@@ -22,7 +22,7 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -50,8 +50,8 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "PONG"}, "PING")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("hello")}, "ECHO", "hello")
-	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "godis")
-	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("godis")}, "GET", "name")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "DEL", "name")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "name")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "INCR", "counter")
@@ -82,7 +82,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -176,7 +176,7 @@ func TestServerHandlesSortedSetCommands(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -244,7 +244,7 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -324,7 +324,7 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -395,7 +395,7 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 
-	logger := godislogger.New(cfg.LogLevel)
+	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)

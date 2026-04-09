@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Config contains the runtime settings for the Godis server.
+// Config contains the runtime settings for the RuneDB server.
 type Config struct {
 	Host               string
 	Port               int

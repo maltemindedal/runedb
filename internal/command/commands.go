@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/server"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/server"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.Value, error) {

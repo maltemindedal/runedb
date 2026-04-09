@@ -1,10 +1,10 @@
-# Godis Architecture
+# RuneDB Architecture
 
 This repository is structured as a Phase 1-first implementation of a Redis-compatible TCP server in Go. The current scaffold is intentionally narrow: it provides the networking, protocol, storage, and command boundaries needed for `PING`, `ECHO`, `SET`, and `GET`, while leaving space for RESP3, transactions, replication, and richer data types in later phases.
 
 ## Package layout
 
-### `cmd/godis`
+### `cmd/runedb`
 
 Contains the `main` package and the production binary entrypoint. It is responsible for:
 

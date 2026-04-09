@@ -8,9 +8,9 @@ import (
 	"net"
 	"sync"
 
-	"github.com/maltemindedal/godis/internal/config"
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/config"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 type executor interface {
@@ -66,7 +66,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.setListener(listener)
 	defer s.shutdown()
 
-	s.logger.Info("godis listening", "address", listener.Addr().String())
+	s.logger.Info("RuneDB listening", "address", listener.Addr().String())
 	s.store.StartEviction(ctx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize)
 
 	stopShutdown := context.AfterFunc(ctx, s.shutdown)
@@ -95,7 +95,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 
 	s.handlerWG.Wait()
-	s.logger.Info("godis stopped")
+	s.logger.Info("RuneDB stopped")
 	return nil
 }
 

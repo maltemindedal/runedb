@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/server"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/server"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 // Request is the parsed command sent by a client.

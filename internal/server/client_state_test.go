@@ -7,9 +7,9 @@ import (
 
 	"log/slog"
 
-	"github.com/maltemindedal/godis/internal/config"
-	"github.com/maltemindedal/godis/internal/protocol"
-	"github.com/maltemindedal/godis/internal/storage"
+	"github.com/maltemindedal/runedb/internal/config"
+	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 type stubExecutor struct{}
