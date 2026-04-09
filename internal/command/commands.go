@@ -2,13 +2,112 @@ package command
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
 
 	"github.com/maltemindedal/godis/internal/protocol"
+	"github.com/maltemindedal/godis/internal/server"
 	"github.com/maltemindedal/godis/internal/storage"
 )
+
+func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) == 0 {
+		return nil, wrongNumberOfArgumentsError("WATCH")
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.InTransactionActive() {
+		return nil, ErrWatchInsideMultiError()
+	}
+
+	keys := make([]string, 0, len(request.Args))
+	for _, arg := range request.Args {
+		keys = append(keys, string(arg))
+	}
+	state.WatchKeys(keys...)
+
+	return protocol.SimpleString{Value: "OK"}, nil
+}
+
+func (e *Executor) handleMulti(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 0 {
+		return nil, wrongNumberOfArgumentsError("MULTI")
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !state.BeginTransaction() {
+		return nil, ErrMultiNestedError()
+	}
+
+	return protocol.SimpleString{Value: "OK"}, nil
+}
+
+func (e *Executor) handleExec(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 0 {
+		return nil, wrongNumberOfArgumentsError("EXEC")
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !state.InTransactionActive() {
+		return nil, ErrExecWithoutMultiError()
+	}
+	if state.TransactionDirty() {
+		state.ResetTransaction()
+		state.UnwatchAll()
+		return nil, ErrExecAbortError()
+	}
+	if state.TransactionFailed() {
+		state.ResetTransaction()
+		state.UnwatchAll()
+		return protocol.Array{Null: true}, nil
+	}
+	state.UnwatchAll()
+
+	queued := state.DrainTransaction()
+	responses := make([]protocol.Value, 0, len(queued))
+	for _, queuedCommand := range queued {
+		response, execErr := e.executeRequest(ctx, &Request{Name: queuedCommand.Name, Args: queuedCommand.Args}, false)
+		if execErr != nil {
+			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
+				return nil, execErr
+			}
+			response = responseErrorValue(execErr)
+		}
+		responses = append(responses, response)
+	}
+
+	return protocol.Array{Elements: responses}, nil
+}
+
+func (e *Executor) handleDiscard(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 0 {
+		return nil, wrongNumberOfArgumentsError("DISCARD")
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !state.InTransactionActive() {
+		return nil, ErrDiscardWithoutMultiError()
+	}
+
+	state.ResetTransaction()
+	state.UnwatchAll()
+	return protocol.SimpleString{Value: "OK"}, nil
+}
 
 func (e *Executor) handlePing(_ context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) == 1 {
@@ -47,6 +146,7 @@ func (e *Executor) handleSet(_ context.Context, request *Request) (protocol.Valu
 	}
 
 	e.store.Set(string(request.Args[0]), request.Args[1], expiresAt)
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
@@ -75,10 +175,15 @@ func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Valu
 	}
 
 	removed := int64(0)
+	touched := make([]string, 0, len(request.Args))
 	for _, arg := range request.Args {
 		if e.store.Delete(string(arg)) {
 			removed++
+			touched = append(touched, string(arg))
 		}
+	}
+	if len(touched) > 0 {
+		e.touchWatchKeys(touched...)
 	}
 
 	return protocol.Integer{Value: removed}, nil
@@ -101,6 +206,7 @@ func (e *Executor) handleIncr(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.Integer{Value: value}, nil
 }
 
@@ -117,6 +223,7 @@ func (e *Executor) handleLPush(_ context.Context, request *Request) (protocol.Va
 		return nil, err
 	}
 
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -133,6 +240,7 @@ func (e *Executor) handleRPush(_ context.Context, request *Request) (protocol.Va
 		return nil, err
 	}
 
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -180,6 +288,7 @@ func (e *Executor) handleBLPop(ctx context.Context, request *Request) (protocol.
 		}
 		if ok {
 			e.store.UnsubscribeListPush(key, waiter)
+			e.touchWatchKeys(key)
 			return protocol.Array{Elements: []protocol.Value{
 				protocol.BulkString{Data: clone(request.Args[0])},
 				protocol.BulkString{Data: value},
@@ -226,6 +335,7 @@ func (e *Executor) handleZAdd(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -283,6 +393,7 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
+	e.touchWatchKeys(string(request.Args[0]))
 	return protocol.BulkString{Data: []byte(id)}, nil
 }
 
@@ -384,4 +495,21 @@ func clone(value []byte) []byte {
 	copied := make([]byte, len(value))
 	copy(copied, value)
 	return copied
+}
+
+func clientStateFromContext(ctx context.Context) (*server.ClientState, error) {
+	state, ok := server.ClientStateFromContext(ctx)
+	if !ok || state == nil {
+		return nil, fmt.Errorf("client state unavailable")
+	}
+
+	return state, nil
+}
+
+func (e *Executor) touchWatchKeys(keys ...string) {
+	if e.watchRegistry == nil || len(keys) == 0 {
+		return
+	}
+
+	e.watchRegistry.Touch(keys...)
 }

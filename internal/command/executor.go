@@ -8,6 +8,16 @@ import (
 var (
 	// ErrSyntax reports malformed command syntax.
 	ErrSyntax = errors.New("syntax error")
+	// ErrExecWithoutMulti reports that EXEC was called outside a transaction.
+	ErrExecWithoutMulti = errors.New("EXEC without MULTI")
+	// ErrDiscardWithoutMulti reports that DISCARD was called outside a transaction.
+	ErrDiscardWithoutMulti = errors.New("DISCARD without MULTI")
+	// ErrMultiNested reports that MULTI was called while already inside a transaction.
+	ErrMultiNested = errors.New("MULTI calls can not be nested")
+	// ErrWatchInsideMulti reports that WATCH was called inside a MULTI block.
+	ErrWatchInsideMulti = errors.New("WATCH inside MULTI is not allowed")
+	// ErrExecAbort reports that EXEC aborted because queue-time validation failed.
+	ErrExecAbort = errors.New("transaction discarded because of previous errors")
 	// ErrInvalidExpireTime reports an invalid EX/PX duration.
 	ErrInvalidExpireTime = errors.New("invalid expire time in 'SET' command")
 	// ErrInvalidStreamID reports that a stream ID could not be parsed.
@@ -75,6 +85,31 @@ func ErrUnknownCommand(name string) error {
 // ErrSyntaxError reports a Redis-style syntax error.
 func ErrSyntaxError() error {
 	return newRESPWrappedError("ERR", ErrSyntax)
+}
+
+// ErrExecWithoutMultiError reports that EXEC was called without MULTI.
+func ErrExecWithoutMultiError() error {
+	return newRESPWrappedError("ERR", ErrExecWithoutMulti)
+}
+
+// ErrDiscardWithoutMultiError reports that DISCARD was called without MULTI.
+func ErrDiscardWithoutMultiError() error {
+	return newRESPWrappedError("ERR", ErrDiscardWithoutMulti)
+}
+
+// ErrMultiNestedError reports that MULTI was called while already in MULTI mode.
+func ErrMultiNestedError() error {
+	return newRESPWrappedError("ERR", ErrMultiNested)
+}
+
+// ErrWatchInsideMultiError reports that WATCH cannot be called after MULTI.
+func ErrWatchInsideMultiError() error {
+	return newRESPWrappedError("ERR", ErrWatchInsideMulti)
+}
+
+// ErrExecAbortError reports that EXEC refused to run after queue-time validation errors.
+func ErrExecAbortError() error {
+	return newRESPError("EXECABORT", "Transaction discarded because of previous errors.", ErrExecAbort)
 }
 
 // ErrInvalidExpireTimeError reports an invalid SET expiry argument.

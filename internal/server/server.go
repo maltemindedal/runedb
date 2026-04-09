@@ -17,13 +17,18 @@ type executor interface {
 	Execute(context.Context, protocol.Value) (protocol.Value, error)
 }
 
+type watchRegistryProvider interface {
+	WatchRegistry() *WatchRegistry
+}
+
 // Server owns the TCP listener, active clients, and command execution pipeline.
 type Server struct {
-	cfg      config.Config
-	logger   *slog.Logger
-	store    *storage.Store
-	executor executor
-	registry *Registry
+	cfg           config.Config
+	logger        *slog.Logger
+	store         *storage.Store
+	executor      executor
+	registry      *Registry
+	watchRegistry *WatchRegistry
 
 	clientStates   map[uint64]*ClientState
 	clientStatesMu sync.RWMutex
@@ -36,7 +41,7 @@ type Server struct {
 
 // New constructs a server ready to listen for TCP clients.
 func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor executor) *Server {
-	return &Server{
+	srv := &Server{
 		cfg:          cfg,
 		logger:       logger,
 		store:        store,
@@ -44,6 +49,11 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 		registry:     NewRegistry(),
 		clientStates: make(map[uint64]*ClientState),
 	}
+	if provider, ok := executor.(watchRegistryProvider); ok {
+		srv.watchRegistry = provider.WatchRegistry()
+	}
+
+	return srv
 }
 
 // ListenAndServe starts the TCP listener and blocks until shutdown.
@@ -126,6 +136,7 @@ func (s *Server) createClientState(clientID uint64) *ClientState {
 		ID:            clientID,
 		Authenticated: s.cfg.RequirePass == "",
 	}
+	state.SetWatchRegistry(s.watchRegistry)
 
 	s.clientStatesMu.Lock()
 	defer s.clientStatesMu.Unlock()
@@ -143,14 +154,25 @@ func (s *Server) getClientState(clientID uint64) *ClientState {
 
 func (s *Server) removeClientState(clientID uint64) {
 	s.clientStatesMu.Lock()
-	defer s.clientStatesMu.Unlock()
-
+	state := s.clientStates[clientID]
 	delete(s.clientStates, clientID)
+	s.clientStatesMu.Unlock()
+
+	if state != nil {
+		state.UnwatchAll()
+	}
 }
 
 func (s *Server) clearClientStates() {
 	s.clientStatesMu.Lock()
-	defer s.clientStatesMu.Unlock()
-
+	states := make([]*ClientState, 0, len(s.clientStates))
+	for _, state := range s.clientStates {
+		states = append(states, state)
+	}
 	clear(s.clientStates)
+	s.clientStatesMu.Unlock()
+
+	for _, state := range states {
+		state.UnwatchAll()
+	}
 }

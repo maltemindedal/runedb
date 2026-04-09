@@ -18,6 +18,18 @@ func (stubExecutor) Execute(context.Context, protocol.Value) (protocol.Value, er
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
+type stubWatchExecutor struct {
+	registry *WatchRegistry
+}
+
+func (s stubWatchExecutor) Execute(context.Context, protocol.Value) (protocol.Value, error) {
+	return protocol.SimpleString{Value: "OK"}, nil
+}
+
+func (s stubWatchExecutor) WatchRegistry() *WatchRegistry {
+	return s.registry
+}
+
 func TestClientStateLifecycle(t *testing.T) {
 	cfg := config.Default()
 	cfg.RequirePass = "secret"
@@ -69,5 +81,30 @@ func TestClientStateLifecycle(t *testing.T) {
 	srv.clearClientStates()
 	if got := srv.getClientState(2); got != nil {
 		t.Fatalf("getClientState(2) after clear = %p, want nil", got)
+	}
+}
+
+func TestServerClientStateCleanupUnwatchesKeys(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := NewWatchRegistry()
+	srv := New(config.Default(), logger, storage.NewStore(), stubWatchExecutor{registry: registry})
+
+	state := srv.createClientState(1)
+	state.WatchKeys("alpha")
+
+	srv.removeClientState(1)
+	registry.Touch("alpha")
+
+	if state.TransactionFailed() {
+		t.Fatal("TransactionFailed() = true, want false after cleanup removed all watchers")
+	}
+
+	other := srv.createClientState(2)
+	other.WatchKeys("beta")
+	srv.clearClientStates()
+	registry.Touch("beta")
+
+	if other.TransactionFailed() {
+		t.Fatal("TransactionFailed() for cleared state = true, want false after clearClientStates cleanup")
 	}
 }
