@@ -32,12 +32,20 @@ func NewExecutor(store *storage.Store, logger *slog.Logger) *Executor {
 		logger: logger,
 	}
 	executor.handlers = map[string]Handler{
-		"PING": executor.handlePing,
-		"ECHO": executor.handleEcho,
-		"SET":  executor.handleSet,
-		"GET":  executor.handleGet,
-		"DEL":  executor.handleDel,
-		"INCR": executor.handleIncr,
+		"PING":   executor.handlePing,
+		"ECHO":   executor.handleEcho,
+		"SET":    executor.handleSet,
+		"GET":    executor.handleGet,
+		"DEL":    executor.handleDel,
+		"INCR":   executor.handleIncr,
+		"LPUSH":  executor.handleLPush,
+		"RPUSH":  executor.handleRPush,
+		"LRANGE": executor.handleLRange,
+		"BLPOP":  executor.handleBLPop,
+		"ZADD":   executor.handleZAdd,
+		"ZRANGE": executor.handleZRange,
+		"XADD":   executor.handleXAdd,
+		"XREAD":  executor.handleXRead,
 	}
 	return executor
 }
