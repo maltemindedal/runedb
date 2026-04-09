@@ -47,9 +47,12 @@ func newStringValue(data []byte, expiresAt int64) StoredValue {
 	}
 }
 
+// newListValue stores an already-owned list representation without cloning.
+// Callers must only pass slices whose element bytes are not aliased with caller-
+// controlled memory.
 func newListValue(items [][]byte, expiresAt int64) StoredValue {
 	return StoredValue{
-		List:      cloneList(items),
+		List:      items,
 		ExpiresAt: expiresAt,
 		Kind:      ValueKindList,
 	}

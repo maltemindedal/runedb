@@ -137,7 +137,8 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 	}
 
 	item := cloneBytes(value.List[0])
-	value.List = cloneList(value.List[1:])
+	value.List[0] = nil
+	value.List = value.List[1:]
 	if len(value.List) == 0 {
 		delete(s.data, key)
 	} else {
@@ -240,7 +241,7 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetEntry, error) {
 	raw := value.ZSet.rangeByRank(from, to)
 	entries := make([]ZSetEntry, 0, len(raw))
 	for _, item := range raw {
-		entries = append(entries, ZSetEntry{Member: cloneBytes([]byte(item.member)), Score: item.score})
+		entries = append(entries, ZSetEntry{Member: []byte(item.member), Score: item.score})
 	}
 	s.mu.RUnlock()
 
@@ -405,13 +406,17 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 
 	additions := cloneList(values)
 	if left {
-		prefix := make([][]byte, len(additions))
-		for i := range additions {
-			prefix[len(additions)-1-i] = additions[i]
+		combined := make([][]byte, 0, len(list)+len(additions))
+		for i := len(additions) - 1; i >= 0; i-- {
+			combined = append(combined, additions[i])
 		}
-		list = append(prefix, list...)
+		combined = append(combined, list...)
+		list = combined
 	} else {
-		list = append(cloneList(list), additions...)
+		combined := make([][]byte, 0, len(list)+len(additions))
+		combined = append(combined, list...)
+		combined = append(combined, additions...)
+		list = combined
 	}
 
 	s.data[key] = newListValue(list, expiresAt)
