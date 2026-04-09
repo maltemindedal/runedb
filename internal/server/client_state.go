@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// QueuedCommand stores command metadata for future transaction support.
+// QueuedCommand stores command metadata queued for transactional EXEC.
 type QueuedCommand struct {
 	Name string
 	Args [][]byte
@@ -24,6 +24,7 @@ type ClientState struct {
 	Authenticated bool
 	InTransaction bool
 	TxFailed      bool
+	TxDirty       bool
 	TxQueue       []QueuedCommand
 }
 
@@ -59,6 +60,8 @@ func (s *ClientState) BeginTransaction() bool {
 	}
 
 	s.InTransaction = true
+	s.TxFailed = false
+	s.TxDirty = false
 	s.TxQueue = nil
 	return true
 }
@@ -148,6 +151,22 @@ func (s *ClientState) ClearTransactionFailure() {
 	s.TxFailed = false
 }
 
+// TransactionDirty reports whether queue-time validation has already failed.
+func (s *ClientState) TransactionDirty() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.TxDirty
+}
+
+// MarkTransactionDirty marks the current transaction as invalid due to queue-time errors.
+func (s *ClientState) MarkTransactionDirty() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.TxDirty = true
+}
+
 func (s *ClientState) addWatchedKey(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,6 +196,7 @@ func (s *ClientState) DrainTransaction() []QueuedCommand {
 
 	queued := s.TxQueue
 	s.InTransaction = false
+	s.TxDirty = false
 	s.TxQueue = nil
 	return queued
 }
@@ -188,5 +208,6 @@ func (s *ClientState) ResetTransaction() {
 
 	s.InTransaction = false
 	s.TxFailed = false
+	s.TxDirty = false
 	s.TxQueue = nil
 }

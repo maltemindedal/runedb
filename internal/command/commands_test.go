@@ -643,6 +643,82 @@ func TestExecutorTransactions(t *testing.T) {
 			t.Fatalf("WATCH error = %v, want ErrWatchInsideMulti", err)
 		}
 	})
+
+	t.Run("queue-time validation errors abort EXEC", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("NOPE")); err == nil || err.Error() != "unknown command \"NOPE\"" {
+			t.Fatalf("unknown command error = %v, want unknown command \"NOPE\"", err)
+		}
+		value, err := executor.Execute(ctx, requestValue("SET", "name", "godis"))
+		if err != nil {
+			t.Fatalf("queued SET after invalid command error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "QUEUED"})
+
+		if _, err := executor.Execute(ctx, requestValue("EXEC")); !errors.Is(err, ErrExecAbort) {
+			t.Fatalf("EXEC error = %v, want ErrExecAbort", err)
+		}
+
+		value, err = executor.Execute(ctx, requestValue("GET", "name"))
+		if err != nil {
+			t.Fatalf("GET after EXECABORT error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Null: true})
+	})
+
+	t.Run("queue-time syntax errors are returned immediately", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "temp", "1", "NX", "10")); !errors.Is(err, ErrSyntax) {
+			t.Fatalf("queued SET syntax error = %v, want ErrSyntax", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("EXEC")); !errors.Is(err, ErrExecAbort) {
+			t.Fatalf("EXEC error = %v, want ErrExecAbort", err)
+		}
+	})
+
+	t.Run("queue-time malformed stream IDs abort EXEC", func(t *testing.T) {
+		tests := []struct {
+			name    string
+			request protocol.Value
+		}{
+			{
+				name:    "XADD malformed ID",
+				request: requestValue("XADD", "events", "bad-id", "field", "value"),
+			},
+			{
+				name:    "XREAD malformed ID",
+				request: requestValue("XREAD", "STREAMS", "events", "bad-id"),
+			},
+		}
+
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				executor := newTestExecutor()
+				ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+				if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+					t.Fatalf("MULTI error = %v", err)
+				}
+				if _, err := executor.Execute(ctx, tt.request); !errors.Is(err, ErrInvalidStreamID) {
+					t.Fatalf("queued stream validation error = %v, want ErrInvalidStreamID", err)
+				}
+				if _, err := executor.Execute(ctx, requestValue("EXEC")); !errors.Is(err, ErrExecAbort) {
+					t.Fatalf("EXEC error = %v, want ErrExecAbort", err)
+				}
+			})
+		}
+	})
 }
 
 func TestDecodeRequest(t *testing.T) {

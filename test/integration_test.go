@@ -367,6 +367,14 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "DISCARD")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "temp")
 	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR EXEC without MULTI"}, "EXEC")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR unknown command \"NOPE\""}, "NOPE")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "after-abort", "1")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "EXECABORT Transaction discarded because of previous errors."}, "EXEC")
+	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "after-abort")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR invalid stream ID specified as stream command argument"}, "XADD", "events", "bad-id", "field", "value")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "EXECABORT Transaction discarded because of previous errors."}, "EXEC")
 
 	cancel()
 	select {

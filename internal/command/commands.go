@@ -63,6 +63,11 @@ func (e *Executor) handleExec(ctx context.Context, request *Request) (protocol.V
 	if !state.InTransactionActive() {
 		return nil, ErrExecWithoutMultiError()
 	}
+	if state.TransactionDirty() {
+		state.ResetTransaction()
+		state.UnwatchAll()
+		return nil, ErrExecAbortError()
+	}
 	if state.TransactionFailed() {
 		state.ResetTransaction()
 		state.UnwatchAll()

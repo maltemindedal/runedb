@@ -26,6 +26,30 @@ func newStream() *streamValue {
 	return &streamValue{}
 }
 
+// ValidateXAddID reports whether raw is a syntactically valid XADD ID.
+func ValidateXAddID(raw string) error {
+	if raw == "*" {
+		return nil
+	}
+
+	_, err := parseStreamAddID(raw)
+	return err
+}
+
+// ValidateXReadID reports whether raw is a syntactically valid XREAD ID.
+func ValidateXReadID(raw string) error {
+	if raw == "$" {
+		return nil
+	}
+	if _, _, ok := strings.Cut(raw, "-"); !ok {
+		_, err := parseNonNegativeStreamInt(raw)
+		return err
+	}
+
+	_, err := parseStreamAddID(raw)
+	return err
+}
+
 func (s *streamValue) add(rawID string, values [][]byte, nowMillis int64) (string, error) {
 	var (
 		id  streamID

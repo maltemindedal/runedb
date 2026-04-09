@@ -28,7 +28,7 @@ type Executor struct {
 	handlers      map[string]Handler
 }
 
-// NewExecutor constructs a command executor with the Phase 1 command set.
+// NewExecutor constructs a command executor with the currently supported command set.
 func NewExecutor(store *storage.Store, logger *slog.Logger) *Executor {
 	executor := &Executor{
 		store:         store,
@@ -88,10 +88,145 @@ func (e *Executor) executeRequest(ctx context.Context, request *Request, allowQu
 	return handler(ctx, request)
 }
 
+func (e *Executor) validateQueueableRequest(request *Request) error {
+	if _, ok := e.handlers[request.Name]; !ok {
+		return ErrUnknownCommand(request.Name)
+	}
+
+	switch request.Name {
+	case "WATCH":
+		if len(request.Args) == 0 {
+			return wrongNumberOfArgumentsError("WATCH")
+		}
+	case "MULTI":
+		if len(request.Args) != 0 {
+			return wrongNumberOfArgumentsError("MULTI")
+		}
+	case "EXEC":
+		if len(request.Args) != 0 {
+			return wrongNumberOfArgumentsError("EXEC")
+		}
+	case "DISCARD":
+		if len(request.Args) != 0 {
+			return wrongNumberOfArgumentsError("DISCARD")
+		}
+	case "PING":
+		if len(request.Args) > 1 {
+			return wrongNumberOfArgumentsError("PING")
+		}
+	case "ECHO":
+		if len(request.Args) != 1 {
+			return wrongNumberOfArgumentsError("ECHO")
+		}
+	case "SET":
+		if len(request.Args) < 2 {
+			return wrongNumberOfArgumentsError("SET")
+		}
+		if _, err := storage.ParseExpiryMillis(request.Args[2:]); err != nil {
+			switch err {
+			case storage.ErrSyntax:
+				return ErrSyntaxError()
+			case storage.ErrInvalidExpireTime:
+				return ErrInvalidExpireTimeError()
+			default:
+				return err
+			}
+		}
+	case "GET":
+		if len(request.Args) != 1 {
+			return wrongNumberOfArgumentsError("GET")
+		}
+	case "DEL":
+		if len(request.Args) < 1 {
+			return wrongNumberOfArgumentsError("DEL")
+		}
+	case "INCR":
+		if len(request.Args) != 1 {
+			return wrongNumberOfArgumentsError("INCR")
+		}
+	case "LPUSH":
+		if len(request.Args) < 2 {
+			return wrongNumberOfArgumentsError("LPUSH")
+		}
+	case "RPUSH":
+		if len(request.Args) < 2 {
+			return wrongNumberOfArgumentsError("RPUSH")
+		}
+	case "LRANGE":
+		if len(request.Args) != 3 {
+			return wrongNumberOfArgumentsError("LRANGE")
+		}
+		if _, err := parseIntegerArgument(request.Args[1]); err != nil {
+			return err
+		}
+		if _, err := parseIntegerArgument(request.Args[2]); err != nil {
+			return err
+		}
+	case "BLPOP":
+		if len(request.Args) != 1 {
+			return wrongNumberOfArgumentsError("BLPOP")
+		}
+	case "ZADD":
+		if len(request.Args) < 3 || len(request.Args)%2 == 0 {
+			return wrongNumberOfArgumentsError("ZADD")
+		}
+		for i := 1; i < len(request.Args); i += 2 {
+			if _, err := parseFloatArgument(request.Args[i]); err != nil {
+				return err
+			}
+		}
+	case "ZRANGE":
+		if len(request.Args) != 3 && len(request.Args) != 4 {
+			return wrongNumberOfArgumentsError("ZRANGE")
+		}
+		if len(request.Args) == 4 && !strings.EqualFold(string(request.Args[3]), "WITHSCORES") {
+			return ErrSyntaxError()
+		}
+		if _, err := parseIntegerArgument(request.Args[1]); err != nil {
+			return err
+		}
+		if _, err := parseIntegerArgument(request.Args[2]); err != nil {
+			return err
+		}
+	case "XADD":
+		if len(request.Args) < 4 || len(request.Args)%2 != 0 {
+			return wrongNumberOfArgumentsError("XADD")
+		}
+		if err := storage.ValidateXAddID(string(request.Args[1])); err != nil {
+			if errors.Is(err, storage.ErrInvalidStreamID) {
+				return ErrInvalidStreamIDError()
+			}
+			return err
+		}
+	case "XREAD":
+		if len(request.Args) == 0 {
+			return wrongNumberOfArgumentsError("XREAD")
+		}
+		if !strings.EqualFold(string(request.Args[0]), "STREAMS") {
+			return ErrSyntaxError()
+		}
+		if len(request.Args) != 3 {
+			return ErrSyntaxError()
+		}
+		if err := storage.ValidateXReadID(string(request.Args[2])); err != nil {
+			if errors.Is(err, storage.ErrInvalidStreamID) {
+				return ErrInvalidStreamIDError()
+			}
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (e *Executor) maybeQueueRequest(ctx context.Context, request *Request) (bool, protocol.Value, error) {
 	state, ok := server.ClientStateFromContext(ctx)
 	if !ok || !state.InTransactionActive() || isTransactionControlCommand(request.Name) {
 		return false, nil, nil
+	}
+	if err := e.validateQueueableRequest(request); err != nil {
+		state.MarkTransactionDirty()
+		return false, nil, err
 	}
 
 	state.EnqueueCommand(request.Name, request.Args)

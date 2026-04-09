@@ -16,6 +16,8 @@ var (
 	ErrMultiNested = errors.New("MULTI calls can not be nested")
 	// ErrWatchInsideMulti reports that WATCH was called inside a MULTI block.
 	ErrWatchInsideMulti = errors.New("WATCH inside MULTI is not allowed")
+	// ErrExecAbort reports that EXEC aborted because queue-time validation failed.
+	ErrExecAbort = errors.New("transaction discarded because of previous errors")
 	// ErrInvalidExpireTime reports an invalid EX/PX duration.
 	ErrInvalidExpireTime = errors.New("invalid expire time in 'SET' command")
 	// ErrInvalidStreamID reports that a stream ID could not be parsed.
@@ -103,6 +105,11 @@ func ErrMultiNestedError() error {
 // ErrWatchInsideMultiError reports that WATCH cannot be called after MULTI.
 func ErrWatchInsideMultiError() error {
 	return newRESPWrappedError("ERR", ErrWatchInsideMulti)
+}
+
+// ErrExecAbortError reports that EXEC refused to run after queue-time validation errors.
+func ErrExecAbortError() error {
+	return newRESPError("EXECABORT", "Transaction discarded because of previous errors.", ErrExecAbort)
 }
 
 // ErrInvalidExpireTimeError reports an invalid SET expiry argument.
