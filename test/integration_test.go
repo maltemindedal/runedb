@@ -316,6 +316,127 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 	}
 }
 
+func TestServerHandlesTransactionCommands(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := godislogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	parser := protocol.NewParser(conn)
+
+	otherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) second client error = %v", addr, err)
+	}
+	defer func() { _ = otherConn.Close() }()
+	otherParser := protocol.NewParser(otherConn)
+
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "name", "1")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "INCR", "name")
+	assertCommandResponse(t, otherConn, otherParser, protocol.BulkString{Null: true}, "GET", "name")
+	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{
+		protocol.SimpleString{Value: "OK"},
+		protocol.Integer{Value: 2},
+	}}, "EXEC")
+	assertCommandResponse(t, otherConn, otherParser, protocol.BulkString{Data: []byte("2")}, "GET", "name")
+
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "temp", "discarded")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "DISCARD")
+	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "temp")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR EXEC without MULTI"}, "EXEC")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := godislogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	watcherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) watcher error = %v", addr, err)
+	}
+	defer func() { _ = watcherConn.Close() }()
+	watcherParser := protocol.NewParser(watcherConn)
+
+	writerConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) writer error = %v", addr, err)
+	}
+	defer func() { _ = writerConn.Close() }()
+	writerParser := protocol.NewParser(writerConn)
+
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "balance")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "balance", "2")
+	assertCommandResponse(t, writerConn, writerParser, protocol.SimpleString{Value: "OK"}, "SET", "balance", "1")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.Array{Null: true}, "EXEC")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.BulkString{Data: []byte("1")}, "GET", "balance")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "balance")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.ErrorValue{Message: "ERR WATCH inside MULTI is not allowed"}, "WATCH", "balance")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "DISCARD")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
 func waitForAddr(t *testing.T, srv *server.Server) string {
 	t.Helper()
 

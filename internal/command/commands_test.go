@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/maltemindedal/godis/internal/protocol"
+	"github.com/maltemindedal/godis/internal/server"
 	"github.com/maltemindedal/godis/internal/storage"
 )
 
@@ -525,6 +526,125 @@ func TestExecutorBLPop(t *testing.T) {
 	}})
 }
 
+func TestExecutorTransactions(t *testing.T) {
+	t.Run("MULTI queues commands until EXEC", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		value, err := executor.Execute(ctx, requestValue("MULTI"))
+		if err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
+
+		value, err = executor.Execute(ctx, requestValue("SET", "name", "godis"))
+		if err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "QUEUED"})
+
+		value, err = executor.Execute(ctx, requestValue("GET", "name"))
+		if err != nil {
+			t.Fatalf("queued GET error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "QUEUED"})
+
+		value, err = executor.Execute(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.SimpleString{Value: "OK"},
+			protocol.BulkString{Data: []byte("godis")},
+		}})
+	})
+
+	t.Run("EXEC includes per-command errors", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "bad", "hello")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("INCR", "bad")); err != nil {
+			t.Fatalf("queued INCR error = %v", err)
+		}
+
+		value, err := executor.Execute(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.SimpleString{Value: "OK"},
+			protocol.ErrorValue{Message: "ERR value is not an integer or out of range"},
+		}})
+	})
+
+	t.Run("transaction state errors use Redis-compatible sentinels", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("EXEC")); !errors.Is(err, ErrExecWithoutMulti) {
+			t.Fatalf("EXEC error = %v, want ErrExecWithoutMulti", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("DISCARD")); !errors.Is(err, ErrDiscardWithoutMulti) {
+			t.Fatalf("DISCARD error = %v, want ErrDiscardWithoutMulti", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("first MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); !errors.Is(err, ErrMultiNested) {
+			t.Fatalf("nested MULTI error = %v, want ErrMultiNested", err)
+		}
+	})
+
+	t.Run("WATCH aborts EXEC after another client modifies a watched key", func(t *testing.T) {
+		executor := newTestExecutor()
+		watcherCtx := withClientStateForExecutor(context.Background(), executor, 1)
+		writerCtx := withClientStateForExecutor(context.Background(), executor, 2)
+
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "counter")); err != nil {
+			t.Fatalf("WATCH error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("SET", "counter", "2")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("SET", "counter", "1")); err != nil {
+			t.Fatalf("writer SET error = %v", err)
+		}
+
+		value, err := executor.Execute(watcherCtx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Null: true})
+
+		value, err = executor.Execute(watcherCtx, requestValue("GET", "counter"))
+		if err != nil {
+			t.Fatalf("GET after aborted EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("1")})
+	})
+
+	t.Run("WATCH is rejected inside MULTI", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("WATCH", "counter")); !errors.Is(err, ErrWatchInsideMulti) {
+			t.Fatalf("WATCH error = %v, want ErrWatchInsideMulti", err)
+		}
+	})
+}
+
 func TestDecodeRequest(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -613,6 +733,12 @@ func newTestExecutor() *Executor {
 	return NewExecutor(storage.NewStore(), logger)
 }
 
+func withClientStateForExecutor(ctx context.Context, executor *Executor, id uint64) context.Context {
+	state := &server.ClientState{ID: id, Authenticated: true}
+	state.SetWatchRegistry(executor.WatchRegistry())
+	return server.WithClientState(ctx, state)
+}
+
 func requestValue(parts ...string) protocol.Value {
 	elements := make([]protocol.Value, 0, len(parts))
 	for _, part := range parts {
@@ -665,6 +791,14 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 		}
 		for i := range typedWant.Elements {
 			assertValueEqual(t, typedGot.Elements[i], typedWant.Elements[i])
+		}
+	case protocol.ErrorValue:
+		typedGot, ok := got.(protocol.ErrorValue)
+		if !ok {
+			t.Fatalf("value type = %T, want %T", got, want)
+		}
+		if typedGot.Message != typedWant.Message {
+			t.Fatalf("error message = %q, want %q", typedGot.Message, typedWant.Message)
 		}
 	default:
 		t.Fatalf("unsupported wanted type %T", want)
