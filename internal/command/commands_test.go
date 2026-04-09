@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +91,22 @@ func TestExecutorExecute(t *testing.T) {
 			},
 		},
 		{
+			name: "GET rejects list values with wrong type",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("RPUSH", "queue", "job-1")); err != nil {
+					t.Fatalf("RPUSH error = %v", err)
+				}
+			},
+			request: requestValue("GET", "queue"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrWrongType) {
+					t.Fatalf("Execute() error = %v, want ErrWrongType", err)
+				}
+			},
+		},
+		{
 			name: "DEL removes existing keys and returns count",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
@@ -121,6 +139,208 @@ func TestExecutorExecute(t *testing.T) {
 					t.Fatalf("Execute() error = %v", err)
 				}
 				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name: "LPUSH and LRANGE return list contents",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("LPUSH", "letters", "a", "b")); err != nil {
+					t.Fatalf("LPUSH error = %v", err)
+				}
+				if _, err := executor.Execute(context.Background(), requestValue("RPUSH", "letters", "c")); err != nil {
+					t.Fatalf("RPUSH error = %v", err)
+				}
+			},
+			request: requestValue("LRANGE", "letters", "0", "-1"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+					protocol.BulkString{Data: []byte("b")},
+					protocol.BulkString{Data: []byte("a")},
+					protocol.BulkString{Data: []byte("c")},
+				}})
+			},
+		},
+		{
+			name: "ZADD and ZRANGE WITHSCORES return sorted contents",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("ZADD", "leaders", "2", "beta", "1", "alpha", "2", "aardvark")); err != nil {
+					t.Fatalf("ZADD error = %v", err)
+				}
+			},
+			request: requestValue("ZRANGE", "leaders", "0", "-1", "WITHSCORES"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+					protocol.BulkString{Data: []byte("alpha")},
+					protocol.BulkString{Data: []byte("1")},
+					protocol.BulkString{Data: []byte("aardvark")},
+					protocol.BulkString{Data: []byte("2")},
+					protocol.BulkString{Data: []byte("beta")},
+					protocol.BulkString{Data: []byte("2")},
+				}})
+			},
+		},
+		{
+			name: "ZADD returns count of newly added members only",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("ZADD", "leaders", "1", "alpha")); err != nil {
+					t.Fatalf("initial ZADD error = %v", err)
+				}
+			},
+			request: requestValue("ZADD", "leaders", "2", "alpha", "3", "beta"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 1})
+			},
+		},
+		{
+			name:    "ZADD rejects invalid score",
+			request: requestValue("ZADD", "leaders", "oops", "alpha"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrValueNotFloat) {
+					t.Fatalf("Execute() error = %v, want ErrValueNotFloat", err)
+				}
+			},
+		},
+		{
+			name: "XADD and XREAD return stream entries",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("XADD", "events", "1-0", "type", "start")); err != nil {
+					t.Fatalf("first XADD error = %v", err)
+				}
+				if _, err := executor.Execute(context.Background(), requestValue("XADD", "events", "2-0", "type", "finish", "user", "42")); err != nil {
+					t.Fatalf("second XADD error = %v", err)
+				}
+			},
+			request: requestValue("XREAD", "STREAMS", "events", "0-0"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+					protocol.Array{Elements: []protocol.Value{
+						protocol.BulkString{Data: []byte("events")},
+						protocol.Array{Elements: []protocol.Value{
+							protocol.Array{Elements: []protocol.Value{
+								protocol.BulkString{Data: []byte("1-0")},
+								protocol.Array{Elements: []protocol.Value{
+									protocol.BulkString{Data: []byte("type")},
+									protocol.BulkString{Data: []byte("start")},
+								}},
+							}},
+							protocol.Array{Elements: []protocol.Value{
+								protocol.BulkString{Data: []byte("2-0")},
+								protocol.Array{Elements: []protocol.Value{
+									protocol.BulkString{Data: []byte("type")},
+									protocol.BulkString{Data: []byte("finish")},
+									protocol.BulkString{Data: []byte("user")},
+									protocol.BulkString{Data: []byte("42")},
+								}},
+							}},
+						}},
+					}},
+				}})
+			},
+		},
+		{
+			name:    "XREAD returns empty array for missing stream",
+			request: requestValue("XREAD", "STREAMS", "missing", "0-0"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{}})
+			},
+		},
+		{
+			name:    "XADD rejects malformed IDs",
+			request: requestValue("XADD", "events", "bad-id", "field", "value"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrInvalidStreamID) {
+					t.Fatalf("Execute() error = %v, want ErrInvalidStreamID", err)
+				}
+			},
+		},
+		{
+			name: "XADD rejects non monotonic explicit IDs",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("XADD", "events", "1-0", "field", "value")); err != nil {
+					t.Fatalf("initial XADD error = %v", err)
+				}
+			},
+			request: requestValue("XADD", "events", "1-0", "field", "value"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrStreamIDTooSmall) {
+					t.Fatalf("Execute() error = %v, want ErrStreamIDTooSmall", err)
+				}
+			},
+		},
+		{
+			name: "XREAD rejects wrong value type",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				executor.store.Set("events", []byte("plain"), 0)
+			},
+			request: requestValue("XREAD", "STREAMS", "events", "0-0"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrWrongType) {
+					t.Fatalf("Execute() error = %v, want ErrWrongType", err)
+				}
+			},
+		},
+		{
+			name:    "XREAD rejects invalid syntax",
+			request: requestValue("XREAD", "COUNT", "2", "STREAMS", "events", "0-0"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrSyntax) {
+					t.Fatalf("Execute() error = %v, want ErrSyntax", err)
+				}
+			},
+		},
+		{
+			name:    "ZRANGE rejects invalid trailing option",
+			request: requestValue("ZRANGE", "leaders", "0", "-1", "REV"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrSyntax) {
+					t.Fatalf("Execute() error = %v, want ErrSyntax", err)
+				}
+			},
+		},
+		{
+			name: "LPUSH rejects wrong value type",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				executor.store.Set("letters", []byte("hello"), 0)
+			},
+			request: requestValue("LPUSH", "letters", "a"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrWrongType) {
+					t.Fatalf("Execute() error = %v, want ErrWrongType", err)
+				}
 			},
 		},
 		{
@@ -226,6 +446,83 @@ func TestExecutorExecute(t *testing.T) {
 			tt.assert(t, value, err)
 		})
 	}
+}
+
+func TestExecutorXAddAutoGeneratesIDs(t *testing.T) {
+	executor := newTestExecutor()
+
+	first, err := executor.Execute(context.Background(), requestValue("XADD", "events", "*", "field", "one"))
+	if err != nil {
+		t.Fatalf("first XADD error = %v", err)
+	}
+	second, err := executor.Execute(context.Background(), requestValue("XADD", "events", "*", "field", "two"))
+	if err != nil {
+		t.Fatalf("second XADD error = %v", err)
+	}
+
+	firstBulk, ok := first.(protocol.BulkString)
+	if !ok {
+		t.Fatalf("first response type = %T, want protocol.BulkString", first)
+	}
+	secondBulk, ok := second.(protocol.BulkString)
+	if !ok {
+		t.Fatalf("second response type = %T, want protocol.BulkString", second)
+	}
+
+	firstID, err := storageParseStreamIDForTest(string(firstBulk.Data))
+	if err != nil {
+		t.Fatalf("parse first ID error = %v", err)
+	}
+	secondID, err := storageParseStreamIDForTest(string(secondBulk.Data))
+	if err != nil {
+		t.Fatalf("parse second ID error = %v", err)
+	}
+	if secondID.milliseconds < firstID.milliseconds || (secondID.milliseconds == firstID.milliseconds && secondID.sequence <= firstID.sequence) {
+		t.Fatalf("second auto-generated ID %q is not greater than first ID %q", string(secondBulk.Data), string(firstBulk.Data))
+	}
+}
+
+func storageParseStreamIDForTest(raw string) (struct{ milliseconds, sequence int64 }, error) {
+	parts := strings.Split(raw, "-")
+	if len(parts) != 2 {
+		return struct{ milliseconds, sequence int64 }{}, errors.New("invalid stream ID")
+	}
+	milliseconds, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return struct{ milliseconds, sequence int64 }{}, err
+	}
+	sequence, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return struct{ milliseconds, sequence int64 }{}, err
+	}
+	return struct{ milliseconds, sequence int64 }{milliseconds: milliseconds, sequence: sequence}, nil
+}
+
+func TestExecutorBLPop(t *testing.T) {
+	executor := newTestExecutor()
+
+	pushErrCh := make(chan error, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
+		pushErrCh <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if pushErr := <-pushErrCh; pushErr != nil {
+		t.Fatalf("RPUSH error = %v", pushErr)
+	}
+
+	assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+		protocol.BulkString{Data: []byte("jobs")},
+		protocol.BulkString{Data: []byte("build")},
+	}})
 }
 
 func TestDecodeRequest(t *testing.T) {
@@ -354,6 +651,20 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 		}
 		if typedGot.Value != typedWant.Value {
 			t.Fatalf("integer = %d, want %d", typedGot.Value, typedWant.Value)
+		}
+	case protocol.Array:
+		typedGot, ok := got.(protocol.Array)
+		if !ok {
+			t.Fatalf("value type = %T, want %T", got, want)
+		}
+		if typedGot.Null != typedWant.Null {
+			t.Fatalf("array null = %v, want %v", typedGot.Null, typedWant.Null)
+		}
+		if len(typedGot.Elements) != len(typedWant.Elements) {
+			t.Fatalf("len(array) = %d, want %d", len(typedGot.Elements), len(typedWant.Elements))
+		}
+		for i := range typedWant.Elements {
+			assertValueEqual(t, typedGot.Elements[i], typedWant.Elements[i])
 		}
 	default:
 		t.Fatalf("unsupported wanted type %T", want)

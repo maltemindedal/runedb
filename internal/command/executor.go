@@ -10,8 +10,14 @@ var (
 	ErrSyntax = errors.New("syntax error")
 	// ErrInvalidExpireTime reports an invalid EX/PX duration.
 	ErrInvalidExpireTime = errors.New("invalid expire time in 'SET' command")
+	// ErrInvalidStreamID reports that a stream ID could not be parsed.
+	ErrInvalidStreamID = errors.New("invalid stream ID specified as stream command argument")
+	// ErrStreamIDTooSmall reports that XADD was given a non-monotonic explicit ID.
+	ErrStreamIDTooSmall = errors.New("stream ID is equal or smaller than the target stream top item")
 	// ErrValueNotInteger reports that a value cannot be parsed as a 64-bit integer.
 	ErrValueNotInteger = errors.New("value is not an integer or out of range")
+	// ErrValueNotFloat reports that a value cannot be parsed as a float64.
+	ErrValueNotFloat = errors.New("value is not a valid float")
 	// ErrWrongType reports that a command targeted the wrong logical value type.
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
 	// ErrNoAuth reports that the client must authenticate before running a command.
@@ -76,9 +82,24 @@ func ErrInvalidExpireTimeError() error {
 	return newRESPWrappedError("ERR", ErrInvalidExpireTime)
 }
 
+// ErrInvalidStreamIDError reports that a stream ID argument could not be parsed.
+func ErrInvalidStreamIDError() error {
+	return newRESPWrappedError("ERR", ErrInvalidStreamID)
+}
+
+// ErrStreamIDTooSmallError reports that XADD received a non-monotonic explicit ID.
+func ErrStreamIDTooSmallError() error {
+	return newRESPError("ERR", "The ID specified in XADD is equal or smaller than the target stream top item", ErrStreamIDTooSmall)
+}
+
 // ErrValueNotIntegerError reports that a string value cannot be incremented.
 func ErrValueNotIntegerError() error {
 	return newRESPWrappedError("ERR", ErrValueNotInteger)
+}
+
+// ErrValueNotFloatError reports that a score could not be parsed as a float.
+func ErrValueNotFloatError() error {
+	return newRESPWrappedError("ERR", ErrValueNotFloat)
 }
 
 // ErrWrongTypeError reports a Redis-style wrong-type failure.

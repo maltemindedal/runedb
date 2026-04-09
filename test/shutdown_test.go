@@ -80,3 +80,59 @@ func TestServerShutdownClosesMultipleClients(t *testing.T) {
 		}
 	}
 }
+
+func TestServerShutdownUnblocksBLPop(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := godislogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if err := protocol.WriteValue(conn, request("BLPOP", "jobs")); err != nil {
+		cancel()
+		t.Fatalf("WriteValue(BLPOP) error = %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+
+	buffer := make([]byte, 1)
+	_, err = conn.Read(buffer)
+	if err == nil {
+		t.Fatal("conn.Read() error = nil, want closed-connection error")
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatal("conn.Read() timed out, want closed-connection error")
+	}
+}

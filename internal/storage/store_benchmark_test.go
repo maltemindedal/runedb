@@ -26,7 +26,9 @@ func BenchmarkStore(b *testing.B) {
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			if _, ok := store.Get("hot"); !ok {
+			if _, ok, err := store.Get("hot"); err != nil {
+				b.Fatalf("Get() error = %v", err)
+			} else if !ok {
 				b.Fatal("Get() ok = false, want true")
 			}
 		}
@@ -37,7 +39,9 @@ func BenchmarkStore(b *testing.B) {
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			if _, ok := store.Get("missing"); ok {
+			if _, ok, err := store.Get("missing"); err != nil {
+				b.Fatalf("Get() error = %v", err)
+			} else if ok {
 				b.Fatal("Get() ok = true, want false")
 			}
 		}
@@ -50,7 +54,9 @@ func BenchmarkStore(b *testing.B) {
 
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				if _, ok := store.Get("hot"); !ok {
+				if _, ok, err := store.Get("hot"); err != nil {
+					b.Fatalf("Get() error = %v", err)
+				} else if !ok {
 					b.Fatal("Get() ok = false, want true")
 				}
 			}
@@ -80,7 +86,7 @@ func BenchmarkStore(b *testing.B) {
 				case 0:
 					store.Set("hot", payload, 0)
 				case 1:
-					_, _ = store.Get("hot")
+					_, _, _ = store.Get("hot")
 				default:
 					_ = store.Delete("hot")
 				}
@@ -97,7 +103,7 @@ func BenchmarkStore(b *testing.B) {
 			for pb.Next() {
 				key := fmt.Sprintf("key-%d", counter.Add(1)%128)
 				store.Set(key, payload, 0)
-				_, _ = store.Get(key)
+				_, _, _ = store.Get(key)
 			}
 		})
 	})
@@ -109,7 +115,7 @@ func BenchmarkStore(b *testing.B) {
 
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, _ = store.Get("expired")
+				_, _, _ = store.Get("expired")
 			}
 		})
 	})
@@ -128,7 +134,7 @@ func BenchmarkStore(b *testing.B) {
 				key := fmt.Sprintf("ttl-%d", index%64)
 				expiresAt := time.Now().Add(2 * time.Millisecond).UnixMilli()
 				store.Set(key, payload, expiresAt)
-				_, _ = store.Get(key)
+				_, _, _ = store.Get(key)
 			}
 		})
 	})

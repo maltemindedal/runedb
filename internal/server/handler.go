@@ -55,6 +55,9 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 
 		response, execErr := s.executor.Execute(ctx, value)
 		if execErr != nil {
+			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
+				return
+			}
 			logger.Debug("command execution failed", "error", execErr)
 			response = responseError(execErr)
 		}
