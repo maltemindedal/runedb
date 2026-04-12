@@ -56,7 +56,7 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 		return nil, true, ErrWrongType
 	}
 
-	return cloneBytes(value.String), true, nil
+	return value.String, true, nil
 }
 
 // Delete removes a key from the store.
@@ -136,7 +136,7 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 
-	item := cloneBytes(value.List[0])
+	item := value.List[0]
 	value.List[0] = nil
 	value.List = value.List[1:]
 	if len(value.List) == 0 {
@@ -163,7 +163,7 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 		return [][]byte{}, nil
 	}
 
-	return cloneList(value.List[from : to+1]), nil
+	return value.List[from : to+1], nil
 }
 
 // ZAdd inserts or updates one or more sorted-set members and returns the number of newly added members.
@@ -207,14 +207,14 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 }
 
 // ZRange returns an inclusive rank range from the sorted set stored at key.
-func (s *Store) ZRange(key string, start, stop int64) ([]ZSetEntry, error) {
+func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) {
 	now := time.Now().UnixMilli()
 
 	s.mu.RLock()
 	value, ok := s.data[key]
 	if !ok {
 		s.mu.RUnlock()
-		return []ZSetEntry{}, nil
+		return []ZSetRangeEntry{}, nil
 	}
 	if isExpired(value, now) {
 		s.mu.RUnlock()
@@ -225,7 +225,7 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetEntry, error) {
 			delete(s.data, key)
 		}
 		s.mu.Unlock()
-		return []ZSetEntry{}, nil
+		return []ZSetRangeEntry{}, nil
 	}
 	if value.Kind != ValueKindZSet {
 		s.mu.RUnlock()
@@ -235,14 +235,10 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetEntry, error) {
 	from, to, ok := normalizeListRange(value.ZSet.len(), start, stop)
 	if !ok {
 		s.mu.RUnlock()
-		return []ZSetEntry{}, nil
+		return []ZSetRangeEntry{}, nil
 	}
 
-	raw := value.ZSet.rangeByRank(from, to)
-	entries := make([]ZSetEntry, 0, len(raw))
-	for _, item := range raw {
-		entries = append(entries, ZSetEntry{Member: []byte(item.member), Score: item.score})
-	}
+	entries := value.ZSet.rangeByRank(from, to)
 	s.mu.RUnlock()
 
 	return entries, nil
@@ -406,17 +402,14 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 
 	additions := cloneList(values)
 	if left {
-		combined := make([][]byte, 0, len(list)+len(additions))
-		for i := len(additions) - 1; i >= 0; i-- {
-			combined = append(combined, additions[i])
+		combined := make([][]byte, len(list)+len(additions))
+		for i := range additions {
+			combined[i] = additions[len(additions)-1-i]
 		}
-		combined = append(combined, list...)
+		copy(combined[len(additions):], list)
 		list = combined
 	} else {
-		combined := make([][]byte, 0, len(list)+len(additions))
-		combined = append(combined, list...)
-		combined = append(combined, additions...)
-		list = combined
+		list = append(list, additions...)
 	}
 
 	s.data[key] = newListValue(list, expiresAt)

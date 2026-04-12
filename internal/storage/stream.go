@@ -91,7 +91,7 @@ func (s *streamValue) readAfter(rawID string) ([]StreamEntry, error) {
 
 	entries := make([]StreamEntry, 0, len(s.entries)-start)
 	for _, entry := range s.entries[start:] {
-		entries = append(entries, StreamEntry{ID: entry.id.String(), Values: cloneList(entry.values)})
+		entries = append(entries, StreamEntry{ID: entry.id.String(), Values: entry.values})
 	}
 
 	return entries, nil

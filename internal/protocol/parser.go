@@ -2,10 +2,10 @@ package protocol
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
 )
 
 // Parser reads RESP values from an io.Reader.
@@ -84,12 +84,12 @@ func (p *Parser) Parse() (Value, error) {
 }
 
 func (p *Parser) parseBulkString() (Value, error) {
-	line, err := p.readLine()
+	line, err := p.readLineBytes()
 	if err != nil {
 		return nil, err
 	}
 
-	length, err := strconv.Atoi(line)
+	length, err := parseDecimalInt(line)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: parse bulk string length: %w", err)
 	}
@@ -100,26 +100,24 @@ func (p *Parser) parseBulkString() (Value, error) {
 		return nil, fmt.Errorf("protocol: invalid bulk string length %d", length)
 	}
 
-	buffer := make([]byte, length+2)
-	if _, err := io.ReadFull(p.reader, buffer); err != nil {
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(p.reader, payload); err != nil {
 		return nil, fmt.Errorf("protocol: read bulk string payload: %w", err)
 	}
-	if len(buffer) < 2 || buffer[len(buffer)-2] != '\r' || buffer[len(buffer)-1] != '\n' {
+	if err := p.expectCRLF(); err != nil {
 		return nil, fmt.Errorf("protocol: bulk string payload missing CRLF terminator")
 	}
 
-	payload := make([]byte, length)
-	copy(payload, buffer[:length])
 	return BulkString{Data: payload}, nil
 }
 
 func (p *Parser) parseArray() (Value, error) {
-	line, err := p.readLine()
+	line, err := p.readLineBytes()
 	if err != nil {
 		return nil, err
 	}
 
-	count, err := strconv.Atoi(line)
+	count, err := parseDecimalInt(line)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: parse array length: %w", err)
 	}
@@ -143,13 +141,71 @@ func (p *Parser) parseArray() (Value, error) {
 }
 
 func (p *Parser) readLine() (string, error) {
-	line, err := p.reader.ReadString('\n')
+	line, err := p.readLineBytes()
 	if err != nil {
 		return "", err
 	}
-	if !strings.HasSuffix(line, "\r\n") {
-		return "", fmt.Errorf("protocol: line missing CRLF terminator")
+
+	return string(line), nil
+}
+
+func (p *Parser) readLineBytes() ([]byte, error) {
+	line, err := p.reader.ReadSlice('\n')
+	if err == nil {
+		return trimCRLF(line)
+	}
+	if !errors.Is(err, bufio.ErrBufferFull) {
+		return nil, err
 	}
 
-	return strings.TrimSuffix(line, "\r\n"), nil
+	combined := append([]byte(nil), line...)
+	for {
+		fragment, readErr := p.reader.ReadSlice('\n')
+		combined = append(combined, fragment...)
+		if readErr == nil {
+			return trimCRLF(combined)
+		}
+		if !errors.Is(readErr, bufio.ErrBufferFull) {
+			return nil, readErr
+		}
+	}
+}
+
+func (p *Parser) expectCRLF() error {
+	carriage, err := p.reader.ReadByte()
+	if err != nil {
+		return err
+	}
+	newline, err := p.reader.ReadByte()
+	if err != nil {
+		return err
+	}
+	if carriage != '\r' || newline != '\n' {
+		return fmt.Errorf("protocol: line missing CRLF terminator")
+	}
+
+	return nil
+}
+
+func trimCRLF(line []byte) ([]byte, error) {
+	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
+		return nil, fmt.Errorf("protocol: line missing CRLF terminator")
+	}
+
+	return line[:len(line)-2], nil
+}
+
+func parseDecimalInt(raw []byte) (int, error) {
+	value, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	maxInt := int64(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	if value < minInt || value > maxInt {
+		return 0, fmt.Errorf("value %d out of int range", value)
+	}
+
+	return int(value), nil
 }

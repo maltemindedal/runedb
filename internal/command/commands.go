@@ -394,7 +394,7 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 	}
 
 	e.touchWatchKeys(string(request.Args[0]))
-	return protocol.BulkString{Data: []byte(id)}, nil
+	return protocol.TextBulkString{Value: id}, nil
 }
 
 func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Value, error) {
@@ -426,22 +426,22 @@ func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Va
 func listResponse(values [][]byte) protocol.Array {
 	elements := make([]protocol.Value, 0, len(values))
 	for _, value := range values {
-		elements = append(elements, protocol.BulkString{Data: clone(value)})
+		elements = append(elements, protocol.BulkString{Data: value})
 	}
 
 	return protocol.Array{Elements: elements}
 }
 
-func zsetResponse(entries []storage.ZSetEntry, withScores bool) protocol.Array {
+func zsetResponse(entries []storage.ZSetRangeEntry, withScores bool) protocol.Array {
 	elements := make([]protocol.Value, 0, len(entries))
 	if withScores {
 		elements = make([]protocol.Value, 0, len(entries)*2)
 	}
 
 	for _, entry := range entries {
-		elements = append(elements, protocol.BulkString{Data: clone(entry.Member)})
+		elements = append(elements, protocol.TextBulkString{Value: entry.Member})
 		if withScores {
-			elements = append(elements, protocol.BulkString{Data: formatFloatScore(entry.Score)})
+			elements = append(elements, protocol.TextBulkString{Value: formatFloatScore(entry.Score)})
 		}
 	}
 
@@ -456,14 +456,14 @@ func streamReadResponse(key []byte, entries []storage.StreamEntry) protocol.Arra
 	streamEntries := make([]protocol.Value, 0, len(entries))
 	for _, entry := range entries {
 		streamEntries = append(streamEntries, protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: []byte(entry.ID)},
+			protocol.TextBulkString{Value: entry.ID},
 			listResponse(entry.Values),
 		}})
 	}
 
 	return protocol.Array{Elements: []protocol.Value{
 		protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: clone(key)},
+			protocol.BulkString{Data: key},
 			protocol.Array{Elements: streamEntries},
 		}},
 	}}
@@ -487,8 +487,8 @@ func parseFloatArgument(raw []byte) (float64, error) {
 	return value, nil
 }
 
-func formatFloatScore(score float64) []byte {
-	return []byte(strconv.FormatFloat(score, 'g', -1, 64))
+func formatFloatScore(score float64) string {
+	return strconv.FormatFloat(score, 'g', -1, 64)
 }
 
 func clone(value []byte) []byte {

@@ -14,11 +14,6 @@ type sortedSet struct {
 	order *zsetSkipList
 }
 
-type zsetItem struct {
-	member string
-	score  float64
-}
-
 type zsetSkipList struct {
 	header *zsetNode
 	tail   *zsetNode
@@ -68,7 +63,7 @@ func (s *sortedSet) add(member string, score float64) bool {
 	return !exists
 }
 
-func (s *sortedSet) rangeByRank(start, stop int) []zsetItem {
+func (s *sortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	if start < 0 || stop < start || start >= s.order.length {
 		return nil
 	}
@@ -78,9 +73,9 @@ func (s *sortedSet) rangeByRank(start, stop int) []zsetItem {
 		return nil
 	}
 
-	items := make([]zsetItem, 0, stop-start+1)
+	items := make([]ZSetRangeEntry, 0, stop-start+1)
 	for remaining := stop - start + 1; remaining > 0 && node != nil; remaining-- {
-		items = append(items, zsetItem{member: node.member, score: node.score})
+		items = append(items, ZSetRangeEntry{Member: node.member, Score: node.score})
 		node = node.levels[0].forward
 	}
 

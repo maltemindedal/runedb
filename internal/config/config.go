@@ -13,6 +13,7 @@ type Config struct {
 	LogLevel           string
 	EvictionInterval   time.Duration
 	EvictionSampleSize int
+	RDBPath            string
 	RequirePass        string
 }
 
@@ -24,6 +25,7 @@ func Default() Config {
 		LogLevel:           "info",
 		EvictionInterval:   100 * time.Millisecond,
 		EvictionSampleSize: 20,
+		RDBPath:            "",
 	}
 }
 
@@ -36,6 +38,7 @@ func ParseFlags() Config {
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "log level: debug, info, warn, error")
 	flag.DurationVar(&cfg.EvictionInterval, "eviction-interval", cfg.EvictionInterval, "interval for active TTL eviction")
 	flag.IntVar(&cfg.EvictionSampleSize, "eviction-sample-size", cfg.EvictionSampleSize, "number of keys to sample on each eviction pass")
+	flag.StringVar(&cfg.RDBPath, "rdb", cfg.RDBPath, "optional path to an RDB file to load before accepting TCP connections")
 	flag.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password requirement placeholder for future AUTH support")
 	flag.Parse()
 

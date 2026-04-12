@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 )
 
 // Encode serializes a RESP value into its wire representation.
@@ -20,24 +21,35 @@ func Encode(value Value) ([]byte, error) {
 func WriteValue(writer io.Writer, value Value) error {
 	switch typed := value.(type) {
 	case SimpleString:
-		_, err := fmt.Fprintf(writer, "+%s\r\n", typed.Value)
-		return err
+		return writePrefixedStringLine(writer, '+', typed.Value)
 	case ErrorValue:
-		_, err := fmt.Fprintf(writer, "-%s\r\n", typed.Message)
-		return err
+		return writePrefixedStringLine(writer, '-', typed.Message)
 	case Integer:
-		_, err := fmt.Fprintf(writer, ":%d\r\n", typed.Value)
-		return err
+		return writePrefixedIntLine(writer, ':', typed.Value)
 	case BulkString:
 		if typed.Null {
 			_, err := io.WriteString(writer, "$-1\r\n")
 			return err
 		}
 
-		if _, err := fmt.Fprintf(writer, "$%d\r\n", len(typed.Data)); err != nil {
+		if err := writePrefixedIntLine(writer, '$', int64(len(typed.Data))); err != nil {
 			return err
 		}
 		if _, err := writer.Write(typed.Data); err != nil {
+			return err
+		}
+		_, err := io.WriteString(writer, "\r\n")
+		return err
+	case TextBulkString:
+		if typed.Null {
+			_, err := io.WriteString(writer, "$-1\r\n")
+			return err
+		}
+
+		if err := writePrefixedIntLine(writer, '$', int64(len(typed.Value))); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(writer, typed.Value); err != nil {
 			return err
 		}
 		_, err := io.WriteString(writer, "\r\n")
@@ -48,7 +60,7 @@ func WriteValue(writer io.Writer, value Value) error {
 			return err
 		}
 
-		if _, err := fmt.Fprintf(writer, "*%d\r\n", len(typed.Elements)); err != nil {
+		if err := writePrefixedIntLine(writer, '*', int64(len(typed.Elements))); err != nil {
 			return err
 		}
 		for _, element := range typed.Elements {
@@ -70,4 +82,28 @@ func WriteValue(writer io.Writer, value Value) error {
 	default:
 		return fmt.Errorf("protocol: unsupported value type %T", value)
 	}
+}
+
+func writePrefixedStringLine(writer io.Writer, prefix byte, value string) error {
+	if _, err := writer.Write([]byte{prefix}); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, value); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, "\r\n")
+	return err
+}
+
+func writePrefixedIntLine(writer io.Writer, prefix byte, value int64) error {
+	var buf [32]byte
+	encoded := strconv.AppendInt(buf[:0], value, 10)
+	if _, err := writer.Write([]byte{prefix}); err != nil {
+		return err
+	}
+	if _, err := writer.Write(encoded); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, "\r\n")
+	return err
 }

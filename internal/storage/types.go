@@ -20,6 +20,12 @@ type ZSetEntry struct {
 	Score  float64
 }
 
+// ZSetRangeEntry represents a member/score pair returned from ZRANGE.
+type ZSetRangeEntry struct {
+	Member string
+	Score  float64
+}
+
 // StreamEntry represents a stream entry returned by XREAD.
 type StreamEntry struct {
 	ID     string

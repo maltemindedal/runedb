@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/config"
 	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/rdb"
 	"github.com/maltemindedal/runedb/internal/storage"
 )
 
@@ -58,6 +60,22 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 
 // ListenAndServe starts the TCP listener and blocks until shutdown.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if s.cfg.RDBPath != "" {
+		startedAt := time.Now()
+		stats, err := rdb.LoadFile(s.cfg.RDBPath, s.store)
+		if err != nil {
+			return fmt.Errorf("server: load rdb %q: %w", s.cfg.RDBPath, err)
+		}
+
+		s.logger.Info(
+			"loaded RDB snapshot",
+			"path", s.cfg.RDBPath,
+			"loaded_keys", stats.LoadedKeys,
+			"skipped_expired_keys", stats.SkippedExpiredKeys,
+			"duration", time.Since(startedAt),
+		)
+	}
+
 	listener, err := net.Listen("tcp", s.cfg.Address())
 	if err != nil {
 		return fmt.Errorf("server: listen on %s: %w", s.cfg.Address(), err)

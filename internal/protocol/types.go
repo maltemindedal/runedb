@@ -26,6 +26,12 @@ type BulkString struct {
 	Null bool
 }
 
+// TextBulkString encodes a RESP bulk string backed by an immutable Go string.
+type TextBulkString struct {
+	Value string
+	Null  bool
+}
+
 // Array encodes a RESP array value.
 type Array struct {
 	Elements []Value
@@ -40,10 +46,11 @@ type Boolean struct {
 // Null is a RESP3 placeholder/value for future protocol expansion.
 type Null struct{}
 
-func (SimpleString) value() {}
-func (ErrorValue) value()   {}
-func (Integer) value()      {}
-func (BulkString) value()   {}
-func (Array) value()        {}
-func (Boolean) value()      {}
-func (Null) value()         {}
+func (SimpleString) value()   {}
+func (ErrorValue) value()     {}
+func (Integer) value()        {}
+func (BulkString) value()     {}
+func (TextBulkString) value() {}
+func (Array) value()          {}
+func (Boolean) value()        {}
+func (Null) value()           {}

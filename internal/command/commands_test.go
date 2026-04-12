@@ -461,25 +461,19 @@ func TestExecutorXAddAutoGeneratesIDs(t *testing.T) {
 		t.Fatalf("second XADD error = %v", err)
 	}
 
-	firstBulk, ok := first.(protocol.BulkString)
-	if !ok {
-		t.Fatalf("first response type = %T, want protocol.BulkString", first)
-	}
-	secondBulk, ok := second.(protocol.BulkString)
-	if !ok {
-		t.Fatalf("second response type = %T, want protocol.BulkString", second)
-	}
+	firstIDText := mustBulkStringText(t, first)
+	secondIDText := mustBulkStringText(t, second)
 
-	firstID, err := storageParseStreamIDForTest(string(firstBulk.Data))
+	firstID, err := storageParseStreamIDForTest(firstIDText)
 	if err != nil {
 		t.Fatalf("parse first ID error = %v", err)
 	}
-	secondID, err := storageParseStreamIDForTest(string(secondBulk.Data))
+	secondID, err := storageParseStreamIDForTest(secondIDText)
 	if err != nil {
 		t.Fatalf("parse second ID error = %v", err)
 	}
 	if secondID.milliseconds < firstID.milliseconds || (secondID.milliseconds == firstID.milliseconds && secondID.sequence <= firstID.sequence) {
-		t.Fatalf("second auto-generated ID %q is not greater than first ID %q", string(secondBulk.Data), string(firstBulk.Data))
+		t.Fatalf("second auto-generated ID %q is not greater than first ID %q", secondIDText, firstIDText)
 	}
 }
 
@@ -836,15 +830,15 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 			t.Fatalf("simple string = %q, want %q", typedGot.Value, typedWant.Value)
 		}
 	case protocol.BulkString:
-		typedGot, ok := got.(protocol.BulkString)
+		gotText, gotNull, ok := bulkStringContent(got)
 		if !ok {
-			t.Fatalf("value type = %T, want %T", got, want)
+			t.Fatalf("value type = %T, want bulk-string-compatible type", got)
 		}
-		if typedGot.Null != typedWant.Null {
-			t.Fatalf("bulk string null = %v, want %v", typedGot.Null, typedWant.Null)
+		if gotNull != typedWant.Null {
+			t.Fatalf("bulk string null = %v, want %v", gotNull, typedWant.Null)
 		}
-		if string(typedGot.Data) != string(typedWant.Data) {
-			t.Fatalf("bulk string = %q, want %q", string(typedGot.Data), string(typedWant.Data))
+		if gotText != string(typedWant.Data) {
+			t.Fatalf("bulk string = %q, want %q", gotText, string(typedWant.Data))
 		}
 	case protocol.Integer:
 		typedGot, ok := got.(protocol.Integer)
@@ -878,5 +872,30 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 		}
 	default:
 		t.Fatalf("unsupported wanted type %T", want)
+	}
+}
+
+func mustBulkStringText(t *testing.T, value protocol.Value) string {
+	t.Helper()
+
+	text, isNull, ok := bulkStringContent(value)
+	if !ok {
+		t.Fatalf("value type = %T, want bulk-string-compatible type", value)
+	}
+	if isNull {
+		t.Fatal("bulk string unexpectedly null")
+	}
+
+	return text
+}
+
+func bulkStringContent(value protocol.Value) (string, bool, bool) {
+	switch typed := value.(type) {
+	case protocol.BulkString:
+		return string(typed.Data), typed.Null, true
+	case protocol.TextBulkString:
+		return typed.Value, typed.Null, true
+	default:
+		return "", false, false
 	}
 }

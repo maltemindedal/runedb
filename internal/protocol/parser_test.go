@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,25 @@ func TestParserParse(t *testing.T) {
 				}
 				if _, ok := value.(Null); !ok {
 					t.Fatalf("Parse() type = %T, want Null", value)
+				}
+			},
+		},
+		{
+			name: "long line over buffered reader capacity",
+			reader: func() io.Reader {
+				return bufio.NewReaderSize(strings.NewReader("+"+strings.Repeat("a", 64)+"\r\n"), 8)
+			},
+			assert: func(t *testing.T, value Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Parse() error = %v", err)
+				}
+				simple, ok := value.(SimpleString)
+				if !ok {
+					t.Fatalf("Parse() type = %T, want SimpleString", value)
+				}
+				if simple.Value != strings.Repeat("a", 64) {
+					t.Fatalf("simple string = %q, want %q", simple.Value, strings.Repeat("a", 64))
 				}
 			},
 		},
