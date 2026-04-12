@@ -18,12 +18,20 @@ func (stubExecutor) Execute(context.Context, protocol.Value) (protocol.Value, er
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
+func (stubExecutor) ExecuteDetailed(context.Context, protocol.Value) (ExecuteResult, error) {
+	return SingleResponse(protocol.SimpleString{Value: "OK"}), nil
+}
+
 type stubWatchExecutor struct {
 	registry *WatchRegistry
 }
 
 func (s stubWatchExecutor) Execute(context.Context, protocol.Value) (protocol.Value, error) {
 	return protocol.SimpleString{Value: "OK"}, nil
+}
+
+func (s stubWatchExecutor) ExecuteDetailed(context.Context, protocol.Value) (ExecuteResult, error) {
+	return SingleResponse(protocol.SimpleString{Value: "OK"}), nil
 }
 
 func (s stubWatchExecutor) WatchRegistry() *WatchRegistry {

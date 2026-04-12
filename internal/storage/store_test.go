@@ -36,6 +36,34 @@ func TestStoreValueBehavior(t *testing.T) {
 			},
 		},
 		{
+			name: "Get returns defensive copy",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				store.Set("greeting", []byte("hello"), 0)
+
+				got, ok, err := store.Get("greeting")
+				if err != nil {
+					t.Fatalf("Get() error = %v", err)
+				}
+				if !ok {
+					t.Fatal("Get() ok = false, want true")
+				}
+
+				got[0] = 'H'
+
+				again, ok, err := store.Get("greeting")
+				if err != nil {
+					t.Fatalf("second Get() error = %v", err)
+				}
+				if !ok {
+					t.Fatal("second Get() ok = false, want true")
+				}
+				if string(again) != "hello" {
+					t.Fatalf("second Get() value = %q, want %q", string(again), "hello")
+				}
+			},
+		},
+		{
 			name: "Get passively evicts expired key",
 			run: func(t *testing.T, store *Store) {
 				t.Helper()
@@ -225,6 +253,32 @@ func TestStoreListBehavior(t *testing.T) {
 			if string(got) != want[i] {
 				t.Fatalf("ListRange()[%d] = %q, want %q", i, string(got), want[i])
 			}
+		}
+	})
+
+	t.Run("ListRange returns defensive copies", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.RightPush("letters", [][]byte{[]byte("a"), []byte("b")}); err != nil {
+			t.Fatalf("RightPush() error = %v", err)
+		}
+
+		values, err := store.ListRange("letters", 0, -1)
+		if err != nil {
+			t.Fatalf("ListRange() error = %v", err)
+		}
+
+		values[0][0] = 'A'
+		values[1] = []byte("changed")
+
+		again, err := store.ListRange("letters", 0, -1)
+		if err != nil {
+			t.Fatalf("second ListRange() error = %v", err)
+		}
+		if got := string(again[0]); got != "a" {
+			t.Fatalf("second ListRange()[0] = %q, want %q", got, "a")
+		}
+		if got := string(again[1]); got != "b" {
+			t.Fatalf("second ListRange()[1] = %q, want %q", got, "b")
 		}
 	})
 
@@ -652,6 +706,32 @@ func TestStoreStreamBehavior(t *testing.T) {
 		}
 		if got := string(entries[0].Values[1]); got != "value" {
 			t.Fatalf("entries[0].Values[1] = %q, want %q", got, "value")
+		}
+	})
+
+	t.Run("XRead returns defensive copies", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); err != nil {
+			t.Fatalf("XAdd() error = %v", err)
+		}
+
+		entries, err := store.XRead("events", "0-0")
+		if err != nil {
+			t.Fatalf("XRead() error = %v", err)
+		}
+
+		entries[0].Values[0][0] = 'F'
+		entries[0].Values[1] = []byte("changed")
+
+		again, err := store.XRead("events", "0-0")
+		if err != nil {
+			t.Fatalf("second XRead() error = %v", err)
+		}
+		if got := string(again[0].Values[0]); got != "field" {
+			t.Fatalf("second XRead()[0].Values[0] = %q, want %q", got, "field")
+		}
+		if got := string(again[0].Values[1]); got != "value" {
+			t.Fatalf("second XRead()[0].Values[1] = %q, want %q", got, "value")
 		}
 	})
 

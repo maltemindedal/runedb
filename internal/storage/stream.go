@@ -13,6 +13,7 @@ type streamID struct {
 
 type streamRecord struct {
 	id     streamID
+	idText string
 	values [][]byte
 }
 
@@ -68,11 +69,12 @@ func (s *streamValue) add(rawID string, values [][]byte, nowMillis int64) (strin
 		}
 	}
 
-	s.entries = append(s.entries, streamRecord{id: id, values: cloneList(values)})
+	idText := id.String()
+	s.entries = append(s.entries, streamRecord{id: id, idText: idText, values: cloneList(values)})
 	s.lastID = id
 	s.hasEntries = true
 
-	return id.String(), nil
+	return idText, nil
 }
 
 func (s *streamValue) readAfter(rawID string) ([]StreamEntry, error) {
@@ -91,7 +93,7 @@ func (s *streamValue) readAfter(rawID string) ([]StreamEntry, error) {
 
 	entries := make([]StreamEntry, 0, len(s.entries)-start)
 	for _, entry := range s.entries[start:] {
-		entries = append(entries, StreamEntry{ID: entry.id.String(), Values: cloneList(entry.values)})
+		entries = append(entries, StreamEntry{ID: entry.idText, Values: cloneList(entry.values)})
 	}
 
 	return entries, nil

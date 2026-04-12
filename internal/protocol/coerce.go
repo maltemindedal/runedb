@@ -12,9 +12,12 @@ func Bytes(value Value) ([]byte, error) {
 		if typed.Null {
 			return nil, fmt.Errorf("protocol: null bulk string cannot be coerced to bytes")
 		}
-		copied := make([]byte, len(typed.Data))
-		copy(copied, typed.Data)
-		return copied, nil
+		return typed.Data, nil
+	case TextBulkString:
+		if typed.Null {
+			return nil, fmt.Errorf("protocol: null bulk string cannot be coerced to bytes")
+		}
+		return []byte(typed.Value), nil
 	case SimpleString:
 		return []byte(typed.Value), nil
 	case Integer:

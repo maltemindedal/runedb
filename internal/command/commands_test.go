@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -449,6 +450,249 @@ func TestExecutorExecute(t *testing.T) {
 	}
 }
 
+func TestExecutorDetailedPropagation(t *testing.T) {
+	t.Run("SET returns propagation frame", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.SimpleString{Value: "OK"})
+		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "RuneDB"))
+	})
+
+	t.Run("INCR returns propagation frame", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("INCR", "counter"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 1})
+		assertPropagationFrames(t, result.Propagation, requestValue("INCR", "counter"))
+	})
+
+	t.Run("DEL propagates even when it removes no keys", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("DEL", "missing"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 0})
+		assertPropagationFrames(t, result.Propagation, requestValue("DEL", "missing"))
+	})
+
+	t.Run("replication-origin commands do not re-propagate", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(server.WithReplicationOrigin(context.Background()), requestValue("SET", "name", "replica"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Propagation) != 0 {
+			t.Fatalf("len(result.Propagation) = %d, want 0", len(result.Propagation))
+		}
+	})
+
+	t.Run("EXEC aggregates child SET and DEL propagation", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("DEL", "missing")); err != nil {
+			t.Fatalf("queued DEL error = %v", err)
+		}
+
+		result, err := executor.ExecuteDetailed(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Array{Elements: []protocol.Value{
+			protocol.SimpleString{Value: "OK"},
+			protocol.Integer{Value: 0},
+		}})
+		assertPropagationFrames(t, result.Propagation,
+			requestValue("SET", "name", "RuneDB"),
+			requestValue("DEL", "missing"),
+		)
+	})
+}
+
+func TestExecutorReplicationAcknowledgements(t *testing.T) {
+	t.Run("replica-origin GETACK emits upstream ACK reply", func(t *testing.T) {
+		executor := newTestExecutor()
+		replication := &server.ReplicationState{}
+		replication.AdvanceReplicaOffset(123)
+		executor.SetReplicationState(replication)
+
+		result, err := executor.ExecuteDetailed(server.WithReplicationOrigin(context.Background()), requestValue("REPLCONF", "GETACK", "*"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 0 {
+			t.Fatalf("len(result.Responses) = %d, want 0", len(result.Responses))
+		}
+		if len(result.UpstreamReplies) != 1 {
+			t.Fatalf("len(result.UpstreamReplies) = %d, want 1", len(result.UpstreamReplies))
+		}
+
+		assertValueEqual(t, result.UpstreamReplies[0], requestValue("REPLCONF", "ACK", "123"))
+	})
+
+	t.Run("ACK updates tracked replica offset", func(t *testing.T) {
+		executor := newTestExecutor()
+		registry := server.NewReplicaRegistry()
+		serverConn, replicaConn := net.Pipe()
+		defer func() { _ = serverConn.Close() }()
+		defer func() { _ = replicaConn.Close() }()
+
+		registry.Add(7, serverConn, 6380)
+		executor.SetReplicaRegistry(registry)
+
+		state := &server.ClientState{ID: 7, Authenticated: true}
+		state.PromoteToReplica()
+		ctx := server.WithClientState(context.Background(), state)
+
+		result, err := executor.ExecuteDetailed(ctx, requestValue("REPLCONF", "ACK", "42"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 0 {
+			t.Fatalf("len(result.Responses) = %d, want 0", len(result.Responses))
+		}
+		if got := registry.CountReplicasAtOrAbove(42); got != 1 {
+			t.Fatalf("CountReplicasAtOrAbove(42) = %d, want 1", got)
+		}
+		if got := registry.CountReplicasAtOrAbove(43); got != 0 {
+			t.Fatalf("CountReplicasAtOrAbove(43) = %d, want 0", got)
+		}
+	})
+}
+
+func TestExecutorWait(t *testing.T) {
+	t.Run("WAIT requests ACKs and returns once enough replicas catch up", func(t *testing.T) {
+		executor := newTestExecutor()
+		replication := &server.ReplicationState{}
+		replication.AdvanceMasterOffset(50)
+		executor.SetReplicationState(replication)
+
+		registry := server.NewReplicaRegistry()
+		serverConn, replicaConn := net.Pipe()
+		defer func() { _ = serverConn.Close() }()
+		defer func() { _ = replicaConn.Close() }()
+
+		registry.Add(11, serverConn, 6380)
+		executor.SetReplicaRegistry(registry)
+
+		requestSeen := make(chan struct{})
+		go func() {
+			defer close(requestSeen)
+
+			parser := protocol.NewParser(replicaConn)
+			value, err := parser.Parse()
+			if err != nil {
+				return
+			}
+			request, err := DecodeRequest(value)
+			if err != nil {
+				return
+			}
+			if request.Name != "REPLCONF" || len(request.Args) != 2 || string(request.Args[0]) != "GETACK" || string(request.Args[1]) != "*" {
+				return
+			}
+
+			time.Sleep(20 * time.Millisecond)
+			registry.UpdateAck(11, 50)
+		}()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("WAIT", "1", "200"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		<-requestSeen
+
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 1})
+	})
+
+	t.Run("WAIT times out when replicas do not acknowledge", func(t *testing.T) {
+		executor := newTestExecutor()
+		replication := &server.ReplicationState{}
+		replication.AdvanceMasterOffset(5)
+		executor.SetReplicationState(replication)
+
+		startedAt := time.Now()
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("WAIT", "1", "25"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if time.Since(startedAt) < 20*time.Millisecond {
+			t.Fatalf("WAIT returned too quickly: %v", time.Since(startedAt))
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 0})
+	})
+
+	t.Run("WAIT uses the calling client's last write offset", func(t *testing.T) {
+		executor := newTestExecutor()
+		replication := &server.ReplicationState{}
+		replication.AdvanceMasterOffset(50)
+		executor.SetReplicationState(replication)
+
+		registry := server.NewReplicaRegistry()
+		serverConn, replicaConn := net.Pipe()
+		defer func() { _ = serverConn.Close() }()
+		defer func() { _ = replicaConn.Close() }()
+
+		registry.Add(12, serverConn, 6380)
+		executor.SetReplicaRegistry(registry)
+
+		state := &server.ClientState{ID: 99, Authenticated: true}
+		state.SetLastWriteReplicationOffset(0)
+		ctx := server.WithClientState(context.Background(), state)
+
+		startedAt := time.Now()
+		result, err := executor.ExecuteDetailed(ctx, requestValue("WAIT", "1", "50"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if time.Since(startedAt) > 20*time.Millisecond {
+			t.Fatalf("WAIT took too long for a client with no pending replicated writes: %v", time.Since(startedAt))
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 1})
+	})
+}
+
 func TestExecutorXAddAutoGeneratesIDs(t *testing.T) {
 	executor := newTestExecutor()
 
@@ -461,25 +705,19 @@ func TestExecutorXAddAutoGeneratesIDs(t *testing.T) {
 		t.Fatalf("second XADD error = %v", err)
 	}
 
-	firstBulk, ok := first.(protocol.BulkString)
-	if !ok {
-		t.Fatalf("first response type = %T, want protocol.BulkString", first)
-	}
-	secondBulk, ok := second.(protocol.BulkString)
-	if !ok {
-		t.Fatalf("second response type = %T, want protocol.BulkString", second)
-	}
+	firstIDText := mustBulkStringText(t, first)
+	secondIDText := mustBulkStringText(t, second)
 
-	firstID, err := storageParseStreamIDForTest(string(firstBulk.Data))
+	firstID, err := storageParseStreamIDForTest(firstIDText)
 	if err != nil {
 		t.Fatalf("parse first ID error = %v", err)
 	}
-	secondID, err := storageParseStreamIDForTest(string(secondBulk.Data))
+	secondID, err := storageParseStreamIDForTest(secondIDText)
 	if err != nil {
 		t.Fatalf("parse second ID error = %v", err)
 	}
 	if secondID.milliseconds < firstID.milliseconds || (secondID.milliseconds == firstID.milliseconds && secondID.sequence <= firstID.sequence) {
-		t.Fatalf("second auto-generated ID %q is not greater than first ID %q", string(secondBulk.Data), string(firstBulk.Data))
+		t.Fatalf("second auto-generated ID %q is not greater than first ID %q", secondIDText, firstIDText)
 	}
 }
 
@@ -836,15 +1074,15 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 			t.Fatalf("simple string = %q, want %q", typedGot.Value, typedWant.Value)
 		}
 	case protocol.BulkString:
-		typedGot, ok := got.(protocol.BulkString)
+		gotText, gotNull, ok := bulkStringContent(got)
 		if !ok {
-			t.Fatalf("value type = %T, want %T", got, want)
+			t.Fatalf("value type = %T, want bulk-string-compatible type", got)
 		}
-		if typedGot.Null != typedWant.Null {
-			t.Fatalf("bulk string null = %v, want %v", typedGot.Null, typedWant.Null)
+		if gotNull != typedWant.Null {
+			t.Fatalf("bulk string null = %v, want %v", gotNull, typedWant.Null)
 		}
-		if string(typedGot.Data) != string(typedWant.Data) {
-			t.Fatalf("bulk string = %q, want %q", string(typedGot.Data), string(typedWant.Data))
+		if gotText != string(typedWant.Data) {
+			t.Fatalf("bulk string = %q, want %q", gotText, string(typedWant.Data))
 		}
 	case protocol.Integer:
 		typedGot, ok := got.(protocol.Integer)
@@ -878,5 +1116,41 @@ func assertValueEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 		}
 	default:
 		t.Fatalf("unsupported wanted type %T", want)
+	}
+}
+
+func mustBulkStringText(t *testing.T, value protocol.Value) string {
+	t.Helper()
+
+	text, isNull, ok := bulkStringContent(value)
+	if !ok {
+		t.Fatalf("value type = %T, want bulk-string-compatible type", value)
+	}
+	if isNull {
+		t.Fatal("bulk string unexpectedly null")
+	}
+
+	return text
+}
+
+func bulkStringContent(value protocol.Value) (string, bool, bool) {
+	switch typed := value.(type) {
+	case protocol.BulkString:
+		return string(typed.Data), typed.Null, true
+	case protocol.TextBulkString:
+		return typed.Value, typed.Null, true
+	default:
+		return "", false, false
+	}
+}
+
+func assertPropagationFrames(t *testing.T, got []protocol.Value, want ...protocol.Value) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("len(propagation) = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		assertValueEqual(t, got[i], want[i])
 	}
 }

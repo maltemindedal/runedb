@@ -21,11 +21,14 @@ type ClientState struct {
 	watchRegistry *WatchRegistry
 	watchedKeys   map[string]struct{}
 
-	Authenticated bool
-	InTransaction bool
-	TxFailed      bool
-	TxDirty       bool
-	TxQueue       []QueuedCommand
+	Authenticated     bool
+	Replica           bool
+	ReplicaListenPort int
+	LastWriteOffset   int64
+	InTransaction     bool
+	TxFailed          bool
+	TxDirty           bool
+	TxQueue           []QueuedCommand
 }
 
 type clientStateContextKey struct{}
@@ -75,6 +78,56 @@ func (s *ClientState) SetWatchRegistry(registry *WatchRegistry) {
 	if s.watchedKeys == nil {
 		s.watchedKeys = make(map[string]struct{})
 	}
+}
+
+// SetReplicaListeningPort records the port announced during REPLCONF listening-port.
+func (s *ClientState) SetReplicaListeningPort(port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.ReplicaListenPort = port
+}
+
+// ReplicaListeningPort returns the port announced by the replica, if any.
+func (s *ClientState) ReplicaListeningPort() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.ReplicaListenPort
+}
+
+// PromoteToReplica marks the connection as a replica peer.
+func (s *ClientState) PromoteToReplica() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Replica = true
+}
+
+// IsReplica reports whether the connection has completed replica handshake setup.
+func (s *ClientState) IsReplica() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.Replica
+}
+
+// SetLastWriteReplicationOffset records the replication offset produced by the
+// most recent write command issued by this client.
+func (s *ClientState) SetLastWriteReplicationOffset(offset int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.LastWriteOffset = offset
+}
+
+// LastWriteReplicationOffset returns the replication offset produced by the
+// client's most recent write command.
+func (s *ClientState) LastWriteReplicationOffset() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.LastWriteOffset
 }
 
 // InTransactionActive reports whether the client is currently inside a transaction.

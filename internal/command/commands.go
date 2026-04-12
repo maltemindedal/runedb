@@ -7,8 +7,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/runedb/internal/rdb"
 	"github.com/maltemindedal/runedb/internal/server"
 	"github.com/maltemindedal/runedb/internal/storage"
 )
@@ -51,44 +53,175 @@ func (e *Executor) handleMulti(ctx context.Context, request *Request) (protocol.
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
-func (e *Executor) handleExec(ctx context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleExec(ctx context.Context, request *Request) (server.ExecuteResult, error) {
 	if len(request.Args) != 0 {
-		return nil, wrongNumberOfArgumentsError("EXEC")
+		return server.ExecuteResult{}, wrongNumberOfArgumentsError("EXEC")
 	}
 
 	state, err := clientStateFromContext(ctx)
 	if err != nil {
-		return nil, err
+		return server.ExecuteResult{}, err
 	}
 	if !state.InTransactionActive() {
-		return nil, ErrExecWithoutMultiError()
+		return server.ExecuteResult{}, ErrExecWithoutMultiError()
 	}
 	if state.TransactionDirty() {
 		state.ResetTransaction()
 		state.UnwatchAll()
-		return nil, ErrExecAbortError()
+		return server.ExecuteResult{}, ErrExecAbortError()
 	}
 	if state.TransactionFailed() {
 		state.ResetTransaction()
 		state.UnwatchAll()
-		return protocol.Array{Null: true}, nil
+		return server.SingleResponse(protocol.Array{Null: true}), nil
 	}
 	state.UnwatchAll()
 
 	queued := state.DrainTransaction()
 	responses := make([]protocol.Value, 0, len(queued))
+	propagation := make([]protocol.Value, 0, len(queued))
 	for _, queuedCommand := range queued {
-		response, execErr := e.executeRequest(ctx, &Request{Name: queuedCommand.Name, Args: queuedCommand.Args}, false)
+		result, execErr := e.executeRequestDetailed(ctx, &Request{Name: queuedCommand.Name, Args: queuedCommand.Args}, false)
 		if execErr != nil {
 			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
-				return nil, execErr
+				return server.ExecuteResult{}, execErr
 			}
-			response = responseErrorValue(execErr)
+			responses = append(responses, responseErrorValue(execErr))
+			continue
 		}
-		responses = append(responses, response)
+		if len(result.Responses) != 1 {
+			responses = append(responses, protocol.ErrorValue{Message: "ERR queued command returned an invalid response"})
+			continue
+		}
+		responses = append(responses, result.Responses[0])
+		propagation = append(propagation, result.Propagation...)
 	}
 
-	return protocol.Array{Elements: responses}, nil
+	result := server.SingleResponse(protocol.Array{Elements: responses})
+	result.Propagation = propagation
+	return result, nil
+}
+
+func (e *Executor) handleReplConf(ctx context.Context, request *Request) (server.ExecuteResult, error) {
+	if len(request.Args) != 2 {
+		return server.ExecuteResult{}, wrongNumberOfArgumentsError("REPLCONF")
+	}
+	subcommand := strings.ToUpper(string(request.Args[0]))
+
+	switch subcommand {
+	case "LISTENING-PORT":
+		port, err := parseReplicationPortArgument(request.Args[1])
+		if err != nil {
+			return server.ExecuteResult{}, ErrSyntaxError()
+		}
+
+		if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
+			state.SetReplicaListeningPort(port)
+		}
+
+		return server.SingleResponse(protocol.SimpleString{Value: "OK"}), nil
+	case "GETACK":
+		if !server.IsReplicationOrigin(ctx) || string(request.Args[1]) != "*" {
+			return server.ExecuteResult{}, ErrSyntaxError()
+		}
+
+		ackOffset := int64(0)
+		if e.replication != nil {
+			ackOffset = e.replication.ReplicaOffset()
+		}
+
+		result := server.ExecuteResult{}
+		result.UpstreamReplies = []protocol.Value{propagationFrame(&Request{
+			Name: "REPLCONF",
+			Args: [][]byte{[]byte("ACK"), []byte(strconv.FormatInt(ackOffset, 10))},
+		})}
+		return result, nil
+	case "ACK":
+		ackOffset, err := parseIntegerArgument(request.Args[1])
+		if err != nil || ackOffset < 0 {
+			return server.ExecuteResult{}, ErrSyntaxError()
+		}
+
+		if state, ok := server.ClientStateFromContext(ctx); ok && state != nil && state.IsReplica() && e.replicaPeers != nil {
+			e.replicaPeers.UpdateAck(state.ID, ackOffset)
+		}
+
+		return server.ExecuteResult{}, nil
+	default:
+		return server.ExecuteResult{}, ErrSyntaxError()
+	}
+}
+
+func (e *Executor) handlePSync(ctx context.Context, request *Request) (server.ExecuteResult, error) {
+	if len(request.Args) != 2 {
+		return server.ExecuteResult{}, wrongNumberOfArgumentsError("PSYNC")
+	}
+	if string(request.Args[0]) != "?" || string(request.Args[1]) != "-1" {
+		return server.ExecuteResult{}, ErrSyntaxError()
+	}
+	if e.replication == nil || e.replication.MasterReplicationID == "" {
+		return server.ExecuteResult{}, fmt.Errorf("replication state unavailable")
+	}
+
+	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
+		state.PromoteToReplica()
+	}
+
+	result := server.MultiResponse(
+		protocol.SimpleString{Value: fmt.Sprintf("FULLRESYNC %s 0", e.replication.MasterReplicationID)},
+		protocol.BulkString{Data: rdb.EmptySnapshot()},
+	)
+	result.RegisterReplica = true
+	return result, nil
+}
+
+func (e *Executor) handleWait(ctx context.Context, request *Request) (server.ExecuteResult, error) {
+	if len(request.Args) != 2 {
+		return server.ExecuteResult{}, wrongNumberOfArgumentsError("WAIT")
+	}
+
+	replicas, err := parseIntegerArgument(request.Args[0])
+	if err != nil || replicas < 0 {
+		return server.ExecuteResult{}, ErrValueNotIntegerError()
+	}
+	timeoutMillis, err := parseIntegerArgument(request.Args[1])
+	if err != nil || timeoutMillis < 0 {
+		return server.ExecuteResult{}, ErrValueNotIntegerError()
+	}
+
+	targetOffset := int64(0)
+	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
+		targetOffset = state.LastWriteReplicationOffset()
+	} else if e.replication != nil {
+		targetOffset = e.replication.MasterOffset()
+	}
+
+	ackedReplicas := e.countReplicasAtOrAbove(targetOffset)
+	if ackedReplicas >= int(replicas) || timeoutMillis == 0 {
+		return server.SingleResponse(protocol.Integer{Value: int64(ackedReplicas)}), nil
+	}
+
+	if err := e.requestReplicaAcknowledgements(); err != nil {
+		return server.ExecuteResult{}, err
+	}
+
+	timer := time.NewTimer(time.Duration(timeoutMillis) * time.Millisecond)
+	defer timer.Stop()
+
+	for {
+		ackedReplicas, notified := e.countReplicasAtOrAboveWithNotify(targetOffset)
+		if ackedReplicas >= int(replicas) {
+			return server.SingleResponse(protocol.Integer{Value: int64(ackedReplicas)}), nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return server.ExecuteResult{}, ctx.Err()
+		case <-timer.C:
+			return server.SingleResponse(protocol.Integer{Value: int64(e.countReplicasAtOrAbove(targetOffset))}), nil
+		case <-notified:
+		}
+	}
 }
 
 func (e *Executor) handleDiscard(ctx context.Context, request *Request) (protocol.Value, error) {
@@ -394,7 +527,7 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 	}
 
 	e.touchWatchKeys(string(request.Args[0]))
-	return protocol.BulkString{Data: []byte(id)}, nil
+	return protocol.TextBulkString{Value: id}, nil
 }
 
 func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Value, error) {
@@ -426,22 +559,22 @@ func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Va
 func listResponse(values [][]byte) protocol.Array {
 	elements := make([]protocol.Value, 0, len(values))
 	for _, value := range values {
-		elements = append(elements, protocol.BulkString{Data: clone(value)})
+		elements = append(elements, protocol.BulkString{Data: value})
 	}
 
 	return protocol.Array{Elements: elements}
 }
 
-func zsetResponse(entries []storage.ZSetEntry, withScores bool) protocol.Array {
+func zsetResponse(entries []storage.ZSetRangeEntry, withScores bool) protocol.Array {
 	elements := make([]protocol.Value, 0, len(entries))
 	if withScores {
 		elements = make([]protocol.Value, 0, len(entries)*2)
 	}
 
 	for _, entry := range entries {
-		elements = append(elements, protocol.BulkString{Data: clone(entry.Member)})
+		elements = append(elements, protocol.TextBulkString{Value: entry.Member})
 		if withScores {
-			elements = append(elements, protocol.BulkString{Data: formatFloatScore(entry.Score)})
+			elements = append(elements, protocol.TextBulkString{Value: formatFloatScore(entry.Score)})
 		}
 	}
 
@@ -456,14 +589,14 @@ func streamReadResponse(key []byte, entries []storage.StreamEntry) protocol.Arra
 	streamEntries := make([]protocol.Value, 0, len(entries))
 	for _, entry := range entries {
 		streamEntries = append(streamEntries, protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: []byte(entry.ID)},
+			protocol.TextBulkString{Value: entry.ID},
 			listResponse(entry.Values),
 		}})
 	}
 
 	return protocol.Array{Elements: []protocol.Value{
 		protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: clone(key)},
+			protocol.BulkString{Data: key},
 			protocol.Array{Elements: streamEntries},
 		}},
 	}}
@@ -487,8 +620,20 @@ func parseFloatArgument(raw []byte) (float64, error) {
 	return value, nil
 }
 
-func formatFloatScore(score float64) []byte {
-	return []byte(strconv.FormatFloat(score, 'g', -1, 64))
+func formatFloatScore(score float64) string {
+	return strconv.FormatFloat(score, 'g', -1, 64)
+}
+
+func parseReplicationPortArgument(raw []byte) (int, error) {
+	port, err := strconv.Atoi(string(raw))
+	if err != nil {
+		return 0, err
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %d", port)
+	}
+
+	return port, nil
 }
 
 func clone(value []byte) []byte {
@@ -512,4 +657,46 @@ func (e *Executor) touchWatchKeys(keys ...string) {
 	}
 
 	e.watchRegistry.Touch(keys...)
+}
+
+func (e *Executor) countReplicasAtOrAbove(targetOffset int64) int {
+	if e.replicaPeers == nil {
+		return 0
+	}
+
+	return e.replicaPeers.CountReplicasAtOrAbove(targetOffset)
+}
+
+func (e *Executor) countReplicasAtOrAboveWithNotify(targetOffset int64) (int, <-chan struct{}) {
+	if e.replicaPeers == nil {
+		return 0, nil
+	}
+
+	return e.replicaPeers.CountReplicasAtOrAboveWithNotify(targetOffset)
+}
+
+func (e *Executor) requestReplicaAcknowledgements() error {
+	if e.replicaPeers == nil {
+		return nil
+	}
+
+	request := propagationFrame(&Request{Name: "REPLCONF", Args: [][]byte{[]byte("GETACK"), []byte("*")}})
+	encoded, err := protocol.Encode(request)
+	if err != nil {
+		return fmt.Errorf("encode REPLCONF GETACK: %w", err)
+	}
+	if e.replication != nil {
+		e.replication.AdvanceMasterOffset(int64(len(encoded)))
+	}
+
+	for _, peer := range e.replicaPeers.Snapshot() {
+		if err := peer.WriteEncoded(encoded); err != nil {
+			e.logger.Warn("failed to request replica ACK", "replica_id", peer.ID, "error", err)
+			if closeErr := e.replicaPeers.RemoveAndClose(peer.ID); closeErr != nil {
+				e.logger.Debug("failed to close replica after ACK request failure", "replica_id", peer.ID, "error", closeErr)
+			}
+		}
+	}
+
+	return nil
 }

@@ -1,22 +1,36 @@
 package storage
 
-import "sync"
+import (
+	"container/list"
+	"sync"
+)
 
 type listWaiters struct {
 	mu      sync.Mutex
-	waiters map[string][]chan struct{}
+	waiters map[string]*waiterQueue
+}
+
+type waiterQueue struct {
+	order *list.List
+	index map[chan struct{}]*list.Element
 }
 
 func newListWaiters() *listWaiters {
-	return &listWaiters{waiters: make(map[string][]chan struct{})}
+	return &listWaiters{waiters: make(map[string]*waiterQueue)}
 }
 
 func (w *listWaiters) subscribe(key string) chan struct{} {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	queue := w.waiters[key]
+	if queue == nil {
+		queue = &waiterQueue{order: list.New(), index: make(map[chan struct{}]*list.Element)}
+		w.waiters[key] = queue
+	}
+
 	ch := make(chan struct{}, 1)
-	w.waiters[key] = append(w.waiters[key], ch)
+	queue.index[ch] = queue.order.PushBack(ch)
 	return ch
 }
 
@@ -24,36 +38,37 @@ func (w *listWaiters) unsubscribe(key string, ch chan struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	waiters := w.waiters[key]
-	for i, waiter := range waiters {
-		if waiter != ch {
-			continue
-		}
-
-		waiters = append(waiters[:i], waiters[i+1:]...)
-		if len(waiters) == 0 {
-			delete(w.waiters, key)
-		} else {
-			w.waiters[key] = waiters
-		}
+	queue := w.waiters[key]
+	if queue == nil {
 		return
+	}
+
+	element, ok := queue.index[ch]
+	if !ok {
+		return
+	}
+
+	queue.order.Remove(element)
+	delete(queue.index, ch)
+	if queue.order.Len() == 0 {
+		delete(w.waiters, key)
 	}
 }
 
 func (w *listWaiters) notifyOne(key string) {
 	w.mu.Lock()
-	waiters := w.waiters[key]
-	if len(waiters) == 0 {
+	queue := w.waiters[key]
+	if queue == nil || queue.order.Len() == 0 {
 		w.mu.Unlock()
 		return
 	}
 
-	ch := waiters[0]
-	remaining := append(waiters[:0:0], waiters[1:]...)
-	if len(remaining) == 0 {
+	front := queue.order.Front()
+	ch := front.Value.(chan struct{})
+	queue.order.Remove(front)
+	delete(queue.index, ch)
+	if queue.order.Len() == 0 {
 		delete(w.waiters, key)
-	} else {
-		w.waiters[key] = remaining
 	}
 	w.mu.Unlock()
 
