@@ -142,11 +142,11 @@ Handle complex, multi-step operations safely.
 - [x] If a watching client is found, mark their connection state `TxFailed = true`
 - [x] When a client calls `EXEC`, if `TxFailed` is `true`, abort the transaction and return a Null Array: `*-1\r\n`
 
-### Phase 4: Distributed Systems & High Availability — **Partial**
+### Phase 4: Distributed Systems & High Availability — **Done**
 
 Implement the Redis replication protocol.
 
-#### RDB Persistence (Disk I/O) — **Done for startup loading scope**
+#### RDB Persistence (Disk I/O) — **Done**
 
 - [x] Parse the `.rdb` binary format on server startup
 - [x] Read the 9-byte magic string `REDIS0011`
@@ -155,27 +155,27 @@ Implement the Redis replication protocol.
 
 Current implementation scope: startup-time loading via `--rdb`, DB `0` only, and string values only. Unsupported databases or value types fail fast during startup.
 
-#### Master / Replica Handshake — **Not done**
+#### Master / Replica Handshake — **Done**
 
-- [ ] When acting as a **Replica**:
-  - [ ] Connect to the Master's TCP port
-  - [ ] Send `PING`, `REPLCONF listening-port <port>`, and `PSYNC ? -1`
-- [ ] When acting as a **Master**:
-  - [ ] Respond to `PSYNC` with `+FULLRESYNC <master_replid> 0\r\n`
-  - [ ] Send an empty RDB file over the socket as a heavily formatted Bulk String
+- [x] When acting as a **Replica**:
+  - [x] Connect to the Master's TCP port
+  - [x] Send `PING`, `REPLCONF listening-port <port>`, and `PSYNC ? -1`
+- [x] When acting as a **Master**:
+  - [x] Respond to `PSYNC` with `+FULLRESYNC <master_replid> 0\r\n`
+  - [x] Send an empty RDB file over the socket as a heavily formatted Bulk String
 
-#### Command Propagation — **Not done**
+#### Command Propagation — **Done**
 
-- [ ] The Master must maintain a list of active Replica TCP connections
-- [ ] Whenever a state-mutating command (`SET`, `DEL`) is executed successfully, the Master encodes it back into RESP and writes it to every Replica's network socket
+- [x] The Master must maintain a list of active Replica TCP connections
+- [x] Whenever a state-mutating command (`SET`, `DEL`) is executed successfully, the Master encodes it back into RESP and writes it to every Replica's network socket
 
-#### Synchronization (`WAIT <numreplicas> <timeout>`) — **Not done**
+#### Synchronization (`WAIT <numreplicas> <timeout>`) — **Done**
 
-- [ ] Master must track the replication offset (number of bytes of commands sent)
-- [ ] Master pauses the client's goroutine
-- [ ] Master sends `REPLCONF GETACK *` to replicas
-- [ ] Replicas reply with `REPLCONF ACK <offset>`
-- [ ] Master resumes the client when `<numreplicas>` have reported an offset greater than or equal to the Master's offset, or when `<timeout>` is reached
+- [x] Master must track the replication offset (number of bytes of commands sent)
+- [x] Master pauses the client's goroutine
+- [x] Master sends `REPLCONF GETACK *` to replicas
+- [x] Replicas reply with `REPLCONF ACK <offset>`
+- [x] Master resumes the client when `<numreplicas>` have reported an offset greater than or equal to the Master's offset, or when `<timeout>` is reached
 
 ### Phase 5: Pub/Sub & Security — **Partial**
 

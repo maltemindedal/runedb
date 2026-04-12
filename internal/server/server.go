@@ -16,11 +16,19 @@ import (
 )
 
 type executor interface {
-	Execute(context.Context, protocol.Value) (protocol.Value, error)
+	ExecuteDetailed(context.Context, protocol.Value) (ExecuteResult, error)
 }
 
 type watchRegistryProvider interface {
 	WatchRegistry() *WatchRegistry
+}
+
+type replicationStateSetter interface {
+	SetReplicationState(*ReplicationState)
+}
+
+type replicaRegistrySetter interface {
+	SetReplicaRegistry(*ReplicaRegistry)
 }
 
 // Server owns the TCP listener, active clients, and command execution pipeline.
@@ -30,10 +38,15 @@ type Server struct {
 	store         *storage.Store
 	executor      executor
 	registry      *Registry
+	replicaPeers  *ReplicaRegistry
 	watchRegistry *WatchRegistry
+	replication   *ReplicationState
 
 	clientStates   map[uint64]*ClientState
 	clientStatesMu sync.RWMutex
+
+	upstreamConn   net.Conn
+	upstreamConnMu sync.Mutex
 
 	listener     net.Listener
 	listenerMu   sync.RWMutex
@@ -49,10 +62,21 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 		store:        store,
 		executor:     executor,
 		registry:     NewRegistry(),
+		replicaPeers: NewReplicaRegistry(),
+		replication:  newReplicationState(),
 		clientStates: make(map[uint64]*ClientState),
+	}
+	if store != nil {
+		store.SetLogger(logger)
 	}
 	if provider, ok := executor.(watchRegistryProvider); ok {
 		srv.watchRegistry = provider.WatchRegistry()
+	}
+	if setter, ok := executor.(replicationStateSetter); ok {
+		setter.SetReplicationState(srv.replication)
+	}
+	if setter, ok := executor.(replicaRegistrySetter); ok {
+		setter.SetReplicaRegistry(srv.replicaPeers)
 	}
 
 	return srv
@@ -60,6 +84,12 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 
 // ListenAndServe starts the TCP listener and blocks until shutdown.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	if s.cfg.IsReplica() {
+		if _, err := s.cfg.ReplicaAddress(); err != nil {
+			return fmt.Errorf("server: validate replica configuration: %w", err)
+		}
+	}
+
 	if s.cfg.RDBPath != "" {
 		startedAt := time.Now()
 		stats, err := rdb.LoadFile(s.cfg.RDBPath, s.store)
@@ -86,6 +116,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	s.logger.Info("RuneDB listening", "address", listener.Addr().String())
 	s.store.StartEviction(ctx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize)
+	if s.cfg.IsReplica() {
+		s.handlerWG.Add(1)
+		go s.startReplicaLink(ctx, listener.Addr().String())
+	}
 
 	stopShutdown := context.AfterFunc(ctx, s.shutdown)
 	defer stopShutdown()
@@ -138,13 +172,19 @@ func (s *Server) setListener(listener net.Listener) {
 
 func (s *Server) shutdown() {
 	s.shutdownOnce.Do(func() {
+		s.closeUpstreamConn()
+
 		s.listenerMu.RLock()
 		listener := s.listener
 		s.listenerMu.RUnlock()
 		if listener != nil {
-			_ = listener.Close()
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				s.logger.Debug("failed to close listener during shutdown", "error", err)
+			}
 		}
-		s.registry.CloseAll()
+		if err := s.registry.CloseAll(); err != nil {
+			s.logger.Debug("failed to close one or more client connections during shutdown", "error", err)
+		}
 		s.clearClientStates()
 	})
 }
@@ -193,4 +233,9 @@ func (s *Server) clearClientStates() {
 	for _, state := range states {
 		state.UnwatchAll()
 	}
+}
+
+// ReplicaCount returns the number of replica peers connected to this server.
+func (s *Server) ReplicaCount() int {
+	return s.replicaPeers.Count()
 }

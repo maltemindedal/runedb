@@ -17,6 +17,18 @@ func Encode(value Value) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
+// EncodeValues serializes multiple RESP values into a single wire payload.
+func EncodeValues(values []Value) ([]byte, error) {
+	var buffer bytes.Buffer
+	for _, value := range values {
+		if err := WriteValue(&buffer, value); err != nil {
+			return nil, err
+		}
+	}
+
+	return buffer.Bytes(), nil
+}
+
 // WriteValue writes a RESP value to the provided writer.
 func WriteValue(writer io.Writer, value Value) error {
 	switch typed := value.(type) {

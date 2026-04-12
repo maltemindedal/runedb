@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net"
 	"sync"
 )
@@ -44,7 +45,7 @@ func (r *Registry) Count() int {
 }
 
 // CloseAll closes every tracked client connection.
-func (r *Registry) CloseAll() {
+func (r *Registry) CloseAll() error {
 	r.mu.Lock()
 	clients := make([]net.Conn, 0, len(r.clients))
 	for id, conn := range r.clients {
@@ -53,7 +54,12 @@ func (r *Registry) CloseAll() {
 	}
 	r.mu.Unlock()
 
+	var closeErr error
 	for _, conn := range clients {
-		_ = conn.Close()
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			closeErr = errors.Join(closeErr, err)
+		}
 	}
+
+	return closeErr
 }

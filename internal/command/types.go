@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -20,12 +21,27 @@ type Request struct {
 // Handler executes a command against the current server state.
 type Handler func(context.Context, *Request) (protocol.Value, error)
 
+// DetailedHandler executes a command that may emit multiple RESP frames.
+type DetailedHandler func(context.Context, *Request) (server.ExecuteResult, error)
+
+type commandValidator func(*Request) error
+
+type commandSpec struct {
+	handler            Handler
+	detailed           DetailedHandler
+	validate           commandValidator
+	transactionControl bool
+	propagates         bool
+}
+
 // Executor routes protocol frames to concrete command handlers.
 type Executor struct {
 	store         *storage.Store
 	logger        *slog.Logger
 	watchRegistry *server.WatchRegistry
-	handlers      map[string]Handler
+	commands      map[string]commandSpec
+	replication   *server.ReplicationState
+	replicaPeers  *server.ReplicaRegistry
 }
 
 // NewExecutor constructs a command executor with the currently supported command set.
@@ -35,26 +51,7 @@ func NewExecutor(store *storage.Store, logger *slog.Logger) *Executor {
 		logger:        logger,
 		watchRegistry: server.NewWatchRegistry(),
 	}
-	executor.handlers = map[string]Handler{
-		"WATCH":   executor.handleWatch,
-		"MULTI":   executor.handleMulti,
-		"EXEC":    executor.handleExec,
-		"DISCARD": executor.handleDiscard,
-		"PING":    executor.handlePing,
-		"ECHO":    executor.handleEcho,
-		"SET":     executor.handleSet,
-		"GET":     executor.handleGet,
-		"DEL":     executor.handleDel,
-		"INCR":    executor.handleIncr,
-		"LPUSH":   executor.handleLPush,
-		"RPUSH":   executor.handleRPush,
-		"LRANGE":  executor.handleLRange,
-		"BLPOP":   executor.handleBLPop,
-		"ZADD":    executor.handleZAdd,
-		"ZRANGE":  executor.handleZRange,
-		"XADD":    executor.handleXAdd,
-		"XREAD":   executor.handleXRead,
-	}
+	executor.commands = executor.commandSpecs()
 	return executor
 }
 
@@ -63,14 +60,65 @@ func (e *Executor) WatchRegistry() *server.WatchRegistry {
 	return e.watchRegistry
 }
 
+// SetReplicationState injects shared replication metadata from the server.
+func (e *Executor) SetReplicationState(state *server.ReplicationState) {
+	e.replication = state
+}
+
+// SetReplicaRegistry injects the server's live replica registry.
+func (e *Executor) SetReplicaRegistry(registry *server.ReplicaRegistry) {
+	e.replicaPeers = registry
+}
+
 // Execute dispatches a parsed RESP frame to its command handler.
 func (e *Executor) Execute(ctx context.Context, value protocol.Value) (protocol.Value, error) {
-	request, err := DecodeRequest(value)
+	result, err := e.ExecuteDetailed(ctx, value)
 	if err != nil {
 		return nil, err
 	}
+	if len(result.Responses) == 1 {
+		return result.Responses[0], nil
+	}
 
-	return e.executeRequest(ctx, request, true)
+	return nil, fmt.Errorf("command: expected single response, got %d", len(result.Responses))
+}
+
+// ExecuteDetailed dispatches a parsed RESP frame to a handler that may emit multiple responses.
+func (e *Executor) ExecuteDetailed(ctx context.Context, value protocol.Value) (server.ExecuteResult, error) {
+	request, err := DecodeRequest(value)
+	if err != nil {
+		return server.ExecuteResult{}, err
+	}
+
+	return e.executeRequestDetailed(ctx, request, true)
+}
+
+func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request, allowQueue bool) (server.ExecuteResult, error) {
+	if allowQueue {
+		if queued, response, err := e.maybeQueueRequest(ctx, request); queued || err != nil {
+			if response == nil {
+				return server.ExecuteResult{}, err
+			}
+			return server.SingleResponse(response), err
+		}
+	}
+
+	spec, ok := e.command(request.Name)
+	if !ok {
+		return server.ExecuteResult{}, ErrUnknownCommand(request.Name)
+	}
+	if spec.detailed != nil {
+		return spec.detailed(ctx, request)
+	}
+
+	response, err := e.executeRequest(ctx, request, false)
+	if err != nil {
+		return server.ExecuteResult{}, err
+	}
+
+	result := server.SingleResponse(response)
+	result.Propagation = e.propagationFrames(ctx, request)
+	return result, nil
 }
 
 func (e *Executor) executeRequest(ctx context.Context, request *Request, allowQueue bool) (protocol.Value, error) {
@@ -80,148 +128,32 @@ func (e *Executor) executeRequest(ctx context.Context, request *Request, allowQu
 		}
 	}
 
-	handler, ok := e.handlers[request.Name]
+	spec, ok := e.command(request.Name)
 	if !ok {
 		return nil, ErrUnknownCommand(request.Name)
 	}
+	if spec.handler == nil {
+		return nil, fmt.Errorf("command: %s does not support single-response execution", request.Name)
+	}
 
-	return handler(ctx, request)
+	return spec.handler(ctx, request)
 }
 
 func (e *Executor) validateQueueableRequest(request *Request) error {
-	if _, ok := e.handlers[request.Name]; !ok {
+	spec, ok := e.command(request.Name)
+	if !ok {
 		return ErrUnknownCommand(request.Name)
 	}
-
-	switch request.Name {
-	case "WATCH":
-		if len(request.Args) == 0 {
-			return wrongNumberOfArgumentsError("WATCH")
-		}
-	case "MULTI":
-		if len(request.Args) != 0 {
-			return wrongNumberOfArgumentsError("MULTI")
-		}
-	case "EXEC":
-		if len(request.Args) != 0 {
-			return wrongNumberOfArgumentsError("EXEC")
-		}
-	case "DISCARD":
-		if len(request.Args) != 0 {
-			return wrongNumberOfArgumentsError("DISCARD")
-		}
-	case "PING":
-		if len(request.Args) > 1 {
-			return wrongNumberOfArgumentsError("PING")
-		}
-	case "ECHO":
-		if len(request.Args) != 1 {
-			return wrongNumberOfArgumentsError("ECHO")
-		}
-	case "SET":
-		if len(request.Args) < 2 {
-			return wrongNumberOfArgumentsError("SET")
-		}
-		if _, err := storage.ParseExpiryMillis(request.Args[2:]); err != nil {
-			switch err {
-			case storage.ErrSyntax:
-				return ErrSyntaxError()
-			case storage.ErrInvalidExpireTime:
-				return ErrInvalidExpireTimeError()
-			default:
-				return err
-			}
-		}
-	case "GET":
-		if len(request.Args) != 1 {
-			return wrongNumberOfArgumentsError("GET")
-		}
-	case "DEL":
-		if len(request.Args) < 1 {
-			return wrongNumberOfArgumentsError("DEL")
-		}
-	case "INCR":
-		if len(request.Args) != 1 {
-			return wrongNumberOfArgumentsError("INCR")
-		}
-	case "LPUSH":
-		if len(request.Args) < 2 {
-			return wrongNumberOfArgumentsError("LPUSH")
-		}
-	case "RPUSH":
-		if len(request.Args) < 2 {
-			return wrongNumberOfArgumentsError("RPUSH")
-		}
-	case "LRANGE":
-		if len(request.Args) != 3 {
-			return wrongNumberOfArgumentsError("LRANGE")
-		}
-		if _, err := parseIntegerArgument(request.Args[1]); err != nil {
-			return err
-		}
-		if _, err := parseIntegerArgument(request.Args[2]); err != nil {
-			return err
-		}
-	case "BLPOP":
-		if len(request.Args) != 1 {
-			return wrongNumberOfArgumentsError("BLPOP")
-		}
-	case "ZADD":
-		if len(request.Args) < 3 || len(request.Args)%2 == 0 {
-			return wrongNumberOfArgumentsError("ZADD")
-		}
-		for i := 1; i < len(request.Args); i += 2 {
-			if _, err := parseFloatArgument(request.Args[i]); err != nil {
-				return err
-			}
-		}
-	case "ZRANGE":
-		if len(request.Args) != 3 && len(request.Args) != 4 {
-			return wrongNumberOfArgumentsError("ZRANGE")
-		}
-		if len(request.Args) == 4 && !strings.EqualFold(string(request.Args[3]), "WITHSCORES") {
-			return ErrSyntaxError()
-		}
-		if _, err := parseIntegerArgument(request.Args[1]); err != nil {
-			return err
-		}
-		if _, err := parseIntegerArgument(request.Args[2]); err != nil {
-			return err
-		}
-	case "XADD":
-		if len(request.Args) < 4 || len(request.Args)%2 != 0 {
-			return wrongNumberOfArgumentsError("XADD")
-		}
-		if err := storage.ValidateXAddID(string(request.Args[1])); err != nil {
-			if errors.Is(err, storage.ErrInvalidStreamID) {
-				return ErrInvalidStreamIDError()
-			}
-			return err
-		}
-	case "XREAD":
-		if len(request.Args) == 0 {
-			return wrongNumberOfArgumentsError("XREAD")
-		}
-		if !strings.EqualFold(string(request.Args[0]), "STREAMS") {
-			return ErrSyntaxError()
-		}
-		if len(request.Args) != 3 {
-			return ErrSyntaxError()
-		}
-		if err := storage.ValidateXReadID(string(request.Args[2])); err != nil {
-			if errors.Is(err, storage.ErrInvalidStreamID) {
-				return ErrInvalidStreamIDError()
-			}
-			return err
-		}
+	if spec.validate == nil {
+		return nil
 	}
 
-	return nil
+	return spec.validate(request)
 }
 
 func (e *Executor) maybeQueueRequest(ctx context.Context, request *Request) (bool, protocol.Value, error) {
 	state, ok := server.ClientStateFromContext(ctx)
-	if !ok || !state.InTransactionActive() || isTransactionControlCommand(request.Name) {
+	if !ok || !state.InTransactionActive() || e.isTransactionControlCommand(request.Name) {
 		return false, nil, nil
 	}
 	if err := e.validateQueueableRequest(request); err != nil {
@@ -233,15 +165,6 @@ func (e *Executor) maybeQueueRequest(ctx context.Context, request *Request) (boo
 	return true, protocol.SimpleString{Value: "QUEUED"}, nil
 }
 
-func isTransactionControlCommand(name string) bool {
-	switch name {
-	case "WATCH", "MULTI", "EXEC", "DISCARD":
-		return true
-	default:
-		return false
-	}
-}
-
 func responseErrorValue(err error) protocol.ErrorValue {
 	prefix := "ERR"
 
@@ -251,6 +174,29 @@ func responseErrorValue(err error) protocol.ErrorValue {
 	}
 
 	return protocol.ErrorValue{Message: prefix + " " + err.Error()}
+}
+
+func (e *Executor) propagationFrames(ctx context.Context, request *Request) []protocol.Value {
+	if server.IsReplicationOrigin(ctx) {
+		return nil
+	}
+
+	spec, ok := e.command(request.Name)
+	if !ok || !spec.propagates {
+		return nil
+	}
+
+	return []protocol.Value{propagationFrame(request)}
+}
+
+func propagationFrame(request *Request) protocol.Array {
+	elements := make([]protocol.Value, 0, len(request.Args)+1)
+	elements = append(elements, protocol.BulkString{Data: []byte(request.Name)})
+	for _, arg := range request.Args {
+		elements = append(elements, protocol.BulkString{Data: clone(arg)})
+	}
+
+	return protocol.Array{Elements: elements}
 }
 
 // DecodeRequest converts a RESP array into a command request.
@@ -276,4 +222,290 @@ func DecodeRequest(value protocol.Value) (*Request, error) {
 		Name: strings.ToUpper(string(parts[0])),
 		Args: parts[1:],
 	}, nil
+}
+
+func (e *Executor) command(name string) (commandSpec, bool) {
+	spec, ok := e.commands[name]
+	return spec, ok
+}
+
+func (e *Executor) isTransactionControlCommand(name string) bool {
+	spec, ok := e.command(name)
+	return ok && spec.transactionControl
+}
+
+func (e *Executor) commandSpecs() map[string]commandSpec {
+	return map[string]commandSpec{
+		"WATCH": {
+			handler:            e.handleWatch,
+			validate:           validateWatchRequest,
+			transactionControl: true,
+		},
+		"MULTI": {
+			handler:            e.handleMulti,
+			validate:           exactArgsValidator("MULTI", 0),
+			transactionControl: true,
+		},
+		"EXEC": {
+			detailed:           e.handleExec,
+			validate:           exactArgsValidator("EXEC", 0),
+			transactionControl: true,
+		},
+		"DISCARD": {
+			handler:            e.handleDiscard,
+			validate:           exactArgsValidator("DISCARD", 0),
+			transactionControl: true,
+		},
+		"PING": {
+			handler:  e.handlePing,
+			validate: maxArgsValidator("PING", 1),
+		},
+		"ECHO": {
+			handler:  e.handleEcho,
+			validate: exactArgsValidator("ECHO", 1),
+		},
+		"SET": {
+			handler:    e.handleSet,
+			validate:   validateSetRequest,
+			propagates: true,
+		},
+		"GET": {
+			handler:  e.handleGet,
+			validate: exactArgsValidator("GET", 1),
+		},
+		"DEL": {
+			handler:    e.handleDel,
+			validate:   minArgsValidator("DEL", 1),
+			propagates: true,
+		},
+		"INCR": {
+			handler:    e.handleIncr,
+			validate:   exactArgsValidator("INCR", 1),
+			propagates: true,
+		},
+		"LPUSH": {
+			handler:    e.handleLPush,
+			validate:   minArgsValidator("LPUSH", 2),
+			propagates: true,
+		},
+		"RPUSH": {
+			handler:    e.handleRPush,
+			validate:   minArgsValidator("RPUSH", 2),
+			propagates: true,
+		},
+		"LRANGE": {
+			handler:  e.handleLRange,
+			validate: validateLRangeRequest,
+		},
+		"BLPOP": {
+			handler:  e.handleBLPop,
+			validate: exactArgsValidator("BLPOP", 1),
+		},
+		"ZADD": {
+			handler:    e.handleZAdd,
+			validate:   validateZAddRequest,
+			propagates: true,
+		},
+		"ZRANGE": {
+			handler:  e.handleZRange,
+			validate: validateZRangeRequest,
+		},
+		"XADD": {
+			handler:  e.handleXAdd,
+			validate: validateXAddRequest,
+		},
+		"XREAD": {
+			handler:  e.handleXRead,
+			validate: validateXReadRequest,
+		},
+		"REPLCONF": {
+			detailed: e.handleReplConf,
+			validate: validateReplConfRequest,
+		},
+		"PSYNC": {
+			detailed: e.handlePSync,
+			validate: validatePSyncRequest,
+		},
+		"WAIT": {
+			detailed: e.handleWait,
+			validate: validateWaitRequest,
+		},
+	}
+}
+
+func exactArgsValidator(name string, count int) commandValidator {
+	return func(request *Request) error {
+		if len(request.Args) != count {
+			return wrongNumberOfArgumentsError(name)
+		}
+		return nil
+	}
+}
+
+func maxArgsValidator(name string, max int) commandValidator {
+	return func(request *Request) error {
+		if len(request.Args) > max {
+			return wrongNumberOfArgumentsError(name)
+		}
+		return nil
+	}
+}
+
+func minArgsValidator(name string, min int) commandValidator {
+	return func(request *Request) error {
+		if len(request.Args) < min {
+			return wrongNumberOfArgumentsError(name)
+		}
+		return nil
+	}
+}
+
+func validateWatchRequest(request *Request) error {
+	if len(request.Args) == 0 {
+		return wrongNumberOfArgumentsError("WATCH")
+	}
+	return nil
+}
+
+func validateSetRequest(request *Request) error {
+	if len(request.Args) < 2 {
+		return wrongNumberOfArgumentsError("SET")
+	}
+	if _, err := storage.ParseExpiryMillis(request.Args[2:]); err != nil {
+		switch err {
+		case storage.ErrSyntax:
+			return ErrSyntaxError()
+		case storage.ErrInvalidExpireTime:
+			return ErrInvalidExpireTimeError()
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+func validateLRangeRequest(request *Request) error {
+	if len(request.Args) != 3 {
+		return wrongNumberOfArgumentsError("LRANGE")
+	}
+	if _, err := parseIntegerArgument(request.Args[1]); err != nil {
+		return err
+	}
+	if _, err := parseIntegerArgument(request.Args[2]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateZAddRequest(request *Request) error {
+	if len(request.Args) < 3 || len(request.Args)%2 == 0 {
+		return wrongNumberOfArgumentsError("ZADD")
+	}
+	for i := 1; i < len(request.Args); i += 2 {
+		if _, err := parseFloatArgument(request.Args[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateZRangeRequest(request *Request) error {
+	if len(request.Args) != 3 && len(request.Args) != 4 {
+		return wrongNumberOfArgumentsError("ZRANGE")
+	}
+	if len(request.Args) == 4 && !strings.EqualFold(string(request.Args[3]), "WITHSCORES") {
+		return ErrSyntaxError()
+	}
+	if _, err := parseIntegerArgument(request.Args[1]); err != nil {
+		return err
+	}
+	if _, err := parseIntegerArgument(request.Args[2]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateXAddRequest(request *Request) error {
+	if len(request.Args) < 4 || len(request.Args)%2 != 0 {
+		return wrongNumberOfArgumentsError("XADD")
+	}
+	if err := storage.ValidateXAddID(string(request.Args[1])); err != nil {
+		if errors.Is(err, storage.ErrInvalidStreamID) {
+			return ErrInvalidStreamIDError()
+		}
+		return err
+	}
+	return nil
+}
+
+func validateXReadRequest(request *Request) error {
+	if len(request.Args) == 0 {
+		return wrongNumberOfArgumentsError("XREAD")
+	}
+	if !strings.EqualFold(string(request.Args[0]), "STREAMS") {
+		return ErrSyntaxError()
+	}
+	if len(request.Args) != 3 {
+		return ErrSyntaxError()
+	}
+	if err := storage.ValidateXReadID(string(request.Args[2])); err != nil {
+		if errors.Is(err, storage.ErrInvalidStreamID) {
+			return ErrInvalidStreamIDError()
+		}
+		return err
+	}
+	return nil
+}
+
+func validateReplConfRequest(request *Request) error {
+	if len(request.Args) != 2 {
+		return wrongNumberOfArgumentsError("REPLCONF")
+	}
+
+	subcommand := strings.ToUpper(string(request.Args[0]))
+	switch subcommand {
+	case "LISTENING-PORT":
+		if _, err := parseReplicationPortArgument(request.Args[1]); err != nil {
+			return ErrSyntaxError()
+		}
+	case "GETACK":
+		if string(request.Args[1]) != "*" {
+			return ErrSyntaxError()
+		}
+	case "ACK":
+		value, err := parseIntegerArgument(request.Args[1])
+		if err != nil || value < 0 {
+			return ErrSyntaxError()
+		}
+	default:
+		return ErrSyntaxError()
+	}
+
+	return nil
+}
+
+func validatePSyncRequest(request *Request) error {
+	if len(request.Args) != 2 {
+		return wrongNumberOfArgumentsError("PSYNC")
+	}
+	if string(request.Args[0]) != "?" || string(request.Args[1]) != "-1" {
+		return ErrSyntaxError()
+	}
+	return nil
+}
+
+func validateWaitRequest(request *Request) error {
+	if len(request.Args) != 2 {
+		return wrongNumberOfArgumentsError("WAIT")
+	}
+	for _, arg := range request.Args {
+		value, err := parseIntegerArgument(arg)
+		if err != nil {
+			return err
+		}
+		if value < 0 {
+			return ErrValueNotIntegerError()
+		}
+	}
+	return nil
 }

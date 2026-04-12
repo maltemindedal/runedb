@@ -1,5 +1,9 @@
 package storage
 
+import "errors"
+
+var errInvalidStoredValue = errors.New("storage: invalid stored value state")
+
 // ValueKind identifies the logical data shape of a stored value.
 type ValueKind string
 
@@ -43,6 +47,48 @@ type StoredValue struct {
 	Stream    *streamValue
 	ExpiresAt int64
 	Kind      ValueKind
+}
+
+// StringValue returns the string payload for a string value.
+func (v StoredValue) StringValue() ([]byte, error) {
+	if v.Kind != ValueKindString {
+		return nil, ErrWrongType
+	}
+
+	return v.String, nil
+}
+
+// ListValue returns the list payload for a list value.
+func (v StoredValue) ListValue() ([][]byte, error) {
+	if v.Kind != ValueKindList {
+		return nil, ErrWrongType
+	}
+
+	return v.List, nil
+}
+
+// ZSetValue returns the sorted-set payload for a sorted-set value.
+func (v StoredValue) ZSetValue() (*sortedSet, error) {
+	if v.Kind != ValueKindZSet {
+		return nil, ErrWrongType
+	}
+	if v.ZSet == nil {
+		return nil, errInvalidStoredValue
+	}
+
+	return v.ZSet, nil
+}
+
+// StreamValue returns the stream payload for a stream value.
+func (v StoredValue) StreamValue() (*streamValue, error) {
+	if v.Kind != ValueKindStream {
+		return nil, ErrWrongType
+	}
+	if v.Stream == nil {
+		return nil, errInvalidStoredValue
+	}
+
+	return v.Stream, nil
 }
 
 func newStringValue(data []byte, expiresAt int64) StoredValue {

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
@@ -31,11 +32,23 @@ type Store struct {
 	mu      sync.RWMutex
 	data    map[string]StoredValue
 	waiters *listWaiters
+	logger  *slog.Logger
 }
 
 // NewStore constructs an empty Store.
 func NewStore() *Store {
 	return &Store{data: make(map[string]StoredValue), waiters: newListWaiters()}
+}
+
+// SetLogger configures optional structured logging for background store operations.
+func (s *Store) SetLogger(logger *slog.Logger) {
+	if s == nil {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logger = logger
 }
 
 // Set stores a byte slice under the provided key.
@@ -52,11 +65,12 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	if value.Kind != ValueKindString {
-		return nil, true, ErrWrongType
+	data, err := value.StringValue()
+	if err != nil {
+		return nil, true, err
 	}
 
-	return value.String, true, nil
+	return data, true, nil
 }
 
 // Delete removes a key from the store.
@@ -90,11 +104,12 @@ func (s *Store) Increment(key string) (int64, error) {
 		s.data[key] = newStringValue([]byte("1"), 0)
 		return 1, nil
 	}
-	if value.Kind != ValueKindString {
-		return 0, ErrWrongType
+	currentValue, err := value.StringValue()
+	if err != nil {
+		return 0, err
 	}
 
-	current, err := strconv.ParseInt(string(value.String), 10, 64)
+	current, err := strconv.ParseInt(string(currentValue), 10, 64)
 	if err != nil || current == math.MaxInt64 {
 		return 0, ErrValueNotInteger
 	}
@@ -128,18 +143,20 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
-	if value.Kind != ValueKindList {
-		return nil, false, ErrWrongType
+	list, err := value.ListValue()
+	if err != nil {
+		return nil, false, err
 	}
-	if len(value.List) == 0 {
+	if len(list) == 0 {
 		delete(s.data, key)
 		return nil, false, nil
 	}
 
-	item := value.List[0]
-	value.List[0] = nil
-	value.List = value.List[1:]
-	if len(value.List) == 0 {
+	item := list[0]
+	list[0] = nil
+	list = list[1:]
+	value.List = list
+	if len(list) == 0 {
 		delete(s.data, key)
 	} else {
 		s.data[key] = value
@@ -154,16 +171,17 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 	if !ok {
 		return [][]byte{}, nil
 	}
-	if value.Kind != ValueKindList {
-		return nil, ErrWrongType
+	list, err := value.ListValue()
+	if err != nil {
+		return nil, err
 	}
 
-	from, to, ok := normalizeListRange(len(value.List), start, stop)
+	from, to, ok := normalizeListRange(len(list), start, stop)
 	if !ok {
 		return [][]byte{}, nil
 	}
 
-	return value.List[from : to+1], nil
+	return list[from : to+1], nil
 }
 
 // ZAdd inserts or updates one or more sorted-set members and returns the number of newly added members.
@@ -186,10 +204,11 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		expiresAt int64
 	)
 	if ok {
-		if value.Kind != ValueKindZSet {
-			return 0, ErrWrongType
+		var err error
+		set, err = value.ZSetValue()
+		if err != nil {
+			return 0, err
 		}
-		set = value.ZSet
 		expiresAt = value.ExpiresAt
 	} else {
 		set = newSortedSet()
@@ -227,18 +246,19 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 		s.mu.Unlock()
 		return []ZSetRangeEntry{}, nil
 	}
-	if value.Kind != ValueKindZSet {
+	set, err := value.ZSetValue()
+	if err != nil {
 		s.mu.RUnlock()
-		return nil, ErrWrongType
+		return nil, err
 	}
 
-	from, to, ok := normalizeListRange(value.ZSet.len(), start, stop)
+	from, to, ok := normalizeListRange(set.len(), start, stop)
 	if !ok {
 		s.mu.RUnlock()
 		return []ZSetRangeEntry{}, nil
 	}
 
-	entries := value.ZSet.rangeByRank(from, to)
+	entries := set.rangeByRank(from, to)
 	s.mu.RUnlock()
 
 	return entries, nil
@@ -264,10 +284,11 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 		expiresAt int64
 	)
 	if ok {
-		if value.Kind != ValueKindStream {
-			return "", ErrWrongType
+		var err error
+		stream, err = value.StreamValue()
+		if err != nil {
+			return "", err
 		}
-		stream = value.Stream
 		expiresAt = value.ExpiresAt
 	} else {
 		stream = newStream()
@@ -303,12 +324,13 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 		s.mu.Unlock()
 		return []StreamEntry{}, nil
 	}
-	if value.Kind != ValueKindStream {
+	stream, err := value.StreamValue()
+	if err != nil {
 		s.mu.RUnlock()
-		return nil, ErrWrongType
+		return nil, err
 	}
 
-	entries, err := value.Stream.readAfter(rawID)
+	entries, err := stream.readAfter(rawID)
 	s.mu.RUnlock()
 	if err != nil {
 		return nil, err
@@ -333,6 +355,43 @@ func (s *Store) Len() int {
 	defer s.mu.RUnlock()
 
 	return len(s.data)
+}
+
+// ReplaceWith swaps the store contents with a snapshot from another store.
+//
+// The replacement is applied only after the source snapshot has already been
+// materialized, which makes it suitable for FULLRESYNC-style state replacement.
+func (s *Store) ReplaceWith(other *Store) {
+	if s == nil || other == nil {
+		return
+	}
+
+	other.mu.RLock()
+	replacement := make(map[string]StoredValue, len(other.data))
+	for key, value := range other.data {
+		replacement[key] = value
+	}
+	other.mu.RUnlock()
+
+	s.mu.Lock()
+	s.data = replacement
+	s.mu.Unlock()
+}
+
+func (s *Store) logDebug(msg string, args ...any) {
+	if s == nil || s.logger == nil {
+		return
+	}
+
+	s.logger.Debug(msg, args...)
+}
+
+func (s *Store) logError(msg string, args ...any) {
+	if s == nil || s.logger == nil {
+		return
+	}
+
+	s.logger.Error(msg, args...)
 }
 
 func (s *Store) snapshotKeys(limit int) []string {
@@ -392,11 +451,12 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 	var list [][]byte
 	var expiresAt int64
 	if ok {
-		if value.Kind != ValueKindList {
+		var err error
+		list, err = value.ListValue()
+		if err != nil {
 			s.mu.Unlock()
-			return 0, ErrWrongType
+			return 0, err
 		}
-		list = value.List
 		expiresAt = value.ExpiresAt
 	}
 

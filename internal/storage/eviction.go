@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -17,15 +18,26 @@ func (s *Store) StartEviction(ctx context.Context, interval time.Duration, sampl
 	}
 
 	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.logError("background eviction loop panicked", "panic", fmt.Sprint(recovered))
+			}
+		}()
+
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		s.logDebug("background eviction loop started", "interval", interval, "sample_size", sampleSize)
 
 		for {
 			select {
 			case <-ctx.Done():
+				s.logDebug("background eviction loop stopped", "reason", ctx.Err())
 				return
 			case <-ticker.C:
-				s.evictExpiredSample(time.Now().UnixMilli(), sampleSize)
+				removed := s.evictExpiredSample(time.Now().UnixMilli(), sampleSize)
+				if removed > 0 {
+					s.logDebug("background eviction removed expired keys", "removed", removed, "sample_size", sampleSize)
+				}
 			}
 		}
 	}()
