@@ -12,7 +12,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 1:** Done
 - **Phase 2:** Done
 - **Phase 3:** Done
-- **Phase 4:** Partial (`RDB` startup loading is implemented for DB 0 string keys; replication remains not implemented)
+- **Phase 4:** Done (`RDB` startup loading is implemented for DB 0 string keys, and replication handshake/propagation/`WAIT` support is implemented)
 - **Phase 5:** Partial (`--requirepass` / client auth state scaffold exists, but pub/sub and full AUTH flow are not implemented)
 
 ## 1. Executive Summary
@@ -199,7 +199,7 @@ Current implementation scope: startup-time loading via `--rdb`, DB `0` only, and
 
 - [x] **High concurrency performance:** Avoid blocking the main accept loop. Lock contention is minimized, and `GET` uses `RLock()` / `RUnlock()` paths.
 - [~] **Graceful shutdown:** Signal-driven shutdown, listener stop, client cleanup, and handler waiting are implemented; flushing state to `dump.rdb` is not.
-- [~] **Observability:** `log/slog` structured logging is in place and logs connection / parser / response issues; replication-specific observability is not implemented because replication is not implemented.
+- [~] **Observability:** `log/slog` structured logging is in place and logs connection / parser / response issues; replication is implemented, but dedicated replication-specific metrics/logging are still limited.
 
 ## 5. Out of Scope (For V1)
 

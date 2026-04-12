@@ -61,16 +61,34 @@ func (s *Store) Set(key string, value []byte, expiresAt int64) {
 
 // Get fetches a value from the store, passively evicting it if it has expired.
 func (s *Store) Get(key string) ([]byte, bool, error) {
-	value, ok := s.loadValue(key)
+	now := time.Now().UnixMilli()
+
+	s.mu.RLock()
+	value, ok := s.data[key]
 	if !ok {
+		s.mu.RUnlock()
+		return nil, false, nil
+	}
+	if isExpired(value, now) {
+		s.mu.RUnlock()
+
+		s.mu.Lock()
+		value, ok = s.data[key]
+		if ok && isExpired(value, time.Now().UnixMilli()) {
+			delete(s.data, key)
+		}
+		s.mu.Unlock()
 		return nil, false, nil
 	}
 	data, err := value.StringValue()
 	if err != nil {
+		s.mu.RUnlock()
 		return nil, true, err
 	}
+	cloned := cloneBytes(data)
+	s.mu.RUnlock()
 
-	return data, true, nil
+	return cloned, true, nil
 }
 
 // Delete removes a key from the store.
@@ -167,21 +185,40 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 
 // ListRange returns an inclusive range of values from the list stored at key.
 func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
-	value, ok := s.loadValue(key)
+	now := time.Now().UnixMilli()
+
+	s.mu.RLock()
+	value, ok := s.data[key]
 	if !ok {
+		s.mu.RUnlock()
+		return [][]byte{}, nil
+	}
+	if isExpired(value, now) {
+		s.mu.RUnlock()
+
+		s.mu.Lock()
+		value, ok = s.data[key]
+		if ok && isExpired(value, time.Now().UnixMilli()) {
+			delete(s.data, key)
+		}
+		s.mu.Unlock()
 		return [][]byte{}, nil
 	}
 	list, err := value.ListValue()
 	if err != nil {
+		s.mu.RUnlock()
 		return nil, err
 	}
 
 	from, to, ok := normalizeListRange(len(list), start, stop)
 	if !ok {
+		s.mu.RUnlock()
 		return [][]byte{}, nil
 	}
 
-	return list[from : to+1], nil
+	cloned := cloneList(list[from : to+1])
+	s.mu.RUnlock()
+	return cloned, nil
 }
 
 // ZAdd inserts or updates one or more sorted-set members and returns the number of newly added members.

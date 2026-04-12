@@ -133,7 +133,7 @@ Then try:
 - Startup-time RDB loading is available via `--rdb`, currently for DB `0` string keys only.
 - The server is still intentionally RESP2-centric at the command-behavior level, even though RESP3 boolean/null support exists in the protocol layer.
 - `Config.RequirePass` and per-connection client state are scaffolding for future auth/transaction work; full `AUTH`, `MULTI`, `EXEC`, `DISCARD`, and related behavior are not implemented yet.
-- Replication, broader persistence coverage, richer data structures, pub/sub, and full security features remain future milestones.
+- Core replication protocol support exists (`REPLCONF`, `PSYNC`, and `WAIT`), but broader replication completeness, broader persistence coverage, richer data structures, pub/sub, and full security features remain future milestones.
 
 ## Related docs
 
