@@ -517,35 +517,6 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 	return newLen, nil
 }
 
-func (s *Store) loadValue(key string) (StoredValue, bool) {
-	now := time.Now().UnixMilli()
-
-	s.mu.RLock()
-	value, ok := s.data[key]
-	s.mu.RUnlock()
-	if !ok {
-		return StoredValue{}, false
-	}
-
-	if !isExpired(value, now) {
-		return value, true
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	value, ok = s.data[key]
-	if !ok {
-		return StoredValue{}, false
-	}
-	if !isExpired(value, time.Now().UnixMilli()) {
-		return value, true
-	}
-
-	delete(s.data, key)
-	return StoredValue{}, false
-}
-
 func normalizeListRange(length int, start, stop int64) (int, int, bool) {
 	if length == 0 {
 		return 0, 0, false
