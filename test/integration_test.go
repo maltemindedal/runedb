@@ -21,6 +21,7 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -81,6 +82,7 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 	cfg.RequirePass = "secret"
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -146,6 +148,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -240,6 +243,7 @@ func TestServerHandlesSortedSetCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -308,6 +312,7 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -388,6 +393,7 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -459,6 +465,7 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -517,6 +524,7 @@ func TestServerHandlesPubSubCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -607,6 +615,7 @@ func TestServerPubSubDisconnectCleanup(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -686,6 +695,7 @@ func TestServerRejectsEmptyPubSubChannelNames(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()

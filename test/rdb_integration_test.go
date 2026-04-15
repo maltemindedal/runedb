@@ -32,6 +32,7 @@ func TestServerLoadsRDBBeforeServingCommands(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 	cfg.RDBPath = rdbPath
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -84,6 +85,7 @@ func TestServerFailsFastOnCorruptRDB(t *testing.T) {
 	cfg.Host = "127.0.0.1"
 	cfg.Port = 0
 	cfg.LogLevel = "error"
+	cfg.DumpPath = ""
 	cfg.RDBPath = rdbPath
 
 	logger := runedblogger.New(cfg.LogLevel)

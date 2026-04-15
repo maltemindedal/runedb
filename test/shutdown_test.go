@@ -22,6 +22,7 @@ func TestServerShutdownClosesMultipleClients(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -89,6 +90,7 @@ func TestServerShutdownUnblocksBLPop(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -188,6 +190,7 @@ func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	restartCfg.EvictionInterval = 5 * time.Millisecond
 	restartCfg.EvictionSampleSize = 10
 	restartCfg.RDBPath = dumpPath
+	restartCfg.DumpPath = dumpPath
 
 	restartLogger := runedblogger.New(restartCfg.LogLevel)
 	restartStore := storage.NewStore()

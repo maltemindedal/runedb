@@ -29,6 +29,7 @@ func TestServerHandlesMasterReplicaHandshake(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 	cfg.RequirePass = "secret"
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -188,6 +189,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg.LogLevel = "error"
 		cfg.EvictionInterval = 5 * time.Millisecond
 		cfg.EvictionSampleSize = 10
+		cfg.DumpPath = ""
 		cfg.ReplicaOf = masterListener.Addr().String()
 
 		logger := runedblogger.New(cfg.LogLevel)
@@ -338,6 +340,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg.LogLevel = "error"
 		cfg.EvictionInterval = 5 * time.Millisecond
 		cfg.EvictionSampleSize = 10
+		cfg.DumpPath = ""
 		cfg.ReplicaOf = masterListener.Addr().String()
 		cfg.MasterAuth = "secret"
 
@@ -471,6 +474,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg.LogLevel = "debug"
 		cfg.EvictionInterval = 5 * time.Millisecond
 		cfg.EvictionSampleSize = 10
+		cfg.DumpPath = ""
 		cfg.ReplicaOf = masterListener.Addr().String()
 
 		store := storage.NewStore()
@@ -587,6 +591,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg.LogLevel = "debug"
 		cfg.EvictionInterval = 5 * time.Millisecond
 		cfg.EvictionSampleSize = 10
+		cfg.DumpPath = ""
 		cfg.ReplicaOf = masterListener.Addr().String()
 		cfg.MasterAuth = "wrong"
 
@@ -730,6 +735,7 @@ func TestServerReplicaFullResyncReplacesExistingData(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 	cfg.RDBPath = rdbPath
 	cfg.ReplicaOf = masterListener.Addr().String()
 
@@ -865,6 +871,7 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	masterCfg.LogLevel = "error"
 	masterCfg.EvictionInterval = 5 * time.Millisecond
 	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
 
 	logger := runedblogger.New(masterCfg.LogLevel)
 
@@ -888,6 +895,7 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	replicaCfg.LogLevel = "error"
 	replicaCfg.EvictionInterval = 5 * time.Millisecond
 	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
 	replicaCfg.ReplicaOf = masterAddr
 
 	replicaStore := storage.NewStore()
@@ -972,6 +980,7 @@ func TestPublishPropagatesToReplicaSubscribers(t *testing.T) {
 	masterCfg.LogLevel = "error"
 	masterCfg.EvictionInterval = 5 * time.Millisecond
 	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
 
 	logger := runedblogger.New(masterCfg.LogLevel)
 
@@ -995,6 +1004,7 @@ func TestPublishPropagatesToReplicaSubscribers(t *testing.T) {
 	replicaCfg.LogLevel = "error"
 	replicaCfg.EvictionInterval = 5 * time.Millisecond
 	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
 	replicaCfg.ReplicaOf = masterAddr
 
 	replicaStore := storage.NewStore()
@@ -1123,6 +1133,7 @@ func TestWaitReturnsReplicaAcknowledgements(t *testing.T) {
 	masterCfg.LogLevel = "error"
 	masterCfg.EvictionInterval = 5 * time.Millisecond
 	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
 
 	logger := runedblogger.New(masterCfg.LogLevel)
 
@@ -1146,6 +1157,7 @@ func TestWaitReturnsReplicaAcknowledgements(t *testing.T) {
 	replicaCfg.LogLevel = "error"
 	replicaCfg.EvictionInterval = 5 * time.Millisecond
 	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
 	replicaCfg.ReplicaOf = masterAddr
 
 	replicaStore := storage.NewStore()
@@ -1215,6 +1227,7 @@ func TestReplicationStructuredLogs(t *testing.T) {
 	masterCfg.LogLevel = "debug"
 	masterCfg.EvictionInterval = 5 * time.Millisecond
 	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
 
 	masterStore := storage.NewStore()
 	masterExecutor := command.NewExecutor(masterStore, masterLogger)
@@ -1239,6 +1252,7 @@ func TestReplicationStructuredLogs(t *testing.T) {
 	replicaCfg.LogLevel = "debug"
 	replicaCfg.EvictionInterval = 5 * time.Millisecond
 	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
 	replicaCfg.ReplicaOf = masterAddr
 
 	replicaStore := storage.NewStore()
@@ -1326,6 +1340,7 @@ func TestWaitTimesOutWithoutReplicas(t *testing.T) {
 	cfg.LogLevel = "error"
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -1369,6 +1384,7 @@ func TestWaitUsesPerClientReplicationOffset(t *testing.T) {
 	masterCfg.LogLevel = "error"
 	masterCfg.EvictionInterval = 5 * time.Millisecond
 	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
 
 	logger := runedblogger.New(masterCfg.LogLevel)
 
@@ -1392,6 +1408,7 @@ func TestWaitUsesPerClientReplicationOffset(t *testing.T) {
 	replicaCfg.LogLevel = "error"
 	replicaCfg.EvictionInterval = 5 * time.Millisecond
 	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
 	replicaCfg.ReplicaOf = masterAddr
 
 	replicaStore := storage.NewStore()
