@@ -8,9 +8,10 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - RESP parser and writer
 - thread-safe in-memory store with TTL **support**
 - active connection registry for cleaner shutdowns
-- Phase 1 commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `INCR`
+- Commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `INCR`
+- password-gated connections via `--requirepass` and `AUTH <password>`
 - Redis-style execution error prefixes for command failures
-- connection-scoped client state scaffolding for future auth/transactions
+- connection-scoped client state for auth, transactions, pub/sub, and replication
 - multi-client shutdown coverage
 - parser and store contention benchmarks
 - RESP3 boolean/null parsing, encoding, and coercion coverage
@@ -23,7 +24,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - TCP server built on `net.Listen` / `Accept`
 - one goroutine per client connection
 - graceful shutdown through context cancellation and tracked active clients
-- per-connection `ClientState` attached to request contexts for future `AUTH` / transaction support
+- per-connection `ClientState` attached to request contexts for `AUTH`, transactions, pub/sub, and replication state
 
 ### Protocol
 
@@ -49,6 +50,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 ### Commands
 
 - `PING`
+- `AUTH <password>`
 - `ECHO <message>`
 - `SET <key> <value> [EX seconds|PX milliseconds]`
 - `GET <key>`
@@ -132,7 +134,7 @@ Then try:
 - TTLs are normalized to Unix milliseconds internally.
 - Startup-time RDB loading is available via `--rdb`, currently for DB `0` string keys only.
 - The server is still intentionally RESP2-centric at the command-behavior level, even though RESP3 boolean/null support exists in the protocol layer.
-- `Config.RequirePass` and per-connection client state are scaffolding for future auth/transaction work; full `AUTH`, `MULTI`, `EXEC`, `DISCARD`, and related behavior are not implemented yet.
+- `--requirepass` and one-argument `AUTH <password>` are implemented. Unauthenticated clients may still use `PING`, but protected masters now require authenticated replica handshakes before `REPLCONF` / `PSYNC`; replica mode can supply that password with `--masterauth`.
 - Core replication protocol support exists (`REPLCONF`, `PSYNC`, and `WAIT`), but broader replication completeness, broader persistence coverage, richer data structures, pub/sub, and full security features remain future milestones.
 
 ## Related docs

@@ -74,6 +74,71 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	}
 }
 
+func TestServerRequiresAuthWhenConfigured(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.RequirePass = "secret"
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	authedConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) authed client error = %v", addr, err)
+	}
+	defer func() { _ = authedConn.Close() }()
+	authedParser := protocol.NewParser(authedConn)
+
+	blockedConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) blocked client error = %v", addr, err)
+	}
+	defer func() { _ = blockedConn.Close() }()
+	blockedParser := protocol.NewParser(blockedConn)
+
+	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "PONG"}, "PING")
+	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("hello")}, "PING", "hello")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "MULTI")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "SUBSCRIBE", "news")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "WRONGPASS invalid username-password pair or user is disabled."}, "AUTH", "wrong")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
+	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "OK"}, "AUTH", "secret")
+	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "WRONGPASS invalid username-password pair or user is disabled."}, "AUTH", "wrong")
+	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "REPLCONF", "listening-port", "6380")
+	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "PSYNC", "?", "-1")
+	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
 func TestServerHandlesListCommands(t *testing.T) {
 	cfg := config.Default()
 	cfg.Host = "127.0.0.1"
@@ -445,6 +510,220 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 	}
 }
 
+func TestServerHandlesPubSubCommands(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	subscriberConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) subscriber error = %v", addr, err)
+	}
+	defer func() { _ = subscriberConn.Close() }()
+	subscriberParser := protocol.NewParser(subscriberConn)
+
+	publisherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
+	}
+	defer func() { _ = publisherConn.Close() }()
+	publisherParser := protocol.NewParser(publisherConn)
+
+	if err := protocol.WriteValue(subscriberConn, request("SUBSCRIBE", "updates")); err != nil {
+		t.Fatalf("WriteValue(SUBSCRIBE) error = %v", err)
+	}
+	got, err := subscriberParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() SUBSCRIBE ack error = %v", err)
+	}
+	assertValuesEqual(t, got, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "subscribe"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.Integer{Value: 1},
+	}})
+
+	assertCommandResponse(t, publisherConn, publisherParser, protocol.Integer{Value: 1}, "PUBLISH", "updates", "hello")
+	message, err := subscriberParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() pushed pubsub message error = %v", err)
+	}
+	assertValuesEqual(t, message, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "message"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.BulkString{Data: []byte("hello")},
+	}})
+
+	assertCommandResponse(t, subscriberConn, subscriberParser, protocol.BulkString{Data: []byte("still-here")}, "PING", "still-here")
+	assertCommandResponse(t, subscriberConn, subscriberParser, protocol.ErrorValue{Message: "ERR only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context"}, "GET", "updates")
+
+	if err := protocol.WriteValue(subscriberConn, request("UNSUBSCRIBE")); err != nil {
+		t.Fatalf("WriteValue(UNSUBSCRIBE) error = %v", err)
+	}
+	got, err = subscriberParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() UNSUBSCRIBE ack error = %v", err)
+	}
+	assertValuesEqual(t, got, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "unsubscribe"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.Integer{Value: 0},
+	}})
+
+	assertCommandResponse(t, subscriberConn, subscriberParser, protocol.SimpleString{Value: "OK"}, "SET", "updates", "value")
+	assertCommandResponse(t, publisherConn, publisherParser, protocol.Integer{Value: 0}, "PUBLISH", "updates", "bye")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func TestServerPubSubDisconnectCleanup(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	subscriberConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) subscriber error = %v", addr, err)
+	}
+	subscriberParser := protocol.NewParser(subscriberConn)
+	if err := protocol.WriteValue(subscriberConn, request("SUBSCRIBE", "updates")); err != nil {
+		t.Fatalf("WriteValue(SUBSCRIBE) error = %v", err)
+	}
+	if _, err := subscriberParser.Parse(); err != nil {
+		t.Fatalf("Parse() SUBSCRIBE ack error = %v", err)
+	}
+	if err := subscriberConn.Close(); err != nil {
+		t.Fatalf("Close() subscriber error = %v", err)
+	}
+
+	publisherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
+	}
+	defer func() { _ = publisherConn.Close() }()
+	publisherParser := protocol.NewParser(publisherConn)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("subscriber cleanup did not complete before timeout")
+		}
+
+		if err := protocol.WriteValue(publisherConn, request("PUBLISH", "updates", "hello")); err != nil {
+			t.Fatalf("WriteValue(PUBLISH) error = %v", err)
+		}
+		got, err := publisherParser.Parse()
+		if err != nil {
+			t.Fatalf("Parse() PUBLISH response error = %v", err)
+		}
+		integer, ok := got.(protocol.Integer)
+		if !ok {
+			t.Fatalf("PUBLISH response type = %T, want protocol.Integer", got)
+		}
+		if integer.Value == 0 {
+			break
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func TestServerRejectsEmptyPubSubChannelNames(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	parser := protocol.NewParser(conn)
+
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR syntax error"}, "SUBSCRIBE", "")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR syntax error"}, "PUBLISH", "", "hello")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR syntax error"}, "UNSUBSCRIBE", "")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "PONG"}, "PING")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
 func waitForAddr(t *testing.T, srv *server.Server) string {
 	t.Helper()
 
@@ -500,15 +779,26 @@ func assertValuesEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 			t.Fatalf("simple string = %q, want %q", typedGot.Value, typedWant.Value)
 		}
 	case protocol.BulkString:
-		typedGot, ok := got.(protocol.BulkString)
+		gotText, gotNull, ok := integrationBulkStringContent(got)
 		if !ok {
-			t.Fatalf("response type = %T, want %T", got, want)
+			t.Fatalf("response type = %T, want bulk-string-compatible type", got)
 		}
-		if typedGot.Null != typedWant.Null {
-			t.Fatalf("bulk null = %v, want %v", typedGot.Null, typedWant.Null)
+		if gotNull != typedWant.Null {
+			t.Fatalf("bulk null = %v, want %v", gotNull, typedWant.Null)
 		}
-		if string(typedGot.Data) != string(typedWant.Data) {
-			t.Fatalf("bulk string = %q, want %q", string(typedGot.Data), string(typedWant.Data))
+		if gotText != string(typedWant.Data) {
+			t.Fatalf("bulk string = %q, want %q", gotText, string(typedWant.Data))
+		}
+	case protocol.TextBulkString:
+		gotText, gotNull, ok := integrationBulkStringContent(got)
+		if !ok {
+			t.Fatalf("response type = %T, want bulk-string-compatible type", got)
+		}
+		if gotNull != typedWant.Null {
+			t.Fatalf("bulk null = %v, want %v", gotNull, typedWant.Null)
+		}
+		if gotText != typedWant.Value {
+			t.Fatalf("bulk string = %q, want %q", gotText, typedWant.Value)
 		}
 	case protocol.Integer:
 		typedGot, ok := got.(protocol.Integer)
@@ -542,5 +832,16 @@ func assertValuesEqual(t *testing.T, got protocol.Value, want protocol.Value) {
 		}
 	default:
 		t.Fatalf("unsupported wanted type %T", want)
+	}
+}
+
+func integrationBulkStringContent(value protocol.Value) (string, bool, bool) {
+	switch typed := value.(type) {
+	case protocol.BulkString:
+		return string(typed.Data), typed.Null, true
+	case protocol.TextBulkString:
+		return typed.Value, typed.Null, true
+	default:
+		return "", false, false
 	}
 }

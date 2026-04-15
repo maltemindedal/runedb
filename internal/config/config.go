@@ -16,7 +16,9 @@ type Config struct {
 	EvictionInterval   time.Duration
 	EvictionSampleSize int
 	RDBPath            string
+	DumpPath           string
 	ReplicaOf          string
+	MasterAuth         string
 	RequirePass        string
 }
 
@@ -29,7 +31,9 @@ func Default() Config {
 		EvictionInterval:   100 * time.Millisecond,
 		EvictionSampleSize: 20,
 		RDBPath:            "",
+		DumpPath:           "dump.rdb",
 		ReplicaOf:          "",
+		MasterAuth:         "",
 	}
 }
 
@@ -43,8 +47,10 @@ func ParseFlags() Config {
 	flag.DurationVar(&cfg.EvictionInterval, "eviction-interval", cfg.EvictionInterval, "interval for active TTL eviction")
 	flag.IntVar(&cfg.EvictionSampleSize, "eviction-sample-size", cfg.EvictionSampleSize, "number of keys to sample on each eviction pass")
 	flag.StringVar(&cfg.RDBPath, "rdb", cfg.RDBPath, "optional path to an RDB file to load before accepting TCP connections")
+	flag.StringVar(&cfg.DumpPath, "dump", cfg.DumpPath, "path to write an RDB snapshot during graceful shutdown")
 	flag.StringVar(&cfg.ReplicaOf, "replicaof", cfg.ReplicaOf, "optional master address in host:port form for replica mode")
-	flag.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password requirement placeholder for future AUTH support")
+	flag.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "optional password used by replica mode to AUTH against a protected master")
+	flag.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password required for AUTH-protected client commands")
 	flag.Parse()
 
 	return cfg

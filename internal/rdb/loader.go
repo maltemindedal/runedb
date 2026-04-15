@@ -128,73 +128,114 @@ func (l *loader) load() error {
 			return fmt.Errorf("read marker: %w", err)
 		}
 
-		switch marker {
-		case opcodeAux:
-			if _, err := l.readString(); err != nil {
-				return fmt.Errorf("read AUX key: %w", err)
-			}
-			if _, err := l.readString(); err != nil {
-				return fmt.Errorf("read AUX value: %w", err)
-			}
-		case opcodeResizeDB:
-			if _, _, err := l.readLength(); err != nil {
-				return fmt.Errorf("read RESIZEDB main hash size: %w", err)
-			}
-			if _, _, err := l.readLength(); err != nil {
-				return fmt.Errorf("read RESIZEDB expiry hash size: %w", err)
-			}
-		case opcodeSelectDB:
-			dbIndex, _, err := l.readLength()
-			if err != nil {
-				return fmt.Errorf("read SELECTDB: %w", err)
-			}
-			if dbIndex != 0 {
-				return fmt.Errorf("%w: %d", ErrUnsupportedDB, dbIndex)
-			}
-		case opcodeExpireTimeSec:
-			expiresAtSeconds, err := l.readUint32LE()
-			if err != nil {
-				return fmt.Errorf("read EXPIRETIME: %w", err)
-			}
-			valueType, err := l.readByte()
-			if err != nil {
-				return fmt.Errorf("read value type after EXPIRETIME: %w", err)
-			}
-			if err := l.readEntry(valueType, int64(expiresAtSeconds)*1000); err != nil {
-				return err
-			}
-		case opcodeExpireTimeMS:
-			expiresAtMillis, err := l.readUint64LE()
-			if err != nil {
-				return fmt.Errorf("read EXPIRETIMEMS: %w", err)
-			}
-			if expiresAtMillis > uint64(^uint64(0)>>1) {
-				return fmt.Errorf("rdb: expiry milliseconds overflow: %d", expiresAtMillis)
-			}
-			valueType, err := l.readByte()
-			if err != nil {
-				return fmt.Errorf("read value type after EXPIRETIMEMS: %w", err)
-			}
-			if err := l.readEntry(valueType, int64(expiresAtMillis)); err != nil {
-				return err
-			}
-		case opcodeEOF:
-			if err := l.consumeChecksum(); err != nil {
-				return err
-			}
-			l.seenEOF = true
-		default:
-			if !isValueType(marker) {
-				return fmt.Errorf("%w: 0x%X", ErrUnsupportedOpcode, marker)
-			}
-
-			if err := l.readEntry(marker, 0); err != nil {
-				return err
-			}
+		if err := l.processMarker(marker); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+func (l *loader) processMarker(marker byte) error {
+	switch marker {
+	case opcodeAux:
+		return l.skipAuxField()
+	case opcodeResizeDB:
+		return l.skipResizeDBMetadata()
+	case opcodeSelectDB:
+		return l.readDatabaseSelection()
+	case opcodeExpireTimeSec:
+		expiresAtSeconds, err := l.readUint32LE()
+		if err != nil {
+			return fmt.Errorf("read EXPIRETIME: %w", err)
+		}
+
+		return l.readExpiringEntry("EXPIRETIME", int64(expiresAtSeconds)*1000)
+	case opcodeExpireTimeMS:
+		expiresAtMillis, err := l.readUint64LE()
+		if err != nil {
+			return fmt.Errorf("read EXPIRETIMEMS: %w", err)
+		}
+
+		validatedMillis, err := validatedExpiryMillis(expiresAtMillis)
+		if err != nil {
+			return err
+		}
+
+		return l.readExpiringEntry("EXPIRETIMEMS", validatedMillis)
+	case opcodeEOF:
+		return l.consumeEOF()
+	default:
+		return l.readValueMarker(marker)
+	}
+}
+
+func (l *loader) skipAuxField() error {
+	if _, err := l.readString(); err != nil {
+		return fmt.Errorf("read AUX key: %w", err)
+	}
+	if _, err := l.readString(); err != nil {
+		return fmt.Errorf("read AUX value: %w", err)
+	}
+
+	return nil
+}
+
+func (l *loader) skipResizeDBMetadata() error {
+	if _, _, err := l.readLength(); err != nil {
+		return fmt.Errorf("read RESIZEDB main hash size: %w", err)
+	}
+	if _, _, err := l.readLength(); err != nil {
+		return fmt.Errorf("read RESIZEDB expiry hash size: %w", err)
+	}
+
+	return nil
+}
+
+func (l *loader) readDatabaseSelection() error {
+	dbIndex, _, err := l.readLength()
+	if err != nil {
+		return fmt.Errorf("read SELECTDB: %w", err)
+	}
+	if dbIndex != 0 {
+		return fmt.Errorf("%w: %d", ErrUnsupportedDB, dbIndex)
+	}
+
+	return nil
+}
+
+func (l *loader) readExpiringEntry(opcodeName string, expiresAt int64) error {
+	valueType, err := l.readByte()
+	if err != nil {
+		return fmt.Errorf("read value type after %s: %w", opcodeName, err)
+	}
+
+	return l.readEntry(valueType, expiresAt)
+}
+
+func (l *loader) consumeEOF() error {
+	if err := l.consumeChecksum(); err != nil {
+		return err
+	}
+
+	l.seenEOF = true
+	return nil
+}
+
+func (l *loader) readValueMarker(marker byte) error {
+	if !isValueType(marker) {
+		return fmt.Errorf("%w: 0x%X", ErrUnsupportedOpcode, marker)
+	}
+
+	return l.readEntry(marker, 0)
+}
+
+func validatedExpiryMillis(expiresAtMillis uint64) (int64, error) {
+	if expiresAtMillis > uint64(^uint64(0)>>1) {
+		return 0, fmt.Errorf("rdb: expiry milliseconds overflow: %d", expiresAtMillis)
+	}
+
+	return int64(expiresAtMillis), nil
 }
 
 func (l *loader) readEntry(valueType byte, expiresAt int64) error {
@@ -389,47 +430,23 @@ func decompressLZF(input []byte, outputLength int) ([]byte, error) {
 		ip++
 
 		if control < 32 {
-			literalLength := control + 1
-			if ip+literalLength > len(input) {
-				return nil, errors.New("rdb: truncated LZF literal")
-			}
-			if op+literalLength > len(output) {
-				return nil, errors.New("rdb: LZF literal exceeds output length")
+			nextIP, nextOP, err := decodeLZFLiteral(input, output, ip, op, control)
+			if err != nil {
+				return nil, err
 			}
 
-			copy(output[op:op+literalLength], input[ip:ip+literalLength])
-			ip += literalLength
-			op += literalLength
+			ip = nextIP
+			op = nextOP
 			continue
 		}
 
-		matchLength := control >> 5
-		if matchLength == 7 {
-			if ip >= len(input) {
-				return nil, errors.New("rdb: truncated LZF match length")
-			}
-			matchLength += int(input[ip])
-			ip++
-		}
-		if ip >= len(input) {
-			return nil, errors.New("rdb: truncated LZF match offset")
+		nextIP, nextOP, err := decodeLZFMatch(input, output, ip, op, control)
+		if err != nil {
+			return nil, err
 		}
 
-		reference := op - ((control & 0x1F) << 8) - int(input[ip]) - 1
-		ip++
-		matchLength += 2
-
-		if reference < 0 {
-			return nil, errors.New("rdb: invalid LZF back-reference")
-		}
-		if op+matchLength > len(output) {
-			return nil, errors.New("rdb: LZF match exceeds output length")
-		}
-
-		for i := 0; i < matchLength; i++ {
-			output[op] = output[reference+i]
-			op++
-		}
+		ip = nextIP
+		op = nextOP
 	}
 
 	if op != len(output) {
@@ -437,4 +454,50 @@ func decompressLZF(input []byte, outputLength int) ([]byte, error) {
 	}
 
 	return output, nil
+}
+
+func decodeLZFLiteral(input []byte, output []byte, inputPos int, outputPos int, control int) (int, int, error) {
+	literalLength := control + 1
+	if inputPos+literalLength > len(input) {
+		return 0, 0, errors.New("rdb: truncated LZF literal")
+	}
+	if outputPos+literalLength > len(output) {
+		return 0, 0, errors.New("rdb: LZF literal exceeds output length")
+	}
+
+	copy(output[outputPos:outputPos+literalLength], input[inputPos:inputPos+literalLength])
+	return inputPos + literalLength, outputPos + literalLength, nil
+}
+
+func decodeLZFMatch(input []byte, output []byte, inputPos int, outputPos int, control int) (int, int, error) {
+	matchLength := control >> 5
+	if matchLength == 7 {
+		if inputPos >= len(input) {
+			return 0, 0, errors.New("rdb: truncated LZF match length")
+		}
+
+		matchLength += int(input[inputPos])
+		inputPos++
+	}
+	if inputPos >= len(input) {
+		return 0, 0, errors.New("rdb: truncated LZF match offset")
+	}
+
+	reference := outputPos - ((control & 0x1F) << 8) - int(input[inputPos]) - 1
+	inputPos++
+	matchLength += 2
+
+	if reference < 0 {
+		return 0, 0, errors.New("rdb: invalid LZF back-reference")
+	}
+	if outputPos+matchLength > len(output) {
+		return 0, 0, errors.New("rdb: LZF match exceeds output length")
+	}
+
+	for i := 0; i < matchLength; i++ {
+		output[outputPos] = output[reference+i]
+		outputPos++
+	}
+
+	return inputPos, outputPos, nil
 }

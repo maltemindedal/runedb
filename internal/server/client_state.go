@@ -1,9 +1,14 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"fmt"
+	"sort"
 	"sync"
+
+	"github.com/maltemindedal/runedb/internal/protocol"
 )
 
 // QueuedCommand stores command metadata queued for transactional EXEC.
@@ -16,10 +21,14 @@ type QueuedCommand struct {
 type ClientState struct {
 	ID uint64
 
-	mu sync.RWMutex
+	mu         sync.RWMutex
+	responseMu sync.Mutex
 
-	watchRegistry *WatchRegistry
-	watchedKeys   map[string]struct{}
+	watchRegistry      *WatchRegistry
+	watchedKeys        map[string]struct{}
+	pubSubRegistry     *PubSubRegistry
+	subscribedChannels map[string]struct{}
+	responseWriter     *bufio.Writer
 
 	Authenticated     bool
 	Replica           bool
@@ -42,14 +51,6 @@ func WithClientState(ctx context.Context, state *ClientState) context.Context {
 func ClientStateFromContext(ctx context.Context) (*ClientState, bool) {
 	state, ok := ctx.Value(clientStateContextKey{}).(*ClientState)
 	return state, ok
-}
-
-// QueueLength returns the number of currently queued transaction commands.
-func (s *ClientState) QueueLength() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return len(s.TxQueue)
 }
 
 // BeginTransaction marks the client as inside a transaction.
@@ -78,6 +79,79 @@ func (s *ClientState) SetWatchRegistry(registry *WatchRegistry) {
 	if s.watchedKeys == nil {
 		s.watchedKeys = make(map[string]struct{})
 	}
+}
+
+// SetPubSubRegistry binds the shared pub/sub registry to the client state.
+func (s *ClientState) SetPubSubRegistry(registry *PubSubRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.pubSubRegistry = registry
+	if s.subscribedChannels == nil {
+		s.subscribedChannels = make(map[string]struct{})
+	}
+}
+
+// BindResponseWriter binds the connection-scoped writer used for command
+// replies, async push messages, and replica propagation. All writes for a
+// given connection must flow through this writer to avoid interleaving.
+func (s *ClientState) BindResponseWriter(writer *bufio.Writer) {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	s.responseWriter = writer
+}
+
+// SetAuthenticated records whether the client has successfully authenticated.
+func (s *ClientState) SetAuthenticated(authenticated bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Authenticated = authenticated
+}
+
+// IsAuthenticated reports whether the client has successfully authenticated.
+func (s *ClientState) IsAuthenticated() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.Authenticated
+}
+
+// WriteResponses writes RESP values to the bound client writer without allowing
+// interleaving with other goroutines writing to the same connection.
+func (s *ClientState) WriteResponses(values []protocol.Value) error {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	if s.responseWriter == nil {
+		return fmt.Errorf("client response writer unavailable")
+	}
+
+	for _, value := range values {
+		if err := protocol.WriteValue(s.responseWriter, value); err != nil {
+			return err
+		}
+	}
+
+	return s.responseWriter.Flush()
+}
+
+// WriteEncoded writes a pre-encoded RESP payload to the bound client writer
+// without allowing interleaving with other goroutines writing to the same
+// connection.
+func (s *ClientState) WriteEncoded(payload []byte) error {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	if s.responseWriter == nil {
+		return fmt.Errorf("client response writer unavailable")
+	}
+	if _, err := s.responseWriter.Write(payload); err != nil {
+		return err
+	}
+
+	return s.responseWriter.Flush()
 }
 
 // SetReplicaListeningPort records the port announced during REPLCONF listening-port.
@@ -180,6 +254,71 @@ func (s *ClientState) UnwatchAll() {
 	s.ClearTransactionFailure()
 }
 
+// SubscriptionCount reports how many exact channels this client is currently subscribed to.
+func (s *ClientState) SubscriptionCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return len(s.subscribedChannels)
+}
+
+// IsSubscribed reports whether the client is currently in subscribed mode.
+func (s *ClientState) IsSubscribed() bool {
+	return s.SubscriptionCount() > 0
+}
+
+// SubscribedChannels returns the currently subscribed channel names in sorted order.
+func (s *ClientState) SubscribedChannels() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	channels := make([]string, 0, len(s.subscribedChannels))
+	for channel := range s.subscribedChannels {
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+	return channels
+}
+
+// SubscribeChannel registers the client on channel.
+func (s *ClientState) SubscribeChannel(channel string) {
+	s.mu.RLock()
+	registry := s.pubSubRegistry
+	s.mu.RUnlock()
+
+	if registry == nil {
+		return
+	}
+
+	registry.Subscribe(s, channel)
+}
+
+// UnsubscribeChannel removes the client from channel.
+func (s *ClientState) UnsubscribeChannel(channel string) {
+	s.mu.RLock()
+	registry := s.pubSubRegistry
+	s.mu.RUnlock()
+
+	if registry == nil {
+		return
+	}
+
+	registry.Unsubscribe(s, channel)
+}
+
+// UnsubscribeAll removes all pub/sub subscriptions for the client.
+func (s *ClientState) UnsubscribeAll() {
+	s.mu.RLock()
+	registry := s.pubSubRegistry
+	s.mu.RUnlock()
+
+	if registry == nil {
+		return
+	}
+
+	registry.UnsubscribeAll(s)
+}
+
 // TransactionFailed reports whether optimistic locking marked the transaction as aborted.
 func (s *ClientState) TransactionFailed() bool {
 	s.mu.RLock()
@@ -230,6 +369,23 @@ func (s *ClientState) addWatchedKey(key string) {
 	s.watchedKeys[key] = struct{}{}
 }
 
+func (s *ClientState) addSubscribedChannel(channel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.subscribedChannels == nil {
+		s.subscribedChannels = make(map[string]struct{})
+	}
+	s.subscribedChannels[channel] = struct{}{}
+}
+
+func (s *ClientState) removeSubscribedChannel(channel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.subscribedChannels, channel)
+}
+
 func (s *ClientState) drainWatchedKeys() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,6 +396,18 @@ func (s *ClientState) drainWatchedKeys() []string {
 	}
 	clear(s.watchedKeys)
 	return keys
+}
+
+func (s *ClientState) drainSubscribedChannels() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	channels := make([]string, 0, len(s.subscribedChannels))
+	for channel := range s.subscribedChannels {
+		channels = append(channels, channel)
+	}
+	clear(s.subscribedChannels)
+	return channels
 }
 
 // DrainTransaction returns the queued commands and exits the transaction state.

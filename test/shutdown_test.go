@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -134,5 +135,89 @@ func TestServerShutdownUnblocksBLPop(t *testing.T) {
 	}
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 		t.Fatal("conn.Read() timed out, want closed-connection error")
+	}
+}
+
+func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
+	dumpPath := filepath.Join(t.TempDir(), "dump.rdb")
+
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = dumpPath
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		cancel()
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	parser := protocol.NewParser(conn)
+
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+
+	restartCfg := config.Default()
+	restartCfg.Host = "127.0.0.1"
+	restartCfg.Port = 0
+	restartCfg.LogLevel = "error"
+	restartCfg.EvictionInterval = 5 * time.Millisecond
+	restartCfg.EvictionSampleSize = 10
+	restartCfg.RDBPath = dumpPath
+
+	restartLogger := runedblogger.New(restartCfg.LogLevel)
+	restartStore := storage.NewStore()
+	restartExecutor := command.NewExecutor(restartStore, restartLogger)
+	restartServer := server.New(restartCfg, restartLogger, restartStore, restartExecutor)
+
+	restartCtx, restartCancel := context.WithCancel(context.Background())
+	restartErrCh := make(chan error, 1)
+	go func() {
+		restartErrCh <- restartServer.ListenAndServe(restartCtx)
+	}()
+
+	restartAddr := waitForAddr(t, restartServer)
+	restartConn, err := net.Dial("tcp", restartAddr)
+	if err != nil {
+		restartCancel()
+		t.Fatalf("Dial(%q) restart error = %v", restartAddr, err)
+	}
+	defer func() { _ = restartConn.Close() }()
+	restartParser := protocol.NewParser(restartConn)
+
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+
+	restartCancel()
+	select {
+	case err := <-restartErrCh:
+		if err != nil {
+			t.Fatalf("restart ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart server did not stop within timeout")
 	}
 }

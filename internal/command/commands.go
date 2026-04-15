@@ -2,6 +2,8 @@ package command
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math"
@@ -37,6 +39,63 @@ func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
+func (e *Executor) handleSubscribe(ctx context.Context, request *Request) (server.ExecuteResult, error) {
+	if err := validateSubscribeRequest(request); err != nil {
+		return server.ExecuteResult{}, err
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return server.ExecuteResult{}, err
+	}
+	if state.InTransactionActive() {
+		return server.ExecuteResult{}, ErrSubscribeInsideMultiError()
+	}
+
+	responses := make([]protocol.Value, 0, len(request.Args))
+	for _, arg := range request.Args {
+		channel := string(arg)
+		state.SubscribeChannel(channel)
+		responses = append(responses, pubSubAckResponse("subscribe", protocol.BulkString{Data: clone(arg)}, state.SubscriptionCount()))
+	}
+
+	return server.MultiResponse(responses...), nil
+}
+
+func (e *Executor) handleUnsubscribe(ctx context.Context, request *Request) (server.ExecuteResult, error) {
+	if err := validateUnsubscribeRequest(request); err != nil {
+		return server.ExecuteResult{}, err
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return server.ExecuteResult{}, err
+	}
+	if state.InTransactionActive() {
+		return server.ExecuteResult{}, ErrSubscribeInsideMultiError()
+	}
+
+	channels := make([]string, 0, len(request.Args))
+	if len(request.Args) == 0 {
+		channels = state.SubscribedChannels()
+		if len(channels) == 0 {
+			return server.MultiResponse(pubSubAckResponse("unsubscribe", protocol.BulkString{Null: true}, 0)), nil
+		}
+	} else {
+		for _, arg := range request.Args {
+			channels = append(channels, string(arg))
+		}
+	}
+
+	responses := make([]protocol.Value, 0, len(channels))
+	for _, channel := range channels {
+		state.UnsubscribeChannel(channel)
+		responses = append(responses, pubSubAckResponse("unsubscribe", protocol.BulkString{Data: []byte(channel)}, state.SubscriptionCount()))
+	}
+
+	return server.MultiResponse(responses...), nil
+}
+
 func (e *Executor) handleMulti(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) != 0 {
 		return nil, wrongNumberOfArgumentsError("MULTI")
@@ -45,6 +104,9 @@ func (e *Executor) handleMulti(ctx context.Context, request *Request) (protocol.
 	state, err := clientStateFromContext(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if state.IsSubscribed() {
+		return nil, ErrSubscribedModeOnlyError()
 	}
 	if !state.BeginTransaction() {
 		return nil, ErrMultiNestedError()
@@ -143,7 +205,9 @@ func (e *Executor) handleReplConf(ctx context.Context, request *Request) (server
 		}
 
 		if state, ok := server.ClientStateFromContext(ctx); ok && state != nil && state.IsReplica() && e.replicaPeers != nil {
-			e.replicaPeers.UpdateAck(state.ID, ackOffset)
+			if updated := e.replicaPeers.UpdateAck(state.ID, ackOffset); updated {
+				e.logger.Debug("replica acknowledged offset", "replica_id", state.ID, "ack_offset", ackOffset)
+			}
 		}
 
 		return server.ExecuteResult{}, nil
@@ -165,6 +229,7 @@ func (e *Executor) handlePSync(ctx context.Context, request *Request) (server.Ex
 
 	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
 		state.PromoteToReplica()
+		e.logger.Info("serving full resync to replica", "replica_id", state.ID, "master_replid", e.replication.MasterReplicationID)
 	}
 
 	result := server.MultiResponse(
@@ -176,52 +241,93 @@ func (e *Executor) handlePSync(ctx context.Context, request *Request) (server.Ex
 }
 
 func (e *Executor) handleWait(ctx context.Context, request *Request) (server.ExecuteResult, error) {
-	if len(request.Args) != 2 {
-		return server.ExecuteResult{}, wrongNumberOfArgumentsError("WAIT")
+	replicas, timeoutMillis, err := parseWaitArguments(request)
+	if err != nil {
+		return server.ExecuteResult{}, err
 	}
 
-	replicas, err := parseIntegerArgument(request.Args[0])
-	if err != nil || replicas < 0 {
-		return server.ExecuteResult{}, ErrValueNotIntegerError()
-	}
-	timeoutMillis, err := parseIntegerArgument(request.Args[1])
-	if err != nil || timeoutMillis < 0 {
-		return server.ExecuteResult{}, ErrValueNotIntegerError()
-	}
-
-	targetOffset := int64(0)
-	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
-		targetOffset = state.LastWriteReplicationOffset()
-	} else if e.replication != nil {
-		targetOffset = e.replication.MasterOffset()
-	}
+	targetOffset := e.waitTargetOffset(ctx)
+	startedAt := time.Now()
 
 	ackedReplicas := e.countReplicasAtOrAbove(targetOffset)
+	e.logger.Debug(
+		"WAIT requested",
+		"target_replicas", replicas,
+		"timeout_millis", timeoutMillis,
+		"target_offset", targetOffset,
+		"currently_acked", ackedReplicas,
+	)
 	if ackedReplicas >= int(replicas) || timeoutMillis == 0 {
-		return server.SingleResponse(protocol.Integer{Value: int64(ackedReplicas)}), nil
+		return e.finishWaitResult(replicas, ackedReplicas, targetOffset, startedAt, false), nil
 	}
 
 	if err := e.requestReplicaAcknowledgements(); err != nil {
 		return server.ExecuteResult{}, err
 	}
 
+	return e.waitForReplicaAcknowledgements(ctx, replicas, timeoutMillis, targetOffset, startedAt)
+}
+
+func parseWaitArguments(request *Request) (int64, int64, error) {
+	if len(request.Args) != 2 {
+		return 0, 0, wrongNumberOfArgumentsError("WAIT")
+	}
+
+	replicas, err := parseIntegerArgument(request.Args[0])
+	if err != nil || replicas < 0 {
+		return 0, 0, ErrValueNotIntegerError()
+	}
+	timeoutMillis, err := parseIntegerArgument(request.Args[1])
+	if err != nil || timeoutMillis < 0 {
+		return 0, 0, ErrValueNotIntegerError()
+	}
+
+	return replicas, timeoutMillis, nil
+}
+
+func (e *Executor) waitTargetOffset(ctx context.Context) int64 {
+	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
+		return state.LastWriteReplicationOffset()
+	}
+	if e.replication != nil {
+		return e.replication.MasterOffset()
+	}
+
+	return 0
+}
+
+func (e *Executor) waitForReplicaAcknowledgements(ctx context.Context, replicas int64, timeoutMillis int64, targetOffset int64, startedAt time.Time) (server.ExecuteResult, error) {
 	timer := time.NewTimer(time.Duration(timeoutMillis) * time.Millisecond)
 	defer timer.Stop()
 
 	for {
 		ackedReplicas, notified := e.countReplicasAtOrAboveWithNotify(targetOffset)
 		if ackedReplicas >= int(replicas) {
-			return server.SingleResponse(protocol.Integer{Value: int64(ackedReplicas)}), nil
+			return e.finishWaitResult(replicas, ackedReplicas, targetOffset, startedAt, false), nil
 		}
 
 		select {
 		case <-ctx.Done():
 			return server.ExecuteResult{}, ctx.Err()
 		case <-timer.C:
-			return server.SingleResponse(protocol.Integer{Value: int64(e.countReplicasAtOrAbove(targetOffset))}), nil
+			finalAcked := e.countReplicasAtOrAbove(targetOffset)
+			return e.finishWaitResult(replicas, finalAcked, targetOffset, startedAt, true), nil
 		case <-notified:
 		}
 	}
+}
+
+func (e *Executor) finishWaitResult(replicas int64, ackedReplicas int, targetOffset int64, startedAt time.Time, timedOut bool) server.ExecuteResult {
+	e.logger.Info(
+		"WAIT completed",
+		"target_replicas", replicas,
+		"acked_replicas", ackedReplicas,
+		"target_offset", targetOffset,
+		"timed_out", timedOut,
+		"elapsed", time.Since(startedAt),
+	)
+
+	return server.SingleResponse(protocol.Integer{Value: int64(ackedReplicas)})
 }
 
 func (e *Executor) handleDiscard(ctx context.Context, request *Request) (protocol.Value, error) {
@@ -242,6 +348,34 @@ func (e *Executor) handleDiscard(ctx context.Context, request *Request) (protoco
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
+func (e *Executor) handleAuth(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 1 {
+		return nil, wrongNumberOfArgumentsError("AUTH")
+	}
+	if e.requirePass == "" {
+		return nil, ErrAuthNotConfiguredError()
+	}
+
+	state, err := clientStateFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !secretsEqual(e.requirePass, request.Args[0]) {
+		return nil, ErrWrongPassError()
+	}
+
+	state.SetAuthenticated(true)
+	return protocol.SimpleString{Value: "OK"}, nil
+}
+
+func secretsEqual(expected string, actual []byte) bool {
+	expectedDigest := sha256.Sum256([]byte(expected))
+	actualDigest := sha256.Sum256(actual)
+
+	return subtle.ConstantTimeCompare(expectedDigest[:], actualDigest[:]) == 1
+}
+
 func (e *Executor) handlePing(_ context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) == 1 {
 		return protocol.BulkString{Data: clone(request.Args[0])}, nil
@@ -259,6 +393,47 @@ func (e *Executor) handleEcho(_ context.Context, request *Request) (protocol.Val
 	}
 
 	return protocol.BulkString{Data: clone(request.Args[0])}, nil
+}
+
+func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.Value, error) {
+	if err := validatePublishRequest(request); err != nil {
+		return nil, err
+	}
+	if e.pubSubRegistry == nil {
+		return protocol.Integer{Value: 0}, nil
+	}
+
+	channel := string(request.Args[0])
+	message := pubSubMessageResponse(request.Args[0], request.Args[1])
+	subscribers := e.pubSubRegistry.Subscribers(channel)
+	if len(subscribers) == 0 {
+		return protocol.Integer{Value: 0}, nil
+	}
+
+	encodedMessage, err := protocol.Encode(message)
+	if err != nil {
+		return nil, fmt.Errorf("encode pub/sub message: %w", err)
+	}
+
+	matched := int64(0)
+	for _, subscriber := range subscribers {
+		if subscriber == nil {
+			continue
+		}
+		if err := subscriber.WriteEncoded(encodedMessage); err != nil {
+			e.logger.Warn(
+				"failed to deliver pub/sub message",
+				"channel", channel,
+				"subscriber_id", subscriber.ID,
+				"error", err,
+			)
+			subscriber.UnsubscribeAll()
+			continue
+		}
+		matched++
+	}
+
+	return protocol.Integer{Value: matched}, nil
 }
 
 func (e *Executor) handleSet(_ context.Context, request *Request) (protocol.Value, error) {
@@ -602,6 +777,22 @@ func streamReadResponse(key []byte, entries []storage.StreamEntry) protocol.Arra
 	}}
 }
 
+func pubSubAckResponse(kind string, channel protocol.Value, count int) protocol.Array {
+	return protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: kind},
+		channel,
+		protocol.Integer{Value: int64(count)},
+	}}
+}
+
+func pubSubMessageResponse(channel []byte, payload []byte) protocol.Array {
+	return protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "message"},
+		protocol.BulkString{Data: clone(channel)},
+		protocol.BulkString{Data: clone(payload)},
+	}}
+}
+
 func parseIntegerArgument(raw []byte) (int64, error) {
 	value, err := strconv.ParseInt(string(raw), 10, 64)
 	if err != nil {
@@ -689,7 +880,9 @@ func (e *Executor) requestReplicaAcknowledgements() error {
 		e.replication.AdvanceMasterOffset(int64(len(encoded)))
 	}
 
-	for _, peer := range e.replicaPeers.Snapshot() {
+	peers := e.replicaPeers.Snapshot()
+	e.logger.Debug("requested replica acknowledgements", "replica_count", len(peers), "payload_size", len(encoded))
+	for _, peer := range peers {
 		if err := peer.WriteEncoded(encoded); err != nil {
 			e.logger.Warn("failed to request replica ACK", "replica_id", peer.ID, "error", err)
 			if closeErr := e.replicaPeers.RemoveAndClose(peer.ID); closeErr != nil {
