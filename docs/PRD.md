@@ -14,6 +14,12 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 3:** Done
 - **Phase 4:** Done (`RDB` startup loading is implemented for DB 0 string keys, and replication handshake/propagation/`WAIT` support is implemented)
 - **Phase 5:** Done
+- **Phase 6:** Planned
+- **Phase 7:** Planned
+- **Phase 8:** Planned
+- **Phase 9:** Planned
+- **Phase 10:** Planned
+- **Phase 11:** Planned
 
 ## 1. Executive Summary
 
@@ -195,6 +201,147 @@ Current implementation scope: startup-time loading via `--rdb` plus graceful shu
 - [x] Allow replicas to authenticate to protected masters via a `masterauth`-style configuration path
 - [x] If set, all client connections initialize with `Authenticated = false`
 - [x] Reject all commands (return `-NOAUTH Authentication required.\r\n`) except `AUTH` and `PING` until `AUTH` is successfully called
+
+### Phase 6: Unified Value Model & Additional Types — **Planned**
+
+Extend the current value model so additional Redis-compatible data types can share a consistent storage abstraction.
+
+#### Value Object Refactor — **Planned**
+
+- [ ] Transition the underlying store to `map[string]*ValueObject`.
+- [ ] Let `ValueObject` hold the logical type, payload, TTL metadata, and future access metadata.
+- [ ] Update `SET`, `GET`, and `INCR` to operate through the unified value representation.
+
+#### Strict Type Enforcement — **Planned**
+
+- [ ] Introduce the Redis-style `WRONGTYPE` error path.
+- [ ] Validate the stored value kind before executing type-specific commands.
+
+#### Hashes (`HSET`, `HGET`, `HDEL`, `HGETALL`) — **Planned**
+
+- [ ] Back hashes with a `map[string]string`-style structure.
+- [ ] Implement `HSET` and `HGET`.
+- [ ] Implement `HDEL` and `HGETALL`, including RESP array packing.
+
+#### Lists (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`) — **Planned**
+
+- [ ] Normalize list storage behind `ValueObject`.
+- [ ] Round out list operations with `LPOP`, `RPOP`, and `LRANGE`.
+
+#### Sets (`SADD`, `SISMEMBER`, `SREM`, `SMEMBERS`) — **Planned**
+
+- [ ] Back sets with `map[string]struct{}` for $O(1)$ membership checks.
+- [ ] Implement `SADD`, `SISMEMBER`, `SREM`, and `SMEMBERS`.
+
+### Phase 7: Sharded Concurrency & Scaling — **Planned**
+
+Reduce the single-lock bottleneck by making key ownership explicit and shard-local.
+
+#### Shard Architecture — **Planned**
+
+- [ ] Introduce a `Shard` struct containing its own `map[string]*ValueObject` and `sync.RWMutex`.
+- [ ] Refactor the top-level store to own a fixed set of shards (for example, 256 shards).
+
+#### Key Hashing — **Planned**
+
+- [ ] Add a fast key-to-shard hashing function, such as `maphash` or FNV-1a.
+- [ ] Route commands by calculating `hash(key) % shardCount`.
+
+#### Single-Key Command Refactor — **Planned**
+
+- [ ] Update `GET`, `SET`, and `INCR` to lock only the shard that owns the target key.
+- [ ] Preserve throughput by keeping unrelated keys and the accept loop unblocked.
+
+#### Cross-Shard Coordination — **Planned**
+
+- [ ] Handle multi-key commands such as `DEL key1 key2 key3` across different shards.
+- [ ] Sort shard IDs before locking to avoid deadlocks, then unlock in reverse order.
+
+### Phase 8: Durability via Append-Only Files — **Planned**
+
+Add an AOF-based durability path that complements the current snapshot-oriented persistence support.
+
+#### AOF Writer — **Planned**
+
+- [ ] Create a background service that opens and manages a `.aof` file.
+- [ ] Append raw RESP for successful mutating commands such as `SET`, `DEL`, and `INCR`.
+
+#### AOF Recovery — **Planned**
+
+- [ ] On startup, detect the `.aof` file before accepting TCP connections.
+- [ ] Parse and replay commands to rebuild in-memory state.
+
+#### `appendfsync` Policies — **Planned**
+
+- [ ] Add an `--appendfsync` flag.
+- [ ] Support at least `always` and `everysec` policies.
+- [ ] For `everysec`, flush to disk from a background goroutine once per second.
+
+#### Background Rewrite (`BGREWRITEAOF`) — **Planned**
+
+- [ ] Compact large AOF files by writing a fresh command stream to a temporary file.
+- [ ] Emit the shortest practical rebuild sequence, then atomically rename it into place.
+
+### Phase 9: Transaction Execution Hardening — **Planned**
+
+Formalize and harden transaction semantics around queued execution and optimistic locking.
+
+#### Command Queue — **Planned**
+
+- [ ] Keep explicit queued command state and transaction mode in `ClientState`.
+
+#### `MULTI` & `DISCARD` — **Planned**
+
+- [ ] Queue subsequent commands after `MULTI` and return `+QUEUED`.
+- [ ] Clear queued state and exit transaction mode on `DISCARD`.
+
+#### `EXEC` — **Planned**
+
+- [ ] Execute queued commands sequentially against the store.
+- [ ] Package per-command results into a RESP array and clear the queue.
+
+#### `WATCH` (Optimistic Locking) — **Planned**
+
+- [ ] Track watched keys in shared state and associate them with clients.
+- [ ] Abort `EXEC` with a null array when a watched key changed before commit.
+
+### Phase 10: Pub/Sub Broker Hardening — **Planned**
+
+Strengthen Pub/Sub delivery semantics and subscription bookkeeping.
+
+#### Broker Registry — **Planned**
+
+- [ ] Maintain a central channel-to-client registry for subscriber tracking.
+
+#### Subscriber Mode Enforcement — **Planned**
+
+- [ ] Restrict subscribed clients to the allowed command surface.
+- [ ] Keep subscription bookkeeping synchronized with connection lifecycle changes.
+
+#### Fan-Out Delivery — **Planned**
+
+- [ ] Deliver published payloads to every subscribed client on the target channel.
+- [ ] Harden writer synchronization and cleanup on disconnect.
+
+### Phase 11: Memory Limits & Eviction — **Planned**
+
+Protect the server from unbounded memory growth under sustained write pressure.
+
+#### Access Tracking — **Planned**
+
+- [ ] Extend `ValueObject` with a `lastAccessed` timestamp.
+- [ ] Refresh the timestamp on reads and writes such as `GET` and `SET`.
+
+#### `maxmemory` — **Planned**
+
+- [ ] Add a `--maxmemory` flag.
+- [ ] Track approximate memory usage, or start with a simpler proxy such as key count.
+- [ ] Reject new writes or trigger eviction when the configured limit is reached.
+
+#### Probabilistic LRU Eviction — **Planned**
+
+- [ ] Sample a small random set of keys instead of maintaining a strict global LRU list.
+- [ ] Evict the stalest candidate and repeat until memory usage falls below the limit.
 
 ## 4. Non-Functional Requirements (Production Readiness)
 
