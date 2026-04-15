@@ -394,6 +394,37 @@ func (s *Store) Len() int {
 	return len(s.data)
 }
 
+// SnapshotStrings returns defensive copies of the currently supported
+// shutdown-persistence scope: non-expired DB 0 string keys only.
+func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
+	now := time.Now().UnixMilli()
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := StringSnapshotStats{TotalKeys: len(s.data)}
+	entries := make([]StringSnapshotEntry, 0, len(s.data))
+	for key, value := range s.data {
+		if isExpired(value, now) {
+			stats.SkippedExpiredKeys++
+			continue
+		}
+		if value.Kind != ValueKindString {
+			stats.SkippedUnsupportedKeys++
+			continue
+		}
+
+		entries = append(entries, StringSnapshotEntry{
+			Key:       key,
+			Value:     cloneBytes(value.String),
+			ExpiresAt: value.ExpiresAt,
+		})
+		stats.ExportedKeys++
+	}
+
+	return entries, stats
+}
+
 // ReplaceWith swaps the store contents with a snapshot from another store.
 //
 // The replacement is applied only after the source snapshot has already been

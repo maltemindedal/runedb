@@ -65,7 +65,11 @@ func (r *WatchRegistry) UnwatchAll(state *ClientState) {
 
 // Touch marks transactions as failed for any clients watching the supplied keys.
 func (r *WatchRegistry) Touch(keys ...string) {
-	if r == nil {
+	if r == nil || len(keys) == 0 {
+		return
+	}
+	if len(keys) == 1 {
+		r.touchSingleKey(keys[0])
 		return
 	}
 
@@ -77,6 +81,20 @@ func (r *WatchRegistry) Touch(keys ...string) {
 		for id, state := range watchers {
 			states[id] = state
 		}
+	}
+	r.mu.RUnlock()
+
+	for _, state := range states {
+		state.MarkTransactionFailed()
+	}
+}
+
+func (r *WatchRegistry) touchSingleKey(key string) {
+	r.mu.RLock()
+	watchers := r.watchers[key]
+	states := make([]*ClientState, 0, len(watchers))
+	for _, state := range watchers {
+		states = append(states, state)
 	}
 	r.mu.RUnlock()
 

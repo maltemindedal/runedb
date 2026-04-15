@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -21,7 +22,8 @@ func TestReplicaRegistryCountReplicasAtOrAboveWithNotify(t *testing.T) {
 	defer func() { _ = serverConn.Close() }()
 	defer func() { _ = replicaConn.Close() }()
 
-	registry.Add(1, serverConn, 6380)
+	state := newReplicaPeerStateForTest(1, serverConn)
+	registry.Add(1, serverConn, 6380, state)
 
 	count, changed := registry.CountReplicasAtOrAboveWithNotify(10)
 	if count != 0 {
@@ -46,7 +48,8 @@ func TestReplicaRegistryCountReplicasAtOrAboveWithNotify(t *testing.T) {
 
 func TestReplicaRegistryRemoveAndCloseReturnsCloseError(t *testing.T) {
 	registry := NewReplicaRegistry()
-	registry.Add(1, &stubConn{closeErr: errors.New("close boom")}, 6380)
+	conn := &stubConn{closeErr: errors.New("close boom")}
+	registry.Add(1, conn, 6380, newReplicaPeerStateForTest(1, conn))
 
 	err := registry.RemoveAndClose(1)
 	if err == nil || err.Error() != "close boom" {
@@ -59,8 +62,9 @@ func TestServerPropagateToReplicasRemovesFailingReplica(t *testing.T) {
 	srv := New(config.Config{}, logger, storage.NewStore(), nil)
 
 	serverConn := &recordingConn{}
-	srv.replicaPeers.Add(1, serverConn, 6380)
-	srv.replicaPeers.Add(2, &stubConn{writeErr: errors.New("write boom")}, 6381)
+	srv.replicaPeers.Add(1, serverConn, 6380, newReplicaPeerStateForTest(1, serverConn))
+	failingConn := &stubConn{writeErr: errors.New("write boom")}
+	srv.replicaPeers.Add(2, failingConn, 6381, newReplicaPeerStateForTest(2, failingConn))
 
 	report := srv.propagateToReplicas([]protocol.Value{protocol.SimpleString{Value: "OK"}})
 	if report.attempted != 2 {
@@ -133,3 +137,10 @@ type stubAddr string
 
 func (a stubAddr) Network() string { return "tcp" }
 func (a stubAddr) String() string  { return string(a) }
+
+func newReplicaPeerStateForTest(id uint64, conn net.Conn) *ClientState {
+	state := &ClientState{ID: id, Authenticated: true}
+	state.PromoteToReplica()
+	state.BindResponseWriter(bufio.NewWriter(conn))
+	return state
+}

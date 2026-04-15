@@ -10,7 +10,8 @@ import (
 
 // Parser reads RESP values from an io.Reader.
 type Parser struct {
-	reader *bufio.Reader
+	reader  *bufio.Reader
+	lineBuf []byte
 }
 
 // NewParser constructs a Parser backed by a bufio.Reader.
@@ -158,14 +159,16 @@ func (p *Parser) readLineBytes() ([]byte, error) {
 		return nil, err
 	}
 
-	combined := append([]byte(nil), line...)
+	combined := append(p.lineBuf[:0], line...)
 	for {
 		fragment, readErr := p.reader.ReadSlice('\n')
 		combined = append(combined, fragment...)
 		if readErr == nil {
+			p.lineBuf = combined[:0]
 			return trimCRLF(combined)
 		}
 		if !errors.Is(readErr, bufio.ErrBufferFull) {
+			p.lineBuf = combined[:0]
 			return nil, readErr
 		}
 	}

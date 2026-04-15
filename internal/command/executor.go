@@ -32,6 +32,14 @@ var (
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
 	// ErrNoAuth reports that the client must authenticate before running a command.
 	ErrNoAuth = errors.New("authentication required")
+	// ErrWrongPass reports that the supplied AUTH credentials were rejected.
+	ErrWrongPass = errors.New("invalid username-password pair or user is disabled")
+	// ErrAuthNotConfigured reports that AUTH was called without a configured password.
+	ErrAuthNotConfigured = errors.New("AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+	// ErrSubscribedModeOnly reports that a subscribed client attempted a disallowed command.
+	ErrSubscribedModeOnly = errors.New("only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context")
+	// ErrSubscribeInsideMulti reports that subscribe state changes are not allowed inside MULTI.
+	ErrSubscribeInsideMulti = errors.New("SUBSCRIBE and UNSUBSCRIBE inside MULTI are not allowed")
 )
 
 // RESPError exposes the wire error prefix to use when returning a RESP error.
@@ -145,6 +153,26 @@ func ErrWrongTypeError() error {
 // ErrNoAuthError reports that the client must authenticate first.
 func ErrNoAuthError() error {
 	return newRESPError("NOAUTH", "Authentication required.", ErrNoAuth)
+}
+
+// ErrWrongPassError reports invalid AUTH credentials.
+func ErrWrongPassError() error {
+	return newRESPError("WRONGPASS", "invalid username-password pair or user is disabled.", ErrWrongPass)
+}
+
+// ErrAuthNotConfiguredError reports that AUTH is unavailable because no password is configured.
+func ErrAuthNotConfiguredError() error {
+	return newRESPWrappedError("ERR", ErrAuthNotConfigured)
+}
+
+// ErrSubscribedModeOnlyError reports that only pub/sub-safe commands are allowed.
+func ErrSubscribedModeOnlyError() error {
+	return newRESPWrappedError("ERR", ErrSubscribedModeOnly)
+}
+
+// ErrSubscribeInsideMultiError reports that subscription state changes are disallowed in MULTI.
+func ErrSubscribeInsideMultiError() error {
+	return newRESPWrappedError("ERR", ErrSubscribeInsideMulti)
 }
 
 func wrongNumberOfArgumentsError(command string) error {

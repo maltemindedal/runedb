@@ -36,20 +36,23 @@ type commandSpec struct {
 
 // Executor routes protocol frames to concrete command handlers.
 type Executor struct {
-	store         *storage.Store
-	logger        *slog.Logger
-	watchRegistry *server.WatchRegistry
-	commands      map[string]commandSpec
-	replication   *server.ReplicationState
-	replicaPeers  *server.ReplicaRegistry
+	store          *storage.Store
+	logger         *slog.Logger
+	watchRegistry  *server.WatchRegistry
+	pubSubRegistry *server.PubSubRegistry
+	requirePass    string
+	commands       map[string]commandSpec
+	replication    *server.ReplicationState
+	replicaPeers   *server.ReplicaRegistry
 }
 
 // NewExecutor constructs a command executor with the currently supported command set.
 func NewExecutor(store *storage.Store, logger *slog.Logger) *Executor {
 	executor := &Executor{
-		store:         store,
-		logger:        logger,
-		watchRegistry: server.NewWatchRegistry(),
+		store:          store,
+		logger:         logger,
+		watchRegistry:  server.NewWatchRegistry(),
+		pubSubRegistry: server.NewPubSubRegistry(),
 	}
 	executor.commands = executor.commandSpecs()
 	return executor
@@ -60,6 +63,11 @@ func (e *Executor) WatchRegistry() *server.WatchRegistry {
 	return e.watchRegistry
 }
 
+// PubSubRegistry exposes the shared exact-channel pub/sub registry to the server.
+func (e *Executor) PubSubRegistry() *server.PubSubRegistry {
+	return e.pubSubRegistry
+}
+
 // SetReplicationState injects shared replication metadata from the server.
 func (e *Executor) SetReplicationState(state *server.ReplicationState) {
 	e.replication = state
@@ -68,6 +76,11 @@ func (e *Executor) SetReplicationState(state *server.ReplicationState) {
 // SetReplicaRegistry injects the server's live replica registry.
 func (e *Executor) SetReplicaRegistry(registry *server.ReplicaRegistry) {
 	e.replicaPeers = registry
+}
+
+// SetRequirePass injects the configured connection password requirement.
+func (e *Executor) SetRequirePass(password string) {
+	e.requirePass = password
 }
 
 // Execute dispatches a parsed RESP frame to its command handler.
@@ -94,6 +107,13 @@ func (e *Executor) ExecuteDetailed(ctx context.Context, value protocol.Value) (s
 }
 
 func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request, allowQueue bool) (server.ExecuteResult, error) {
+	if err := e.validateSubscriptionContext(ctx, request); err != nil {
+		return server.ExecuteResult{}, err
+	}
+	if err := e.validateAuthContext(ctx, request); err != nil {
+		return server.ExecuteResult{}, err
+	}
+
 	if allowQueue {
 		if queued, response, err := e.maybeQueueRequest(ctx, request); queued || err != nil {
 			if response == nil {
@@ -236,6 +256,16 @@ func (e *Executor) isTransactionControlCommand(name string) bool {
 
 func (e *Executor) commandSpecs() map[string]commandSpec {
 	return map[string]commandSpec{
+		"SUBSCRIBE": {
+			detailed:           e.handleSubscribe,
+			validate:           validateSubscribeRequest,
+			transactionControl: true,
+		},
+		"UNSUBSCRIBE": {
+			detailed:           e.handleUnsubscribe,
+			validate:           validateUnsubscribeRequest,
+			transactionControl: true,
+		},
 		"WATCH": {
 			handler:            e.handleWatch,
 			validate:           validateWatchRequest,
@@ -259,6 +289,10 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 		"PING": {
 			handler:  e.handlePing,
 			validate: maxArgsValidator("PING", 1),
+		},
+		"AUTH": {
+			handler:  e.handleAuth,
+			validate: exactArgsValidator("AUTH", 1),
 		},
 		"ECHO": {
 			handler:  e.handleEcho,
@@ -318,6 +352,11 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleXRead,
 			validate: validateXReadRequest,
 		},
+		"PUBLISH": {
+			handler:    e.handlePublish,
+			validate:   validatePublishRequest,
+			propagates: true,
+		},
 		"REPLCONF": {
 			detailed: e.handleReplConf,
 			validate: validateReplConfRequest,
@@ -330,6 +369,61 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			detailed: e.handleWait,
 			validate: validateWaitRequest,
 		},
+	}
+}
+
+func (e *Executor) validateSubscriptionContext(ctx context.Context, request *Request) error {
+	state, ok := server.ClientStateFromContext(ctx)
+	if !ok || state == nil {
+		return nil
+	}
+
+	if state.IsSubscribed() && !isAllowedSubscribedModeCommand(request.Name) {
+		return ErrSubscribedModeOnlyError()
+	}
+
+	return nil
+}
+
+func (e *Executor) validateAuthContext(ctx context.Context, request *Request) error {
+	if e.requirePass == "" {
+		return nil
+	}
+
+	state, ok := server.ClientStateFromContext(ctx)
+	if !ok || state == nil {
+		return nil
+	}
+	if state.IsAuthenticated() {
+		return nil
+	}
+	if isAllowedUnauthenticatedCommand(ctx, state, request) {
+		return nil
+	}
+
+	return ErrNoAuthError()
+}
+
+func isAllowedUnauthenticatedCommand(ctx context.Context, state *server.ClientState, request *Request) bool {
+	if server.IsReplicationOrigin(ctx) {
+		return true
+	}
+
+	switch request.Name {
+	case "AUTH", "PING":
+		return true
+	default:
+		_ = state
+		return false
+	}
+}
+
+func isAllowedSubscribedModeCommand(name string) bool {
+	switch name {
+	case "PING", "SUBSCRIBE", "UNSUBSCRIBE":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -364,6 +458,40 @@ func validateWatchRequest(request *Request) error {
 	if len(request.Args) == 0 {
 		return wrongNumberOfArgumentsError("WATCH")
 	}
+	return nil
+}
+
+func validateSubscribeRequest(request *Request) error {
+	if len(request.Args) == 0 {
+		return wrongNumberOfArgumentsError("SUBSCRIBE")
+	}
+
+	return validateNonEmptyPubSubChannels(request.Args...)
+}
+
+func validateUnsubscribeRequest(request *Request) error {
+	if len(request.Args) == 0 {
+		return nil
+	}
+
+	return validateNonEmptyPubSubChannels(request.Args...)
+}
+
+func validatePublishRequest(request *Request) error {
+	if len(request.Args) != 2 {
+		return wrongNumberOfArgumentsError("PUBLISH")
+	}
+
+	return validateNonEmptyPubSubChannels(request.Args[0])
+}
+
+func validateNonEmptyPubSubChannels(channels ...[]byte) error {
+	for _, channel := range channels {
+		if len(channel) == 0 {
+			return ErrSyntaxError()
+		}
+	}
+
 	return nil
 }
 

@@ -23,6 +23,10 @@ type watchRegistryProvider interface {
 	WatchRegistry() *WatchRegistry
 }
 
+type pubSubRegistryProvider interface {
+	PubSubRegistry() *PubSubRegistry
+}
+
 type replicationStateSetter interface {
 	SetReplicationState(*ReplicationState)
 }
@@ -31,16 +35,26 @@ type replicaRegistrySetter interface {
 	SetReplicaRegistry(*ReplicaRegistry)
 }
 
+type authConfigSetter interface {
+	SetRequirePass(string)
+}
+
+type temporaryError interface {
+	error
+	Temporary() bool
+}
+
 // Server owns the TCP listener, active clients, and command execution pipeline.
 type Server struct {
-	cfg           config.Config
-	logger        *slog.Logger
-	store         *storage.Store
-	executor      executor
-	registry      *Registry
-	replicaPeers  *ReplicaRegistry
-	watchRegistry *WatchRegistry
-	replication   *ReplicationState
+	cfg            config.Config
+	logger         *slog.Logger
+	store          *storage.Store
+	executor       executor
+	registry       *Registry
+	replicaPeers   *ReplicaRegistry
+	watchRegistry  *WatchRegistry
+	pubSubRegistry *PubSubRegistry
+	replication    *ReplicationState
 
 	clientStates   map[uint64]*ClientState
 	clientStatesMu sync.RWMutex
@@ -72,11 +86,17 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 	if provider, ok := executor.(watchRegistryProvider); ok {
 		srv.watchRegistry = provider.WatchRegistry()
 	}
+	if provider, ok := executor.(pubSubRegistryProvider); ok {
+		srv.pubSubRegistry = provider.PubSubRegistry()
+	}
 	if setter, ok := executor.(replicationStateSetter); ok {
 		setter.SetReplicationState(srv.replication)
 	}
 	if setter, ok := executor.(replicaRegistrySetter); ok {
 		setter.SetReplicaRegistry(srv.replicaPeers)
+	}
+	if setter, ok := executor.(authConfigSetter); ok {
+		setter.SetRequirePass(cfg.RequirePass)
 	}
 
 	return srv
@@ -131,7 +151,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 				break
 			}
 
-			var temporary interface{ Temporary() bool }
+			var temporary temporaryError
 			if errors.As(err, &temporary) && temporary.Temporary() {
 				s.logger.Warn("temporary accept error", "error", err)
 				continue
@@ -147,6 +167,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 
 	s.handlerWG.Wait()
+	if err := s.persistSnapshot(); err != nil {
+		return err
+	}
 	s.logger.Info("RuneDB stopped")
 	return nil
 }
@@ -189,12 +212,49 @@ func (s *Server) shutdown() {
 	})
 }
 
+func (s *Server) persistSnapshot() error {
+	if s == nil || s.store == nil || s.cfg.DumpPath == "" {
+		return nil
+	}
+
+	entries, snapshotStats := s.store.SnapshotStrings()
+	writeStats, err := rdb.SaveSnapshot(s.cfg.DumpPath, entries)
+	if err != nil {
+		s.logger.Error(
+			"failed to save shutdown RDB snapshot",
+			"path", s.cfg.DumpPath,
+			"candidate_keys", len(entries),
+			"error", err,
+		)
+		return fmt.Errorf("server: save shutdown snapshot to %q: %w", s.cfg.DumpPath, err)
+	}
+
+	if snapshotStats.SkippedUnsupportedKeys > 0 {
+		s.logger.Warn(
+			"shutdown snapshot skipped unsupported value types",
+			"path", s.cfg.DumpPath,
+			"skipped_unsupported_keys", snapshotStats.SkippedUnsupportedKeys,
+			"exported_keys", snapshotStats.ExportedKeys,
+		)
+	}
+
+	s.logger.Info(
+		"saved shutdown RDB snapshot",
+		"path", s.cfg.DumpPath,
+		"written_keys", writeStats.WrittenKeys,
+		"skipped_expired_keys", snapshotStats.SkippedExpiredKeys+writeStats.SkippedExpiredKeys,
+	)
+
+	return nil
+}
+
 func (s *Server) createClientState(clientID uint64) *ClientState {
 	state := &ClientState{
 		ID:            clientID,
 		Authenticated: s.cfg.RequirePass == "",
 	}
 	state.SetWatchRegistry(s.watchRegistry)
+	state.SetPubSubRegistry(s.pubSubRegistry)
 
 	s.clientStatesMu.Lock()
 	defer s.clientStatesMu.Unlock()
@@ -217,6 +277,7 @@ func (s *Server) removeClientState(clientID uint64) {
 	s.clientStatesMu.Unlock()
 
 	if state != nil {
+		state.UnsubscribeAll()
 		state.UnwatchAll()
 	}
 }
@@ -231,6 +292,7 @@ func (s *Server) clearClientStates() {
 	s.clientStatesMu.Unlock()
 
 	for _, state := range states {
+		state.UnsubscribeAll()
 		state.UnwatchAll()
 	}
 }

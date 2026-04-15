@@ -171,6 +171,56 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	t.Fatalf("Len() = %d, want 0 after active eviction", store.Len())
 }
 
+func TestStoreSnapshotStrings(t *testing.T) {
+	t.Run("returns defensive copies for supported string keys", func(t *testing.T) {
+		store := NewStore()
+		store.Set("name", []byte("RuneDB"), 0)
+
+		entries, stats := store.SnapshotStrings()
+		if stats.TotalKeys != 1 {
+			t.Fatalf("stats.TotalKeys = %d, want 1", stats.TotalKeys)
+		}
+		if stats.ExportedKeys != 1 {
+			t.Fatalf("stats.ExportedKeys = %d, want 1", stats.ExportedKeys)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("len(entries) = %d, want 1", len(entries))
+		}
+
+		entries[0].Value[0] = 'r'
+		got, ok, err := store.Get("name")
+		if err != nil {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if !ok {
+			t.Fatal("Get() ok = false, want true")
+		}
+		if string(got) != "RuneDB" {
+			t.Fatalf("Get() value = %q, want %q", string(got), "RuneDB")
+		}
+	})
+
+	t.Run("skips expired and unsupported keys", func(t *testing.T) {
+		store := NewStore()
+		store.Set("alive", []byte("yes"), 0)
+		store.Set("expired", []byte("gone"), time.Now().Add(-time.Millisecond).UnixMilli())
+		if _, err := store.RightPush("jobs", [][]byte{[]byte("one")}); err != nil {
+			t.Fatalf("RightPush() error = %v", err)
+		}
+
+		entries, stats := store.SnapshotStrings()
+		if len(entries) != 1 || entries[0].Key != "alive" {
+			t.Fatalf("SnapshotStrings() entries = %#v, want only alive string key", entries)
+		}
+		if stats.SkippedExpiredKeys != 1 {
+			t.Fatalf("stats.SkippedExpiredKeys = %d, want 1", stats.SkippedExpiredKeys)
+		}
+		if stats.SkippedUnsupportedKeys != 1 {
+			t.Fatalf("stats.SkippedUnsupportedKeys = %d, want 1", stats.SkippedUnsupportedKeys)
+		}
+	})
+}
+
 func TestStoreConcurrentAccess(t *testing.T) {
 	store := NewStore()
 

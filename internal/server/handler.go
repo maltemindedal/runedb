@@ -13,16 +13,24 @@ import (
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {
 	defer s.handlerWG.Done()
 	defer s.registry.Remove(clientID)
-	defer s.replicaPeers.Remove(clientID)
 	defer s.removeClientState(clientID)
 
+	parser := protocol.NewParser(conn)
+	writer := bufio.NewWriter(conn)
+
 	if state := s.getClientState(clientID); state != nil {
+		state.BindResponseWriter(writer)
 		ctx = WithClientState(ctx, state)
 	}
 
 	logger := s.logger.With("client_id", clientID, "remote_addr", conn.RemoteAddr().String())
 	logger.Debug("client connected")
 	defer logger.Debug("client disconnected")
+	defer func() {
+		if peer := s.replicaPeers.Remove(clientID); peer != nil {
+			logger.Info("replica disconnected", "replica_id", clientID, "listening_port", peer.ListeningPort)
+		}
+	}()
 	defer func() {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Debug("failed to close connection", "error", err)
@@ -36,9 +44,6 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 	})
 	defer stopClose()
 
-	parser := protocol.NewParser(conn)
-	writer := bufio.NewWriter(conn)
-
 	for {
 		value, err := parser.Parse()
 		if err != nil {
@@ -47,7 +52,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			}
 
 			logger.Warn("failed to parse request", "error", err)
-			if writeErr := s.writeResponses(writer, []protocol.Value{protocol.ErrorValue{Message: "ERR " + err.Error()}}); writeErr != nil {
+			if writeErr := s.writeClientResponses(ctx, writer, []protocol.Value{protocol.ErrorValue{Message: "ERR " + err.Error()}}); writeErr != nil {
 				logger.Warn("failed to write parser error", "parse_error", err, "write_error", writeErr)
 				return
 			}
@@ -63,7 +68,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			result = SingleResponse(responseError(execErr))
 		}
 
-		if err := s.writeResponses(writer, result.Responses); err != nil {
+		if err := s.writeClientResponses(ctx, writer, result.Responses); err != nil {
 			if len(result.Propagation) > 0 {
 				report := s.propagateToReplicas(result.Propagation)
 				s.recordClientWriteOffset(ctx, report.endOffset)
@@ -79,6 +84,14 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			s.recordClientWriteOffset(ctx, report.endOffset)
 		}
 	}
+}
+
+func (s *Server) writeClientResponses(ctx context.Context, writer *bufio.Writer, values []protocol.Value) error {
+	if state, ok := ClientStateFromContext(ctx); ok && state != nil {
+		return state.WriteResponses(values)
+	}
+
+	return s.writeResponses(writer, values)
 }
 
 func (s *Server) writeResponses(writer *bufio.Writer, values []protocol.Value) error {

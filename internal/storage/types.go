@@ -36,6 +36,23 @@ type StreamEntry struct {
 	Values [][]byte
 }
 
+// StringSnapshotEntry is the shutdown-persistence representation for the
+// currently supported RDB writer scope: DB 0 string keys only.
+type StringSnapshotEntry struct {
+	Key       string
+	Value     []byte
+	ExpiresAt int64
+}
+
+// StringSnapshotStats summarizes the export of supported string keys from the
+// in-memory store.
+type StringSnapshotStats struct {
+	TotalKeys              int
+	ExportedKeys           int
+	SkippedExpiredKeys     int
+	SkippedUnsupportedKeys int
+}
+
 // StoredValue is the internal representation of an item stored in RuneDB.
 //
 // ExpiresAt is stored as a Unix timestamp in milliseconds. A value of 0 means

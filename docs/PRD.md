@@ -13,7 +13,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 2:** Done
 - **Phase 3:** Done
 - **Phase 4:** Done (`RDB` startup loading is implemented for DB 0 string keys, and replication handshake/propagation/`WAIT` support is implemented)
-- **Phase 5:** Partial (`--requirepass` / client auth state scaffold exists, but pub/sub and full AUTH flow are not implemented)
+- **Phase 5:** Done
 
 ## 1. Executive Summary
 
@@ -153,7 +153,7 @@ Implement the Redis replication protocol.
 - [x] Handle database selectors (`0xFE`) and expiry metadata opcodes (`0xFD`, `0xFC`)
 - [x] Load the keys into the in-memory map before accepting TCP connections
 
-Current implementation scope: startup-time loading via `--rdb`, DB `0` only, and string values only. Unsupported databases or value types fail fast during startup.
+Current implementation scope: startup-time loading via `--rdb` plus graceful shutdown snapshots to `dump.rdb`, DB `0` only, and string values only. Unsupported databases or value types fail fast during startup, while unsupported in-memory value types are skipped with a warning during shutdown snapshotting.
 
 #### Master / Replica Handshake — **Done**
 
@@ -177,29 +177,30 @@ Current implementation scope: startup-time loading via `--rdb`, DB `0` only, and
 - [x] Replicas reply with `REPLCONF ACK <offset>`
 - [x] Master resumes the client when `<numreplicas>` have reported an offset greater than or equal to the Master's offset, or when `<timeout>` is reached
 
-### Phase 5: Pub/Sub & Security — **Partial**
+### Phase 5: Pub/Sub & Security — **Done**
 
-#### Pub/Sub Engine (`SUBSCRIBE`, `PUBLISH`) — **Not done**
+#### Pub/Sub Engine (`SUBSCRIBE`, `PUBLISH`) — **Done**
 
-- [ ] Maintain a global `map[string][]net.Conn` mapping channel names to active client sockets
-- [ ] When a client issues `SUBSCRIBE`, flag their connection
-- [ ] They can now only issue `PING`, `SUBSCRIBE`, and `UNSUBSCRIBE` commands
-- [ ] `PUBLISH <channel> <msg>`:
-  - [ ] Look up the channel in the map
-  - [ ] Format a RESP Array (e.g., `*3\r\n$7\r\nmessage\r\n...`)
-  - [ ] Write it to all matching client sockets
+- [x] Maintain a global `map[string][]net.Conn` mapping channel names to active client sockets *(implemented as a shared channel-to-client-state registry with synchronized connection writers)*
+- [x] When a client issues `SUBSCRIBE`, flag their connection
+- [x] They can now only issue `PING`, `SUBSCRIBE`, and `UNSUBSCRIBE` commands
+- [x] `PUBLISH <channel> <msg>`:
+  - [x] Look up the channel in the map
+  - [x] Format a RESP Array (e.g., `*3\r\n$7\r\nmessage\r\n...`)
+  - [x] Write it to all matching client sockets
 
-#### Authentication (`AUTH <password>`) — **Partial**
+#### Authentication (`AUTH <password>`) — **Done**
 
 - [x] Allow passing a `--requirepass` flag on server startup
+- [x] Allow replicas to authenticate to protected masters via a `masterauth`-style configuration path
 - [x] If set, all client connections initialize with `Authenticated = false`
-- [ ] Reject all commands (return `-NOAUTH Authentication required.\r\n`) except `AUTH` and `PING` until `AUTH` is successfully called
+- [x] Reject all commands (return `-NOAUTH Authentication required.\r\n`) except `AUTH` and `PING` until `AUTH` is successfully called
 
 ## 4. Non-Functional Requirements (Production Readiness)
 
 - [x] **High concurrency performance:** Avoid blocking the main accept loop. Lock contention is minimized, and `GET` uses `RLock()` / `RUnlock()` paths.
-- [~] **Graceful shutdown:** Signal-driven shutdown, listener stop, client cleanup, and handler waiting are implemented; flushing state to `dump.rdb` is not.
-- [~] **Observability:** `log/slog` structured logging is in place and logs connection / parser / response issues; replication is implemented, but dedicated replication-specific metrics/logging are still limited.
+- [x] **Graceful shutdown:** Signal-driven shutdown, listener stop, client cleanup, handler waiting, and shutdown-time flushing of the supported RDB snapshot scope to `dump.rdb` are implemented.
+- [x] **Observability:** `log/slog` structured logging is in place for connection / parser / response issues and now includes replication-specific lifecycle events such as replica registration/removal, FULLRESYNC snapshot application, ACK handling, `WAIT`, and propagation outcomes.
 
 ## 5. Out of Scope (For V1)
 
