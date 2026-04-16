@@ -254,24 +254,25 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 		return nil, false, nil
 	}
 
-	take := int(count)
-	if take > len(list) {
-		take = len(list)
+	take := int64(len(list))
+	if count < take {
+		take = count
 	}
-	popped := make([][]byte, take)
+	n := int(take)
+	popped := make([][]byte, n)
 	if left {
-		for i := 0; i < take; i++ {
+		for i := 0; i < n; i++ {
 			popped[i] = list[i]
 			list[i] = nil
 		}
-		list = list[take:]
+		list = list[n:]
 	} else {
-		for i := 0; i < take; i++ {
+		for i := 0; i < n; i++ {
 			src := len(list) - 1 - i
 			popped[i] = list[src]
 			list[src] = nil
 		}
-		list = list[:len(list)-take]
+		list = list[:len(list)-n]
 	}
 
 	value.List = list

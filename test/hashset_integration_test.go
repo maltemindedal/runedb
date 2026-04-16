@@ -75,6 +75,10 @@ func TestServerHandlesHashSetAndListPopCommands(t *testing.T) {
 	if !ok || len(array.Elements) != 2 {
 		t.Fatalf("HGETALL = %+v, want 2-element array", got)
 	}
+	pairs := collectBulkStrings(t, array)
+	if len(pairs) != 2 || pairs[0] != "f2" || pairs[1] != "v2" {
+		t.Fatalf("HGETALL pairs = %v, want [f2 v2]", pairs)
+	}
 
 	// SADD / SISMEMBER / SREM / SMEMBERS
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 3}, "SADD", "s", "a", "b", "c")

@@ -73,6 +73,35 @@ func TestExecutorLPopRPop(t *testing.T) {
 		assertValueEqual(t, value, protocol.BulkString{Data: []byte("b")})
 	})
 
+	t.Run("RPOP with count returns array in tail-first order", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := context.Background()
+		if _, err := executor.Execute(ctx, requestValue("RPUSH", "k", "a", "b", "c")); err != nil {
+			t.Fatalf("RPUSH error = %v", err)
+		}
+
+		value, err := executor.Execute(ctx, requestValue("RPOP", "k", "2"))
+		if err != nil {
+			t.Fatalf("RPOP k 2 error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.BulkString{Data: []byte("c")},
+			protocol.BulkString{Data: []byte("b")},
+		}})
+	})
+
+	t.Run("RPOP missing key with count returns null array", func(t *testing.T) {
+		executor := newTestExecutor()
+		value, err := executor.Execute(context.Background(), requestValue("RPOP", "missing", "3"))
+		if err != nil {
+			t.Fatalf("RPOP missing 3 error = %v", err)
+		}
+		array, ok := value.(protocol.Array)
+		if !ok || !array.Null {
+			t.Fatalf("RPOP missing 3 = %+v, want null array", value)
+		}
+	})
+
 	t.Run("LPOP rejects negative count", func(t *testing.T) {
 		executor := newTestExecutor()
 		ctx := context.Background()
