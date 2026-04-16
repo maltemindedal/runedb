@@ -30,14 +30,14 @@ var (
 // Store is a thread-safe in-memory key/value store.
 type Store struct {
 	mu      sync.RWMutex
-	data    map[string]StoredValue
+	data    map[string]*ValueObject
 	waiters *listWaiters
 	logger  *slog.Logger
 }
 
 // NewStore constructs an empty Store.
 func NewStore() *Store {
-	return &Store{data: make(map[string]StoredValue), waiters: newListWaiters()}
+	return &Store{data: make(map[string]*ValueObject), waiters: newListWaiters()}
 }
 
 // SetLogger configures optional structured logging for background store operations.
@@ -134,7 +134,7 @@ func (s *Store) Increment(key string) (int64, error) {
 
 	current++
 	value.String = []byte(strconv.FormatInt(current, 10))
-	s.data[key] = value
+	value.LastAccessedAt = now
 	return current, nil
 }
 
@@ -174,13 +174,113 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 	list[0] = nil
 	list = list[1:]
 	value.List = list
+	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(list) == 0 {
 		delete(s.data, key)
-	} else {
-		s.data[key] = value
 	}
 
 	return item, true, nil
+}
+
+// RightPop removes and returns the right-most value from the list stored at key.
+func (s *Store) RightPop(key string) ([]byte, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	value, ok := s.data[key]
+	if ok && isExpired(value, time.Now().UnixMilli()) {
+		delete(s.data, key)
+		ok = false
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	list, err := value.ListValue()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(list) == 0 {
+		delete(s.data, key)
+		return nil, false, nil
+	}
+
+	last := len(list) - 1
+	item := list[last]
+	list[last] = nil
+	list = list[:last]
+	value.List = list
+	value.LastAccessedAt = time.Now().UnixMilli()
+	if len(list) == 0 {
+		delete(s.data, key)
+	}
+
+	return item, true, nil
+}
+
+// LeftPopN removes and returns up to count left-most values from the list stored at key.
+// Returns (nil, false, nil) when the key is missing or expired.
+func (s *Store) LeftPopN(key string, count int64) ([][]byte, bool, error) {
+	return s.popN(key, count, true)
+}
+
+// RightPopN removes and returns up to count right-most values from the list stored at key.
+// Returns (nil, false, nil) when the key is missing or expired.
+func (s *Store) RightPopN(key string, count int64) ([][]byte, bool, error) {
+	return s.popN(key, count, false)
+}
+
+func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error) {
+	if count < 0 {
+		return nil, false, ErrSyntax
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	value, ok := s.data[key]
+	if ok && isExpired(value, time.Now().UnixMilli()) {
+		delete(s.data, key)
+		ok = false
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	list, err := value.ListValue()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(list) == 0 {
+		delete(s.data, key)
+		return nil, false, nil
+	}
+
+	take := int(count)
+	if take > len(list) {
+		take = len(list)
+	}
+	popped := make([][]byte, take)
+	if left {
+		for i := 0; i < take; i++ {
+			popped[i] = list[i]
+			list[i] = nil
+		}
+		list = list[take:]
+	} else {
+		for i := 0; i < take; i++ {
+			src := len(list) - 1 - i
+			popped[i] = list[src]
+			list[src] = nil
+		}
+		list = list[:len(list)-take]
+	}
+
+	value.List = list
+	value.LastAccessedAt = time.Now().UnixMilli()
+	if len(list) == 0 {
+		delete(s.data, key)
+	}
+
+	return popped, true, nil
 }
 
 // ListRange returns an inclusive range of values from the list stored at key.
@@ -435,7 +535,7 @@ func (s *Store) ReplaceWith(other *Store) {
 	}
 
 	other.mu.RLock()
-	replacement := make(map[string]StoredValue, len(other.data))
+	replacement := make(map[string]*ValueObject, len(other.data))
 	for key, value := range other.data {
 		replacement[key] = value
 	}
@@ -582,8 +682,8 @@ func normalizeListIndex(length int, index int64) int {
 	return int(index)
 }
 
-func isExpired(value StoredValue, now int64) bool {
-	return value.ExpiresAt > 0 && now > value.ExpiresAt
+func isExpired(value *ValueObject, now int64) bool {
+	return value != nil && value.ExpiresAt > 0 && now > value.ExpiresAt
 }
 
 // ParseExpiryMillis parses Redis-style EX/PX arguments into a Unix-millis deadline.

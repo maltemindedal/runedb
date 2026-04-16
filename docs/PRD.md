@@ -14,7 +14,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 3:** Done
 - **Phase 4:** Done (`RDB` startup loading is implemented for DB 0 string keys, and replication handshake/propagation/`WAIT` support is implemented)
 - **Phase 5:** Done
-- **Phase 6:** Planned
+- **Phase 6:** Done
 - **Phase 7:** Planned
 - **Phase 8:** Planned
 - **Phase 9:** Planned
@@ -202,36 +202,36 @@ Current implementation scope: startup-time loading via `--rdb` plus graceful shu
 - [x] If set, all client connections initialize with `Authenticated = false`
 - [x] Reject all commands (return `-NOAUTH Authentication required.\r\n`) except `AUTH` and `PING` until `AUTH` is successfully called
 
-### Phase 6: Unified Value Model & Additional Types — **Planned**
+### Phase 6: Unified Value Model & Additional Types — **Done**
 
 Extend the current value model so additional Redis-compatible data types can share a consistent storage abstraction.
 
-#### Value Object Refactor — **Planned**
+#### Value Object Refactor — **Done**
 
-- [ ] Transition the underlying store to `map[string]*ValueObject`.
-- [ ] Let `ValueObject` hold the logical type, payload, TTL metadata, and future access metadata.
-- [ ] Update `SET`, `GET`, and `INCR` to operate through the unified value representation.
+- [x] Transition the underlying store to `map[string]*ValueObject`.
+- [x] Let `ValueObject` hold the logical type, payload, TTL metadata, and future access metadata.
+- [x] Update `SET`, `GET`, and `INCR` to operate through the unified value representation.
 
-#### Strict Type Enforcement — **Planned**
+#### Strict Type Enforcement — **Done**
 
-- [ ] Introduce the Redis-style `WRONGTYPE` error path.
-- [ ] Validate the stored value kind before executing type-specific commands.
+- [x] Introduce the Redis-style `WRONGTYPE` error path.
+- [x] Validate the stored value kind before executing type-specific commands.
 
-#### Hashes (`HSET`, `HGET`, `HDEL`, `HGETALL`) — **Planned**
+#### Hashes (`HSET`, `HGET`, `HDEL`, `HGETALL`) — **Done**
 
-- [ ] Back hashes with a `map[string]string`-style structure.
-- [ ] Implement `HSET` and `HGET`.
-- [ ] Implement `HDEL` and `HGETALL`, including RESP array packing.
+- [x] Back hashes with a `map[string]string`-style structure.
+- [x] Implement `HSET` and `HGET`.
+- [x] Implement `HDEL` and `HGETALL`, including RESP array packing.
 
-#### Lists (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`) — **Planned**
+#### Lists (`LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE`) — **Done**
 
-- [ ] Normalize list storage behind `ValueObject`.
-- [ ] Round out list operations with `LPOP`, `RPOP`, and `LRANGE`.
+- [x] Normalize list storage behind `ValueObject`.
+- [x] Round out list operations with `LPOP`, `RPOP`, and `LRANGE`.
 
-#### Sets (`SADD`, `SISMEMBER`, `SREM`, `SMEMBERS`) — **Planned**
+#### Sets (`SADD`, `SISMEMBER`, `SREM`, `SMEMBERS`) — **Done**
 
-- [ ] Back sets with `map[string]struct{}` for $O(1)$ membership checks.
-- [ ] Implement `SADD`, `SISMEMBER`, `SREM`, and `SMEMBERS`.
+- [x] Back sets with `map[string]struct{}` for $O(1)$ membership checks.
+- [x] Implement `SADD`, `SISMEMBER`, `SREM`, and `SMEMBERS`.
 
 ### Phase 7: Sharded Concurrency & Scaling — **Planned**
 
