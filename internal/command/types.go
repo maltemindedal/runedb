@@ -331,6 +331,16 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleLRange,
 			validate: validateLRangeRequest,
 		},
+		"LPOP": {
+			handler:    e.handleLPop,
+			validate:   validateLPopRequest,
+			propagates: true,
+		},
+		"RPOP": {
+			handler:    e.handleRPop,
+			validate:   validateRPopRequest,
+			propagates: true,
+		},
 		"BLPOP": {
 			handler:  e.handleBLPop,
 			validate: exactArgsValidator("BLPOP", 1),
@@ -351,6 +361,42 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 		"XREAD": {
 			handler:  e.handleXRead,
 			validate: validateXReadRequest,
+		},
+		"HSET": {
+			handler:    e.handleHSet,
+			validate:   validateHSetRequest,
+			propagates: true,
+		},
+		"HGET": {
+			handler:  e.handleHGet,
+			validate: exactArgsValidator("HGET", 2),
+		},
+		"HDEL": {
+			handler:    e.handleHDel,
+			validate:   minArgsValidator("HDEL", 2),
+			propagates: true,
+		},
+		"HGETALL": {
+			handler:  e.handleHGetAll,
+			validate: exactArgsValidator("HGETALL", 1),
+		},
+		"SADD": {
+			handler:    e.handleSAdd,
+			validate:   minArgsValidator("SADD", 2),
+			propagates: true,
+		},
+		"SISMEMBER": {
+			handler:  e.handleSIsMember,
+			validate: exactArgsValidator("SISMEMBER", 2),
+		},
+		"SREM": {
+			handler:    e.handleSRem,
+			validate:   minArgsValidator("SREM", 2),
+			propagates: true,
+		},
+		"SMEMBERS": {
+			handler:  e.handleSMembers,
+			validate: exactArgsValidator("SMEMBERS", 1),
 		},
 		"PUBLISH": {
 			handler:    e.handlePublish,

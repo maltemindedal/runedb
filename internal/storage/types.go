@@ -1,8 +1,11 @@
 package storage
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
-var errInvalidStoredValue = errors.New("storage: invalid stored value state")
+var errInvalidValueObjectState = errors.New("storage: invalid value object state")
 
 // ValueKind identifies the logical data shape of a stored value.
 type ValueKind string
@@ -16,7 +19,17 @@ const (
 	ValueKindZSet ValueKind = "zset"
 	// ValueKindStream is the Phase 2 stream storage type used by XADD/XREAD.
 	ValueKindStream ValueKind = "stream"
+	// ValueKindHash is the Phase 6 hash storage type used by HSET/HGET/HDEL/HGETALL.
+	ValueKindHash ValueKind = "hash"
+	// ValueKindSet is the Phase 6 set storage type used by SADD/SISMEMBER/SREM/SMEMBERS.
+	ValueKindSet ValueKind = "set"
 )
+
+// HashFieldValue represents a field/value pair for hash commands.
+type HashFieldValue struct {
+	Field string
+	Value []byte
+}
 
 // ZSetEntry represents a member/score pair in a sorted set.
 type ZSetEntry struct {
@@ -53,21 +66,30 @@ type StringSnapshotStats struct {
 	SkippedUnsupportedKeys int
 }
 
-// StoredValue is the internal representation of an item stored in RuneDB.
+// ValueObject is the internal representation of an item stored in RuneDB.
 //
-// ExpiresAt is stored as a Unix timestamp in milliseconds. A value of 0 means
-// the key does not expire.
-type StoredValue struct {
-	String    []byte
-	List      [][]byte
-	ZSet      *sortedSet
-	Stream    *streamValue
-	ExpiresAt int64
-	Kind      ValueKind
+// The type is a tagged union: Kind selects which payload field is valid.
+// ExpiresAt is stored as a Unix timestamp in milliseconds; 0 means no TTL.
+// LastAccessedAt is Phase 11 scaffolding: constructors stamp it at write
+// time so LRU-style eviction can consume it later. Read paths intentionally
+// do not refresh it here to preserve the RLock fast path on Get.
+type ValueObject struct {
+	String         []byte
+	List           [][]byte
+	ZSet           *sortedSet
+	Stream         *streamValue
+	Hash           map[string][]byte
+	Set            map[string]struct{}
+	ExpiresAt      int64
+	LastAccessedAt int64
+	Kind           ValueKind
 }
 
 // StringValue returns the string payload for a string value.
-func (v StoredValue) StringValue() ([]byte, error) {
+func (v *ValueObject) StringValue() ([]byte, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
 	if v.Kind != ValueKindString {
 		return nil, ErrWrongType
 	}
@@ -76,7 +98,10 @@ func (v StoredValue) StringValue() ([]byte, error) {
 }
 
 // ListValue returns the list payload for a list value.
-func (v StoredValue) ListValue() ([][]byte, error) {
+func (v *ValueObject) ListValue() ([][]byte, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
 	if v.Kind != ValueKindList {
 		return nil, ErrWrongType
 	}
@@ -85,60 +110,118 @@ func (v StoredValue) ListValue() ([][]byte, error) {
 }
 
 // ZSetValue returns the sorted-set payload for a sorted-set value.
-func (v StoredValue) ZSetValue() (*sortedSet, error) {
+func (v *ValueObject) ZSetValue() (*sortedSet, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
 	if v.Kind != ValueKindZSet {
 		return nil, ErrWrongType
 	}
 	if v.ZSet == nil {
-		return nil, errInvalidStoredValue
+		return nil, errInvalidValueObjectState
 	}
 
 	return v.ZSet, nil
 }
 
 // StreamValue returns the stream payload for a stream value.
-func (v StoredValue) StreamValue() (*streamValue, error) {
+func (v *ValueObject) StreamValue() (*streamValue, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
 	if v.Kind != ValueKindStream {
 		return nil, ErrWrongType
 	}
 	if v.Stream == nil {
-		return nil, errInvalidStoredValue
+		return nil, errInvalidValueObjectState
 	}
 
 	return v.Stream, nil
 }
 
-func newStringValue(data []byte, expiresAt int64) StoredValue {
-	return StoredValue{
-		String:    cloneBytes(data),
-		ExpiresAt: expiresAt,
-		Kind:      ValueKindString,
+func newStringValue(data []byte, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		String:         cloneBytes(data),
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindString,
 	}
 }
 
 // newListValue stores an already-owned list representation without cloning.
 // Callers must only pass slices whose element bytes are not aliased with caller-
 // controlled memory.
-func newListValue(items [][]byte, expiresAt int64) StoredValue {
-	return StoredValue{
-		List:      items,
-		ExpiresAt: expiresAt,
-		Kind:      ValueKindList,
+func newListValue(items [][]byte, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		List:           items,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindList,
 	}
 }
 
-func newZSetValue(set *sortedSet, expiresAt int64) StoredValue {
-	return StoredValue{
-		ZSet:      set,
-		ExpiresAt: expiresAt,
-		Kind:      ValueKindZSet,
+func newZSetValue(set *sortedSet, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		ZSet:           set,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindZSet,
 	}
 }
 
-func newStreamValue(stream *streamValue, expiresAt int64) StoredValue {
-	return StoredValue{
-		Stream:    stream,
-		ExpiresAt: expiresAt,
-		Kind:      ValueKindStream,
+func newStreamValue(stream *streamValue, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		Stream:         stream,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindStream,
+	}
+}
+
+// HashValue returns the hash payload for a hash value.
+func (v *ValueObject) HashValue() (map[string][]byte, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindHash {
+		return nil, ErrWrongType
+	}
+	if v.Hash == nil {
+		return nil, errInvalidValueObjectState
+	}
+
+	return v.Hash, nil
+}
+
+// SetValue returns the set payload for a set value.
+func (v *ValueObject) SetValue() (map[string]struct{}, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return nil, ErrWrongType
+	}
+	if v.Set == nil {
+		return nil, errInvalidValueObjectState
+	}
+
+	return v.Set, nil
+}
+
+func newHashValue(fields map[string][]byte, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		Hash:           fields,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindHash,
+	}
+}
+
+func newSetValue(members map[string]struct{}, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		Set:            members,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindSet,
 	}
 }
