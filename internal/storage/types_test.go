@@ -38,8 +38,8 @@ func TestValueObjectAccessorsRejectInvalidTaggedUnionState(t *testing.T) {
 
 func TestStoreRejectsInvalidTaggedUnionState(t *testing.T) {
 	store := NewStore()
-	store.data["leaders"] = &ValueObject{Kind: ValueKindZSet}
-	store.data["events"] = &ValueObject{Kind: ValueKindStream}
+	store.setValueObjectForTest("leaders", &ValueObject{Kind: ValueKindZSet})
+	store.setValueObjectForTest("events", &ValueObject{Kind: ValueKindStream})
 
 	if _, err := store.ZRange("leaders", 0, -1); !errors.Is(err, errInvalidValueObjectState) {
 		t.Fatalf("ZRange() error = %v, want errInvalidValueObjectState", err)

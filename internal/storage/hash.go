@@ -9,13 +9,14 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	now := time.Now().UnixMilli()
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
@@ -41,7 +42,7 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 	if ok {
 		value.LastAccessedAt = now
 	} else {
-		s.data[key] = newHashValue(fields, 0)
+		shard.data[key] = newHashValue(fields, 0)
 	}
 
 	return added, nil
@@ -50,36 +51,37 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 // HGet returns the value of the supplied field on the hash stored at key.
 func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, false, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return nil, false, nil
 	}
 	fields, err := value.HashValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, false, err
 	}
 	raw, exists := fields[field]
 	if !exists {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, false, nil
 	}
 	cloned := cloneBytes(raw)
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return cloned, true, nil
 }
@@ -91,12 +93,13 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 	if !ok {
@@ -117,7 +120,7 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 
 	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(hash) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 	}
 
 	return removed, nil
@@ -127,27 +130,28 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 // not guaranteed and mirrors Redis semantics.
 func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return []HashFieldValue{}, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return []HashFieldValue{}, nil
 	}
 	hash, err := value.HashValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, err
 	}
 
@@ -155,7 +159,7 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 	for field, raw := range hash {
 		entries = append(entries, HashFieldValue{Field: field, Value: cloneBytes(raw)})
 	}
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return entries, nil
 }

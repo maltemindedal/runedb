@@ -230,10 +230,9 @@ func TestStoreHash(t *testing.T) {
 		if _, err := store.HSet("h", []HashFieldValue{{Field: "f", Value: []byte("v")}}); err != nil {
 			t.Fatalf("HSet() error = %v", err)
 		}
-		// Manually expire
-		store.mu.Lock()
-		store.data["h"].ExpiresAt = time.Now().Add(-time.Second).UnixMilli()
-		store.mu.Unlock()
+		if ok := store.expireKeyForTest("h", time.Now().Add(-time.Second).UnixMilli()); !ok {
+			t.Fatal("expireKeyForTest() ok = false, want true")
+		}
 
 		if _, ok, err := store.HGet("h", "f"); err != nil || ok {
 			t.Fatalf("HGet() after expiry = (%v, %v)", ok, err)

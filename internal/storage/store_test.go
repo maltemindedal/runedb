@@ -615,7 +615,7 @@ func TestStoreStreamBehavior(t *testing.T) {
 
 	t.Run("XAdd recreates expired stream key", func(t *testing.T) {
 		store := NewStore()
-		store.data["events"] = newStreamValue(newStream(), time.Now().Add(-time.Millisecond).UnixMilli())
+		store.setValueObjectForTest("events", newStreamValue(newStream(), time.Now().Add(-time.Millisecond).UnixMilli()))
 
 		id, err := store.XAdd("events", "5-0", [][]byte{[]byte("field"), []byte("value")})
 		if err != nil {
