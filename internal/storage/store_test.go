@@ -252,6 +252,66 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	}
 }
 
+func TestStoreDeleteManyAcrossShards(t *testing.T) {
+	store := NewStore()
+	keys := keysInDistinctShards(t, store, 3)
+
+	store.Set(keys[0], []byte("one"), 0)
+	store.Set(keys[1], []byte("two"), 0)
+	store.Set(keys[2], []byte("stale"), time.Now().Add(-time.Millisecond).UnixMilli())
+
+	removed := store.DeleteMany([]string{keys[0], "missing", keys[1], keys[0], keys[2]})
+	if len(removed) != 2 {
+		t.Fatalf("len(DeleteMany()) = %d, want 2", len(removed))
+	}
+
+	removedSet := make(map[string]struct{}, len(removed))
+	for _, key := range removed {
+		removedSet[key] = struct{}{}
+	}
+	for _, key := range keys[:2] {
+		if _, ok := removedSet[key]; !ok {
+			t.Fatalf("DeleteMany() removed = %v, want key %q", removed, key)
+		}
+		if _, ok, err := store.Get(key); err != nil {
+			t.Fatalf("Get(%q) error = %v", key, err)
+		} else if ok {
+			t.Fatalf("Get(%q) ok = true, want false after delete", key)
+		}
+	}
+	if _, ok, err := store.Get(keys[2]); err != nil {
+		t.Fatalf("Get(%q) error = %v", keys[2], err)
+	} else if ok {
+		t.Fatalf("Get(%q) ok = true, want false for expired key", keys[2])
+	}
+}
+
+func TestStoreDeleteManyConcurrentAcrossShards(t *testing.T) {
+	store := NewStore()
+	keys := keysInDistinctShards(t, store, 4)
+	for _, key := range keys {
+		store.Set(key, []byte(key), 0)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				_ = store.DeleteMany([]string{keys[0], keys[1], keys[2]})
+				return
+			}
+			_ = store.DeleteMany([]string{keys[2], keys[1], keys[3]})
+		}(i)
+	}
+	wg.Wait()
+
+	if got := store.Len(); got != 0 {
+		t.Fatalf("Len() = %d, want 0 after concurrent cross-shard deletes", got)
+	}
+}
+
 func TestStoreListBehavior(t *testing.T) {
 	t.Run("LeftPush and RightPush preserve Redis-style ordering", func(t *testing.T) {
 		store := NewStore()
@@ -491,6 +551,25 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 			t.Fatalf("ZRange() = %#v, want fresh member", values)
 		}
 	})
+}
+
+func keysInDistinctShards(t *testing.T, store *Store, count int) []string {
+	t.Helper()
+
+	keys := make([]string, 0, count)
+	seen := make(map[int]struct{}, count)
+	for i := 0; len(keys) < count; i++ {
+		key := fmt.Sprintf("shard-key-%d", i)
+		shardID := store.shardIndex(key)
+		if _, ok := seen[shardID]; ok {
+			continue
+		}
+
+		seen[shardID] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	return keys
 }
 
 func TestStoreStreamBehavior(t *testing.T) {

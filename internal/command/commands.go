@@ -484,11 +484,21 @@ func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Valu
 
 	removed := int64(0)
 	touched := make([]string, 0, len(request.Args))
-	for _, arg := range request.Args {
-		if e.store.Delete(string(arg)) {
-			removed++
-			touched = append(touched, string(arg))
+	if len(request.Args) == 1 {
+		key := string(request.Args[0])
+		if e.store.Delete(key) {
+			removed = 1
+			touched = append(touched, key)
 		}
+	} else {
+		keys := make([]string, 0, len(request.Args))
+		for _, arg := range request.Args {
+			key := string(arg)
+			keys = append(keys, key)
+		}
+
+		touched = e.store.DeleteMany(keys)
+		removed = int64(len(touched))
 	}
 	if len(touched) > 0 {
 		e.touchWatchKeys(touched...)

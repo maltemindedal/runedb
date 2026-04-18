@@ -5,6 +5,7 @@ import (
 	"hash/maphash"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,6 +110,61 @@ func (s *Store) Delete(key string) bool {
 
 	delete(shard.data, key)
 	return ok
+}
+
+// DeleteMany removes the supplied keys and returns the keys actually removed.
+// Expired keys are treated as absent.
+func (s *Store) DeleteMany(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(keys) == 1 {
+		if s.Delete(keys[0]) {
+			return []string{keys[0]}
+		}
+		return nil
+	}
+
+	keysByShard := make(map[int][]string, len(keys))
+	shardIDs := make([]int, 0, len(keys))
+	for _, key := range keys {
+		shardID := s.shardIndex(key)
+		if _, ok := keysByShard[shardID]; !ok {
+			shardIDs = append(shardIDs, shardID)
+		}
+		keysByShard[shardID] = append(keysByShard[shardID], key)
+	}
+
+	slices.Sort(shardIDs)
+	for _, shardID := range shardIDs {
+		s.shards[shardID].mu.Lock()
+	}
+	defer func() {
+		for i := len(shardIDs) - 1; i >= 0; i-- {
+			s.shards[shardIDs[i]].mu.Unlock()
+		}
+	}()
+
+	now := time.Now().UnixMilli()
+	removed := make([]string, 0, len(keys))
+	for _, shardID := range shardIDs {
+		shard := &s.shards[shardID]
+		for _, key := range keysByShard[shardID] {
+			value, ok := shard.data[key]
+			if !ok {
+				continue
+			}
+			if isExpired(value, now) {
+				delete(shard.data, key)
+				continue
+			}
+
+			delete(shard.data, key)
+			removed = append(removed, key)
+		}
+	}
+
+	return removed
 }
 
 // Increment atomically increments the string value stored at key by one.

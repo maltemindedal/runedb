@@ -1092,6 +1092,40 @@ func TestExecutorTransactions(t *testing.T) {
 		assertValueEqual(t, value, protocol.BulkString{Data: []byte("1")})
 	})
 
+	t.Run("multi-key DEL only touches watchers for removed keys", func(t *testing.T) {
+		executor := newTestExecutor()
+		watcherCtx := withClientStateForExecutor(context.Background(), executor, 1)
+		writerCtx := withClientStateForExecutor(context.Background(), executor, 2)
+
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "watched")); err != nil {
+			t.Fatalf("WATCH error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("SET", "watched", "2")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("SET", "other", "1")); err != nil {
+			t.Fatalf("writer SET error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("DEL", "other", "watched")); err != nil {
+			t.Fatalf("writer DEL error = %v", err)
+		}
+
+		value, err := executor.Execute(watcherCtx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{protocol.SimpleString{Value: "OK"}}})
+
+		value, err = executor.Execute(watcherCtx, requestValue("GET", "watched"))
+		if err != nil {
+			t.Fatalf("GET after EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("2")})
+	})
+
 	t.Run("WATCH is rejected inside MULTI", func(t *testing.T) {
 		executor := newTestExecutor()
 		ctx := withClientStateForExecutor(context.Background(), executor, 1)

@@ -247,15 +247,15 @@ Reduce the single-lock bottleneck by making key ownership explicit and shard-loc
 - [x] Add a fast key-to-shard hashing function, such as `maphash` or FNV-1a.
 - [x] Route commands by calculating `hash(key) % shardCount`.
 
-#### Single-Key Command Refactor — **Planned**
+#### Single-Key Command Refactor — **Done**
 
-- [ ] Update `GET`, `SET`, and `INCR` to lock only the shard that owns the target key.
-- [ ] Preserve throughput by keeping unrelated keys and the accept loop unblocked.
+- [x] Update `GET`, `SET`, and `INCR` to lock only the shard that owns the target key.
+- [x] Preserve throughput by keeping unrelated keys and the accept loop unblocked.
 
-#### Cross-Shard Coordination — **Planned**
+#### Cross-Shard Coordination — **Done**
 
-- [ ] Handle multi-key commands such as `DEL key1 key2 key3` across different shards.
-- [ ] Sort shard IDs before locking to avoid deadlocks, then unlock in reverse order.
+- [x] Handle multi-key commands such as `DEL key1 key2 key3` across different shards.
+- [x] Sort shard IDs before locking to avoid deadlocks, then unlock in reverse order.
 
 ### Phase 8: Durability via Append-Only Files — **Planned**
 
