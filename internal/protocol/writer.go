@@ -8,6 +8,8 @@ import (
 	"sync"
 )
 
+const maxPooledEncodeBufferCap = 64 << 10
+
 var encodeBufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
@@ -18,7 +20,7 @@ var encodeBufferPool = sync.Pool{
 func Encode(value Value) ([]byte, error) {
 	buffer := encodeBufferPool.Get().(*bytes.Buffer)
 	buffer.Reset()
-	defer encodeBufferPool.Put(buffer)
+	defer putEncodeBuffer(buffer)
 
 	if err := WriteValue(buffer, value); err != nil {
 		return nil, err
@@ -31,7 +33,7 @@ func Encode(value Value) ([]byte, error) {
 func EncodeValues(values []Value) ([]byte, error) {
 	buffer := encodeBufferPool.Get().(*bytes.Buffer)
 	buffer.Reset()
-	defer encodeBufferPool.Put(buffer)
+	defer putEncodeBuffer(buffer)
 
 	for _, value := range values {
 		if err := WriteValue(buffer, value); err != nil {
@@ -40,6 +42,18 @@ func EncodeValues(values []Value) ([]byte, error) {
 	}
 
 	return bytes.Clone(buffer.Bytes()), nil
+}
+
+func putEncodeBuffer(buffer *bytes.Buffer) {
+	if buffer == nil {
+		return
+	}
+	if buffer.Cap() > maxPooledEncodeBufferCap {
+		return
+	}
+
+	buffer.Reset()
+	encodeBufferPool.Put(buffer)
 }
 
 // WriteValue writes a RESP value to the provided writer.

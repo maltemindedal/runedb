@@ -792,28 +792,6 @@ func isExpired(value *ValueObject, now int64) bool {
 	return value != nil && value.ExpiresAt > 0 && now > value.ExpiresAt
 }
 
-func (s *Store) setValueObjectForTest(key string, value *ValueObject) {
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-
-	shard.data[key] = value
-}
-
-func (s *Store) expireKeyForTest(key string, expiresAt int64) bool {
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-
-	value, ok := shard.data[key]
-	if !ok {
-		return false
-	}
-
-	value.ExpiresAt = expiresAt
-	return true
-}
-
 // ParseExpiryMillis parses Redis-style EX/PX arguments into a Unix-millis deadline.
 func ParseExpiryMillis(args [][]byte) (int64, error) {
 	if len(args) == 0 {
