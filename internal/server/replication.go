@@ -284,10 +284,12 @@ func (s *Server) propagateToReplicas(values []protocol.Value) propagationReport 
 		s.logger.Warn("failed to encode propagated command", "error", err)
 		return propagationReport{}
 	}
-	report := propagationReport{attempted: s.replicaPeers.Count(), payloadSize: len(payload)}
+
+	peers := s.replicaPeers.Snapshot()
+	report := propagationReport{attempted: len(peers), payloadSize: len(payload)}
 	report.endOffset = s.replication.AdvanceMasterOffset(int64(len(payload)))
 
-	for _, peer := range s.replicaPeers.Snapshot() {
+	for _, peer := range peers {
 		if err := peer.WriteEncoded(payload); err != nil {
 			s.logger.Warn("failed to propagate command to replica", "replica_id", peer.ID, "error", err)
 			report.failed++

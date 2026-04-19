@@ -113,7 +113,7 @@ func (s *Store) Delete(key string) bool {
 }
 
 // DeleteMany removes the supplied keys and returns the keys actually removed.
-// Expired keys are treated as absent.
+// Expired keys are treated as absent. The returned key order is unspecified.
 func (s *Store) DeleteMany(keys []string) []string {
 	if len(keys) == 0 {
 		return nil

@@ -1412,6 +1412,24 @@ func BenchmarkExecutorPublish(b *testing.B) {
 	}
 }
 
+func BenchmarkExecutorDetailedPropagation(b *testing.B) {
+	executor := newTestExecutor()
+	request := requestValue("SET", "name", "RuneDB")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		result, err := executor.ExecuteDetailed(context.Background(), request)
+		if err != nil {
+			b.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Propagation) != 1 {
+			b.Fatalf("len(result.Propagation) = %d, want 1", len(result.Propagation))
+		}
+	}
+}
+
 func TestDecodeRequest(t *testing.T) {
 	tests := []struct {
 		name   string

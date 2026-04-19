@@ -5,28 +5,41 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 )
+
+var encodeBufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
 
 // Encode serializes a RESP value into its wire representation.
 func Encode(value Value) ([]byte, error) {
-	var buffer bytes.Buffer
-	if err := WriteValue(&buffer, value); err != nil {
+	buffer := encodeBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	defer encodeBufferPool.Put(buffer)
+
+	if err := WriteValue(buffer, value); err != nil {
 		return nil, err
 	}
 
-	return buffer.Bytes(), nil
+	return bytes.Clone(buffer.Bytes()), nil
 }
 
 // EncodeValues serializes multiple RESP values into a single wire payload.
 func EncodeValues(values []Value) ([]byte, error) {
-	var buffer bytes.Buffer
+	buffer := encodeBufferPool.Get().(*bytes.Buffer)
+	buffer.Reset()
+	defer encodeBufferPool.Put(buffer)
+
 	for _, value := range values {
-		if err := WriteValue(&buffer, value); err != nil {
+		if err := WriteValue(buffer, value); err != nil {
 			return nil, err
 		}
 	}
 
-	return buffer.Bytes(), nil
+	return bytes.Clone(buffer.Bytes()), nil
 }
 
 // WriteValue writes a RESP value to the provided writer.

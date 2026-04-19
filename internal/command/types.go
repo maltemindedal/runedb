@@ -211,9 +211,9 @@ func (e *Executor) propagationFrames(ctx context.Context, request *Request) []pr
 
 func propagationFrame(request *Request) protocol.Array {
 	elements := make([]protocol.Value, 0, len(request.Args)+1)
-	elements = append(elements, protocol.BulkString{Data: []byte(request.Name)})
+	elements = append(elements, protocol.TextBulkString{Value: request.Name})
 	for _, arg := range request.Args {
-		elements = append(elements, protocol.BulkString{Data: clone(arg)})
+		elements = append(elements, protocol.BulkString{Data: arg})
 	}
 
 	return protocol.Array{Elements: elements}
