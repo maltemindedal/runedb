@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bufio"
 	"bytes"
 	"io"
 	"testing"
@@ -119,6 +120,28 @@ func BenchmarkParserParseParallel(b *testing.B) {
 				}
 			})
 		})
+	}
+}
+
+func BenchmarkParserParseReuseBufferedReader(b *testing.B) {
+	raw := mustEncodeBenchValue(b, Array{Elements: []Value{
+		BulkString{Data: []byte("SET")},
+		BulkString{Data: []byte("key")},
+		BulkString{Data: []byte("value")},
+	}})
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(raw)))
+	reader := bytes.NewReader(raw)
+	buffered := bufio.NewReader(reader)
+	parser := NewParser(buffered)
+
+	for i := 0; i < b.N; i++ {
+		reader.Reset(raw)
+		buffered.Reset(reader)
+		if _, err := parser.Parse(); err != nil {
+			b.Fatalf("Parse() error = %v", err)
+		}
 	}
 }
 

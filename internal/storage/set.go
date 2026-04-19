@@ -9,13 +9,14 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	now := time.Now().UnixMilli()
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
@@ -44,7 +45,7 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 	if ok {
 		value.LastAccessedAt = now
 	} else {
-		s.data[key] = newSetValue(set, 0)
+		shard.data[key] = newSetValue(set, 0)
 	}
 
 	return added, nil
@@ -53,31 +54,32 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 // SIsMember reports whether the supplied member is contained in the set stored at key.
 func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return false, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return false, nil
 	}
 	set, err := value.SetValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return false, err
 	}
 	_, exists := set[string(member)]
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return exists, nil
 }
@@ -89,12 +91,13 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 	if !ok {
@@ -118,7 +121,7 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 
 	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(set) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 	}
 
 	return removed, nil
@@ -128,27 +131,28 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 // guaranteed and mirrors Redis semantics.
 func (s *Store) SMembers(key string) ([][]byte, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return [][]byte{}, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return [][]byte{}, nil
 	}
 	set, err := value.SetValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, err
 	}
 
@@ -156,7 +160,7 @@ func (s *Store) SMembers(key string) ([][]byte, error) {
 	for member := range set {
 		members = append(members, []byte(member))
 	}
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return members, nil
 }

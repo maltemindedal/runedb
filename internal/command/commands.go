@@ -453,8 +453,9 @@ func (e *Executor) handleSet(_ context.Context, request *Request) (protocol.Valu
 		}
 	}
 
-	e.store.Set(string(request.Args[0]), request.Args[1], expiresAt)
-	e.touchWatchKeys(string(request.Args[0]))
+	key := string(request.Args[0])
+	e.store.Set(key, request.Args[1], expiresAt)
+	e.touchWatchKeys(key)
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
@@ -463,7 +464,8 @@ func (e *Executor) handleGet(_ context.Context, request *Request) (protocol.Valu
 		return nil, wrongNumberOfArgumentsError("GET")
 	}
 
-	value, ok, err := e.store.Get(string(request.Args[0]))
+	key := string(request.Args[0])
+	value, ok, err := e.store.Get(key)
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
@@ -484,11 +486,21 @@ func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Valu
 
 	removed := int64(0)
 	touched := make([]string, 0, len(request.Args))
-	for _, arg := range request.Args {
-		if e.store.Delete(string(arg)) {
-			removed++
-			touched = append(touched, string(arg))
+	if len(request.Args) == 1 {
+		key := string(request.Args[0])
+		if e.store.Delete(key) {
+			removed = 1
+			touched = append(touched, key)
 		}
+	} else {
+		keys := make([]string, 0, len(request.Args))
+		for _, arg := range request.Args {
+			key := string(arg)
+			keys = append(keys, key)
+		}
+
+		touched = e.store.DeleteMany(keys)
+		removed = int64(len(touched))
 	}
 	if len(touched) > 0 {
 		e.touchWatchKeys(touched...)
@@ -502,7 +514,8 @@ func (e *Executor) handleIncr(_ context.Context, request *Request) (protocol.Val
 		return nil, wrongNumberOfArgumentsError("INCR")
 	}
 
-	value, err := e.store.Increment(string(request.Args[0]))
+	key := string(request.Args[0])
+	value, err := e.store.Increment(key)
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
@@ -514,7 +527,7 @@ func (e *Executor) handleIncr(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
-	e.touchWatchKeys(string(request.Args[0]))
+	e.touchWatchKeys(key)
 	return protocol.Integer{Value: value}, nil
 }
 
@@ -523,7 +536,8 @@ func (e *Executor) handleLPush(_ context.Context, request *Request) (protocol.Va
 		return nil, wrongNumberOfArgumentsError("LPUSH")
 	}
 
-	length, err := e.store.LeftPush(string(request.Args[0]), request.Args[1:])
+	key := string(request.Args[0])
+	length, err := e.store.LeftPush(key, request.Args[1:])
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
@@ -531,7 +545,7 @@ func (e *Executor) handleLPush(_ context.Context, request *Request) (protocol.Va
 		return nil, err
 	}
 
-	e.touchWatchKeys(string(request.Args[0]))
+	e.touchWatchKeys(key)
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -540,7 +554,8 @@ func (e *Executor) handleRPush(_ context.Context, request *Request) (protocol.Va
 		return nil, wrongNumberOfArgumentsError("RPUSH")
 	}
 
-	length, err := e.store.RightPush(string(request.Args[0]), request.Args[1:])
+	key := string(request.Args[0])
+	length, err := e.store.RightPush(key, request.Args[1:])
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
@@ -548,7 +563,7 @@ func (e *Executor) handleRPush(_ context.Context, request *Request) (protocol.Va
 		return nil, err
 	}
 
-	e.touchWatchKeys(string(request.Args[0]))
+	e.touchWatchKeys(key)
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -566,7 +581,8 @@ func (e *Executor) handleLRange(_ context.Context, request *Request) (protocol.V
 		return nil, err
 	}
 
-	values, err := e.store.ListRange(string(request.Args[0]), start, stop)
+	key := string(request.Args[0])
+	values, err := e.store.ListRange(key, start, stop)
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
@@ -626,12 +642,13 @@ func (e *Executor) handleZAdd(_ context.Context, request *Request) (protocol.Val
 		}
 
 		entries = append(entries, storage.ZSetEntry{
-			Member: clone(request.Args[i+1]),
+			Member: request.Args[i+1],
 			Score:  score,
 		})
 	}
 
-	added, err := e.store.ZAdd(string(request.Args[0]), entries)
+	key := string(request.Args[0])
+	added, err := e.store.ZAdd(key, entries)
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
@@ -643,7 +660,7 @@ func (e *Executor) handleZAdd(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
-	e.touchWatchKeys(string(request.Args[0]))
+	e.touchWatchKeys(key)
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -669,7 +686,8 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 		return nil, err
 	}
 
-	entries, err := e.store.ZRange(string(request.Args[0]), start, stop)
+	key := string(request.Args[0])
+	entries, err := e.store.ZRange(key, start, stop)
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
@@ -685,7 +703,8 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 		return nil, wrongNumberOfArgumentsError("XADD")
 	}
 
-	id, err := e.store.XAdd(string(request.Args[0]), string(request.Args[1]), request.Args[2:])
+	key := string(request.Args[0])
+	id, err := e.store.XAdd(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
@@ -701,7 +720,7 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 		}
 	}
 
-	e.touchWatchKeys(string(request.Args[0]))
+	e.touchWatchKeys(key)
 	return protocol.TextBulkString{Value: id}, nil
 }
 
@@ -716,7 +735,8 @@ func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Va
 		return nil, ErrSyntaxError()
 	}
 
-	entries, err := e.store.XRead(string(request.Args[1]), string(request.Args[2]))
+	key := string(request.Args[1])
+	entries, err := e.store.XRead(key, string(request.Args[2]))
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
@@ -788,8 +808,8 @@ func pubSubAckResponse(kind string, channel protocol.Value, count int) protocol.
 func pubSubMessageResponse(channel []byte, payload []byte) protocol.Array {
 	return protocol.Array{Elements: []protocol.Value{
 		protocol.TextBulkString{Value: "message"},
-		protocol.BulkString{Data: clone(channel)},
-		protocol.BulkString{Data: clone(payload)},
+		protocol.BulkString{Data: channel},
+		protocol.BulkString{Data: payload},
 	}}
 }
 

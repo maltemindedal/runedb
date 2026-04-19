@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 )
 
@@ -199,16 +200,67 @@ func trimCRLF(line []byte) ([]byte, error) {
 }
 
 func parseDecimalInt(raw []byte) (int, error) {
-	value, err := strconv.ParseInt(string(raw), 10, 64)
+	value, err := parseIntBytes(raw, 10, 64)
 	if err != nil {
 		return 0, err
 	}
 
-	maxInt := int64(^uint(0) >> 1)
-	minInt := -maxInt - 1
+	maxInt := int64(math.MaxInt)
+	minInt := int64(math.MinInt)
 	if value < minInt || value > maxInt {
 		return 0, fmt.Errorf("value %d out of int range", value)
 	}
 
 	return int(value), nil
+}
+
+func parseIntBytes(raw []byte, base, bitSize int) (int64, error) {
+	if len(raw) == 0 {
+		return 0, strconv.ErrSyntax
+	}
+	if base != 10 {
+		return 0, fmt.Errorf("unsupported base %d", base)
+	}
+	if bitSize <= 0 || bitSize > 64 {
+		return 0, fmt.Errorf("unsupported bit size %d", bitSize)
+	}
+
+	negative := false
+	if raw[0] == '-' {
+		negative = true
+		raw = raw[1:]
+		if len(raw) == 0 {
+			return 0, strconv.ErrSyntax
+		}
+	}
+
+	maxAbs := uint64(1) << (bitSize - 1)
+	maxPositive := maxAbs - 1
+	limit := maxPositive
+	if negative {
+		limit = maxAbs
+	}
+	cutoff := limit / uint64(base)
+	cutlim := limit % uint64(base)
+
+	var value uint64
+	for _, digit := range raw {
+		if digit < '0' || digit > '9' {
+			return 0, strconv.ErrSyntax
+		}
+		parsed := uint64(digit - '0')
+		if value > cutoff || (value == cutoff && parsed > cutlim) {
+			return 0, strconv.ErrRange
+		}
+		value = value*uint64(base) + parsed
+	}
+
+	if negative {
+		if bitSize == 64 && value == maxAbs {
+			return math.MinInt64, nil
+		}
+		return -int64(value), nil
+	}
+
+	return int64(value), nil
 }

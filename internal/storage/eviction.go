@@ -51,15 +51,15 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) int {
 
 	removed := 0
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for _, key := range keys {
-		value, ok := s.data[key]
+		shard := s.shardForKey(key)
+		shard.mu.Lock()
+		value, ok := shard.data[key]
 		if ok && isExpired(value, now) {
-			delete(s.data, key)
+			delete(shard.data, key)
 			removed++
 		}
+		shard.mu.Unlock()
 	}
 
 	return removed

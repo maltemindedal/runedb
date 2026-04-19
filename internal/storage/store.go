@@ -2,8 +2,10 @@ package storage
 
 import (
 	"errors"
+	"hash/maphash"
 	"log/slog"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,15 +31,16 @@ var (
 
 // Store is a thread-safe in-memory key/value store.
 type Store struct {
-	mu      sync.RWMutex
-	data    map[string]*ValueObject
-	waiters *listWaiters
-	logger  *slog.Logger
+	shards   []Shard
+	seed     maphash.Seed
+	waiters  *listWaiters
+	loggerMu sync.RWMutex
+	logger   *slog.Logger
 }
 
 // NewStore constructs an empty Store.
 func NewStore() *Store {
-	return &Store{data: make(map[string]*ValueObject), waiters: newListWaiters()}
+	return &Store{shards: newShards(defaultShardCount), seed: maphash.MakeSeed(), waiters: newListWaiters()}
 }
 
 // SetLogger configures optional structured logging for background store operations.
@@ -46,80 +49,139 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 		return
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.loggerMu.Lock()
+	defer s.loggerMu.Unlock()
 	s.logger = logger
 }
 
 // Set stores a byte slice under the provided key.
 func (s *Store) Set(key string, value []byte, expiresAt int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	s.data[key] = newStringValue(value, expiresAt)
+	shard.data[key] = newStringValue(value, expiresAt)
 }
 
 // Get fetches a value from the store, passively evicting it if it has expired.
 func (s *Store) Get(key string) ([]byte, bool, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, false, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return nil, false, nil
 	}
 	data, err := value.StringValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, true, err
 	}
 	cloned := cloneBytes(data)
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return cloned, true, nil
 }
 
 // Delete removes a key from the store.
 func (s *Store) Delete(key string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		return false
 	}
 
-	delete(s.data, key)
+	delete(shard.data, key)
 	return ok
+}
+
+// DeleteMany removes the supplied keys and returns the keys actually removed.
+// Expired keys are treated as absent. The returned key order is unspecified.
+func (s *Store) DeleteMany(keys []string) []string {
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(keys) == 1 {
+		if s.Delete(keys[0]) {
+			return []string{keys[0]}
+		}
+		return nil
+	}
+
+	keysByShard := make(map[int][]string, len(keys))
+	shardIDs := make([]int, 0, len(keys))
+	for _, key := range keys {
+		shardID := s.shardIndex(key)
+		if _, ok := keysByShard[shardID]; !ok {
+			shardIDs = append(shardIDs, shardID)
+		}
+		keysByShard[shardID] = append(keysByShard[shardID], key)
+	}
+
+	slices.Sort(shardIDs)
+	for _, shardID := range shardIDs {
+		s.shards[shardID].mu.Lock()
+	}
+	defer func() {
+		for i := len(shardIDs) - 1; i >= 0; i-- {
+			s.shards[shardIDs[i]].mu.Unlock()
+		}
+	}()
+
+	now := time.Now().UnixMilli()
+	removed := make([]string, 0, len(keys))
+	for _, shardID := range shardIDs {
+		shard := &s.shards[shardID]
+		for _, key := range keysByShard[shardID] {
+			value, ok := shard.data[key]
+			if !ok {
+				continue
+			}
+			if isExpired(value, now) {
+				delete(shard.data, key)
+				continue
+			}
+
+			delete(shard.data, key)
+			removed = append(removed, key)
+		}
+	}
+
+	return removed
 }
 
 // Increment atomically increments the string value stored at key by one.
 func (s *Store) Increment(key string) (int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
 	now := time.Now().UnixMilli()
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
 	if !ok {
-		s.data[key] = newStringValue([]byte("1"), 0)
+		shard.data[key] = newStringValue([]byte("1"), 0)
 		return 1, nil
 	}
 	currentValue, err := value.StringValue()
@@ -150,12 +212,13 @@ func (s *Store) RightPush(key string, values [][]byte) (int64, error) {
 
 // LeftPop removes and returns the left-most value from the list stored at key.
 func (s *Store) LeftPop(key string) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 	if !ok {
@@ -166,7 +229,7 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 		return nil, false, nil
 	}
 
@@ -176,7 +239,7 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 	value.List = list
 	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 	}
 
 	return item, true, nil
@@ -184,12 +247,13 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 
 // RightPop removes and returns the right-most value from the list stored at key.
 func (s *Store) RightPop(key string) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 	if !ok {
@@ -200,7 +264,7 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 		return nil, false, nil
 	}
 
@@ -211,7 +275,7 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 	value.List = list
 	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 	}
 
 	return item, true, nil
@@ -234,12 +298,13 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 		return nil, false, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 	if !ok {
@@ -250,7 +315,7 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 		return nil, false, nil
 	}
 
@@ -278,7 +343,7 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 	value.List = list
 	value.LastAccessedAt = time.Now().UnixMilli()
 	if len(list) == 0 {
-		delete(s.data, key)
+		delete(shard.data, key)
 	}
 
 	return popped, true, nil
@@ -287,38 +352,39 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 // ListRange returns an inclusive range of values from the list stored at key.
 func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return [][]byte{}, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return [][]byte{}, nil
 	}
 	list, err := value.ListValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, err
 	}
 
 	from, to, ok := normalizeListRange(len(list), start, stop)
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return [][]byte{}, nil
 	}
 
 	cloned := cloneList(list[from : to+1])
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 	return cloned, nil
 }
 
@@ -328,12 +394,13 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
@@ -359,45 +426,46 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		}
 	}
 
-	s.data[key] = newZSetValue(set, expiresAt)
+	shard.data[key] = newZSetValue(set, expiresAt)
 	return added, nil
 }
 
 // ZRange returns an inclusive rank range from the sorted set stored at key.
 func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return []ZSetRangeEntry{}, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return []ZSetRangeEntry{}, nil
 	}
 	set, err := value.ZSetValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, err
 	}
 
 	from, to, ok := normalizeListRange(set.len(), start, stop)
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return []ZSetRangeEntry{}, nil
 	}
 
 	entries := set.rangeByRank(from, to)
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 
 	return entries, nil
 }
@@ -408,12 +476,13 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 		return "", ErrSyntax
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
 
-	value, ok := s.data[key]
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
@@ -437,39 +506,40 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 		return "", err
 	}
 
-	s.data[key] = newStreamValue(stream, expiresAt)
+	shard.data[key] = newStreamValue(stream, expiresAt)
 	return id, nil
 }
 
 // XRead returns stream entries whose IDs are greater than the supplied ID.
 func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
 
-	s.mu.RLock()
-	value, ok := s.data[key]
+	shard.mu.RLock()
+	value, ok := shard.data[key]
 	if !ok {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return []StreamEntry{}, nil
 	}
 	if isExpired(value, now) {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 
-		s.mu.Lock()
-		value, ok = s.data[key]
+		shard.mu.Lock()
+		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(s.data, key)
+			delete(shard.data, key)
 		}
-		s.mu.Unlock()
+		shard.mu.Unlock()
 		return []StreamEntry{}, nil
 	}
 	stream, err := value.StreamValue()
 	if err != nil {
-		s.mu.RUnlock()
+		shard.mu.RUnlock()
 		return nil, err
 	}
 
 	entries, err := stream.readAfter(rawID)
-	s.mu.RUnlock()
+	shard.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
@@ -489,10 +559,15 @@ func (s *Store) UnsubscribeListPush(key string, ch chan struct{}) {
 
 // Len returns the current number of stored keys.
 func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	total := 0
+	s.readLockAllShards()
+	defer s.readUnlockAllShards()
 
-	return len(s.data)
+	for i := range s.shards {
+		total += len(s.shards[i].data)
+	}
+
+	return total
 }
 
 // SnapshotStrings returns defensive copies of the currently supported
@@ -500,27 +575,34 @@ func (s *Store) Len() int {
 func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 	now := time.Now().UnixMilli()
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.readLockAllShards()
+	defer s.readUnlockAllShards()
 
-	stats := StringSnapshotStats{TotalKeys: len(s.data)}
-	entries := make([]StringSnapshotEntry, 0, len(s.data))
-	for key, value := range s.data {
-		if isExpired(value, now) {
-			stats.SkippedExpiredKeys++
-			continue
-		}
-		if value.Kind != ValueKindString {
-			stats.SkippedUnsupportedKeys++
-			continue
-		}
+	totalKeys := 0
+	for i := range s.shards {
+		totalKeys += len(s.shards[i].data)
+	}
 
-		entries = append(entries, StringSnapshotEntry{
-			Key:       key,
-			Value:     cloneBytes(value.String),
-			ExpiresAt: value.ExpiresAt,
-		})
-		stats.ExportedKeys++
+	stats := StringSnapshotStats{TotalKeys: totalKeys}
+	entries := make([]StringSnapshotEntry, 0, totalKeys)
+	for i := range s.shards {
+		for key, value := range s.shards[i].data {
+			if isExpired(value, now) {
+				stats.SkippedExpiredKeys++
+				continue
+			}
+			if value.Kind != ValueKindString {
+				stats.SkippedUnsupportedKeys++
+				continue
+			}
+
+			entries = append(entries, StringSnapshotEntry{
+				Key:       key,
+				Value:     cloneBytes(value.String),
+				ExpiresAt: value.ExpiresAt,
+			})
+			stats.ExportedKeys++
+		}
 	}
 
 	return entries, stats
@@ -535,48 +617,70 @@ func (s *Store) ReplaceWith(other *Store) {
 		return
 	}
 
-	other.mu.RLock()
-	replacement := make(map[string]*ValueObject, len(other.data))
-	for key, value := range other.data {
-		replacement[key] = value
+	other.readLockAllShards()
+	replacement := newShards(len(s.shards))
+	for i := range other.shards {
+		for key, value := range other.shards[i].data {
+			replacement[s.shardIndex(key)].data[key] = value
+		}
 	}
-	other.mu.RUnlock()
+	other.readUnlockAllShards()
 
-	s.mu.Lock()
-	s.data = replacement
-	s.mu.Unlock()
+	s.writeLockAllShards()
+	for i := range s.shards {
+		s.shards[i].data = replacement[i].data
+	}
+	s.writeUnlockAllShards()
 }
 
 func (s *Store) logDebug(msg string, args ...any) {
-	if s == nil || s.logger == nil {
+	if s == nil {
 		return
 	}
 
-	s.logger.Debug(msg, args...)
+	s.loggerMu.RLock()
+	logger := s.logger
+	s.loggerMu.RUnlock()
+	if logger == nil {
+		return
+	}
+
+	logger.Debug(msg, args...)
 }
 
 func (s *Store) logError(msg string, args ...any) {
-	if s == nil || s.logger == nil {
+	if s == nil {
 		return
 	}
 
-	s.logger.Error(msg, args...)
+	s.loggerMu.RLock()
+	logger := s.logger
+	s.loggerMu.RUnlock()
+	if logger == nil {
+		return
+	}
+
+	logger.Error(msg, args...)
 }
 
 func (s *Store) snapshotKeys(limit int) []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if limit <= 0 || limit > len(s.data) {
-		limit = len(s.data)
+	if limit <= 0 {
+		return nil
 	}
 
 	keys := make([]string, 0, limit)
-	for key := range s.data {
-		keys = append(keys, key)
-		if len(keys) == limit {
-			break
+	start := int(time.Now().UnixNano() % int64(len(s.shards)))
+	for offset := 0; offset < len(s.shards) && len(keys) < limit; offset++ {
+		index := (start + offset) % len(s.shards)
+		shard := &s.shards[index]
+		shard.mu.RLock()
+		for key := range shard.data {
+			keys = append(keys, key)
+			if len(keys) == limit {
+				break
+			}
 		}
+		shard.mu.RUnlock()
 	}
 
 	return keys
@@ -610,10 +714,11 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 		return 0, ErrSyntax
 	}
 
-	s.mu.Lock()
-	value, ok := s.data[key]
+	shard := s.shardForKey(key)
+	shard.mu.Lock()
+	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(s.data, key)
+		delete(shard.data, key)
 		ok = false
 	}
 
@@ -623,7 +728,7 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 		var err error
 		list, err = value.ListValue()
 		if err != nil {
-			s.mu.Unlock()
+			shard.mu.Unlock()
 			return 0, err
 		}
 		expiresAt = value.ExpiresAt
@@ -641,9 +746,9 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 		list = append(list, additions...)
 	}
 
-	s.data[key] = newListValue(list, expiresAt)
+	shard.data[key] = newListValue(list, expiresAt)
 	newLen := int64(len(list))
-	s.mu.Unlock()
+	shard.mu.Unlock()
 
 	s.waiters.notifyOne(key)
 	return newLen, nil
