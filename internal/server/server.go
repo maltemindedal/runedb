@@ -114,14 +114,14 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 // ListenAndServe starts the TCP listener and blocks until shutdown.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.runtimeCtx = ctx
-	if err := s.initializePersistence(ctx); err != nil {
-		return err
-	}
 
 	if s.cfg.IsReplica() {
 		if _, err := s.cfg.ReplicaAddress(); err != nil {
 			return fmt.Errorf("server: validate replica configuration: %w", err)
 		}
+	}
+	if err := s.initializePersistence(ctx); err != nil {
+		return err
 	}
 
 	listener, err := net.Listen("tcp", s.cfg.Address())

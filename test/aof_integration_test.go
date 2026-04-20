@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -154,6 +155,25 @@ func TestServerDoesNotPersistPublishToAOF(t *testing.T) {
 
 	stop()
 	waitForServerStop(t, errCh)
+}
+
+func TestServerRejectsInvalidReplicaConfigBeforeOpeningAOF(t *testing.T) {
+	aofPath := filepath.Join(t.TempDir(), "appendonly.aof")
+	cfg := testAOFConfig(aofPath)
+	cfg.ReplicaOf = "not-a-host-port"
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	err := srv.ListenAndServe(context.Background())
+	if err == nil {
+		t.Fatal("ListenAndServe() error = nil, want invalid replica configuration failure")
+	}
+	if _, statErr := os.Stat(aofPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Stat(%q) error = %v, want file not created", aofPath, statErr)
+	}
 }
 
 func TestServerBGRewriteAOFCompactsAndReloads(t *testing.T) {

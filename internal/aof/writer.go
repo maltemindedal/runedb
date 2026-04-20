@@ -179,6 +179,9 @@ func (w *Writer) append(payload []byte, syncNow bool) error {
 	if syncNow {
 		return w.syncLocked()
 	}
+	if w.policy == PolicyNo {
+		return w.flushLocked()
+	}
 
 	return nil
 }
@@ -214,11 +217,19 @@ func (w *Writer) sync() error {
 }
 
 func (w *Writer) syncLocked() error {
-	if err := w.writer.Flush(); err != nil {
-		return fmt.Errorf("aof: flush %q: %w", w.path, err)
+	if err := w.flushLocked(); err != nil {
+		return err
 	}
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("aof: sync %q: %w", w.path, err)
+	}
+
+	return nil
+}
+
+func (w *Writer) flushLocked() error {
+	if err := w.writer.Flush(); err != nil {
+		return fmt.Errorf("aof: flush %q: %w", w.path, err)
 	}
 
 	return nil

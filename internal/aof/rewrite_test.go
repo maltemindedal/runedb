@@ -3,6 +3,7 @@ package aof_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -54,7 +55,10 @@ func TestGenerateRewriteRoundTripsState(t *testing.T) {
 	for {
 		value, parseErr := parser.Parse()
 		if parseErr != nil {
-			break
+			if errors.Is(parseErr, io.EOF) {
+				break
+			}
+			t.Fatalf("Parse() error = %v", parseErr)
 		}
 		if _, execErr := executor.ExecuteDetailed(context.Background(), value); execErr != nil {
 			t.Fatalf("ExecuteDetailed() error = %v", execErr)
