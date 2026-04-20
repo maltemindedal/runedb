@@ -26,6 +26,7 @@ type ExecuteResult struct {
 	Responses       []protocol.Value
 	UpstreamReplies []protocol.Value
 	Propagation     []protocol.Value
+	Durability      []protocol.Value
 	RegisterReplica bool
 }
 
@@ -484,6 +485,10 @@ func (s *Server) startReplicaLink(ctx context.Context, listenerAddr string) {
 			}
 
 			s.logger.Warn("replication stream command failed", "master_addr", masterAddr, "error", execErr)
+			return
+		}
+		if err := s.persistReplicaDurability(result.Durability); err != nil {
+			s.logger.Error("failed to append replicated command to AOF", "master_addr", masterAddr, "error", err)
 			return
 		}
 		if len(result.UpstreamReplies) > 0 {

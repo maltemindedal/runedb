@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
-	"time"
 
+	"github.com/maltemindedal/runedb/internal/aof"
 	"github.com/maltemindedal/runedb/internal/config"
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/rdb"
@@ -39,6 +39,10 @@ type authConfigSetter interface {
 	SetRequirePass(string)
 }
 
+type aofRewriteTriggerSetter interface {
+	SetAOFRewriteTrigger(func(context.Context) error)
+}
+
 type temporaryError interface {
 	error
 	Temporary() bool
@@ -55,6 +59,8 @@ type Server struct {
 	watchRegistry  *WatchRegistry
 	pubSubRegistry *PubSubRegistry
 	replication    *ReplicationState
+	aofWriter      *aof.Writer
+	runtimeCtx     context.Context
 
 	clientStates   map[uint64]*ClientState
 	clientStatesMu sync.RWMutex
@@ -98,36 +104,31 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 	if setter, ok := executor.(authConfigSetter); ok {
 		setter.SetRequirePass(cfg.RequirePass)
 	}
+	if setter, ok := executor.(aofRewriteTriggerSetter); ok {
+		setter.SetAOFRewriteTrigger(srv.beginAOFRewrite)
+	}
 
 	return srv
 }
 
 // ListenAndServe starts the TCP listener and blocks until shutdown.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	s.runtimeCtx = ctx
+	if err := s.initializePersistence(ctx); err != nil {
+		return err
+	}
+
 	if s.cfg.IsReplica() {
 		if _, err := s.cfg.ReplicaAddress(); err != nil {
 			return fmt.Errorf("server: validate replica configuration: %w", err)
 		}
 	}
 
-	if s.cfg.RDBPath != "" {
-		startedAt := time.Now()
-		stats, err := rdb.LoadFile(s.cfg.RDBPath, s.store)
-		if err != nil {
-			return fmt.Errorf("server: load rdb %q: %w", s.cfg.RDBPath, err)
-		}
-
-		s.logger.Info(
-			"loaded RDB snapshot",
-			"path", s.cfg.RDBPath,
-			"loaded_keys", stats.LoadedKeys,
-			"skipped_expired_keys", stats.SkippedExpiredKeys,
-			"duration", time.Since(startedAt),
-		)
-	}
-
 	listener, err := net.Listen("tcp", s.cfg.Address())
 	if err != nil {
+		if closeErr := s.closeAOFWriter(); closeErr != nil {
+			s.logger.Warn("failed to close AOF writer after listen failure", "error", closeErr)
+		}
 		return fmt.Errorf("server: listen on %s: %w", s.cfg.Address(), err)
 	}
 
@@ -167,6 +168,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 
 	s.handlerWG.Wait()
+	if err := s.closeAOFWriter(); err != nil {
+		return err
+	}
 	if err := s.persistSnapshot(); err != nil {
 		return err
 	}

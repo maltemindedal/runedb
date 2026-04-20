@@ -32,6 +32,7 @@ type commandSpec struct {
 	validate           commandValidator
 	transactionControl bool
 	propagates         bool
+	durable            bool
 }
 
 // Executor routes protocol frames to concrete command handlers.
@@ -44,6 +45,7 @@ type Executor struct {
 	commands       map[string]commandSpec
 	replication    *server.ReplicationState
 	replicaPeers   *server.ReplicaRegistry
+	aofRewrite     func(context.Context) error
 }
 
 // NewExecutor constructs a command executor with the currently supported command set.
@@ -81,6 +83,11 @@ func (e *Executor) SetReplicaRegistry(registry *server.ReplicaRegistry) {
 // SetRequirePass injects the configured connection password requirement.
 func (e *Executor) SetRequirePass(password string) {
 	e.requirePass = password
+}
+
+// SetAOFRewriteTrigger injects the background AOF rewrite hook.
+func (e *Executor) SetAOFRewriteTrigger(trigger func(context.Context) error) {
+	e.aofRewrite = trigger
 }
 
 // Execute dispatches a parsed RESP frame to its command handler.
@@ -138,6 +145,7 @@ func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request,
 
 	result := server.SingleResponse(response)
 	result.Propagation = e.propagationFrames(ctx, request)
+	result.Durability = e.durabilityFrames(request)
 	return result, nil
 }
 
@@ -203,6 +211,15 @@ func (e *Executor) propagationFrames(ctx context.Context, request *Request) []pr
 
 	spec, ok := e.command(request.Name)
 	if !ok || !spec.propagates {
+		return nil
+	}
+
+	return []protocol.Value{propagationFrame(request)}
+}
+
+func (e *Executor) durabilityFrames(request *Request) []protocol.Value {
+	spec, ok := e.command(request.Name)
+	if !ok || !spec.durable {
 		return nil
 	}
 
@@ -302,6 +319,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleSet,
 			validate:   validateSetRequest,
 			propagates: true,
+			durable:    true,
 		},
 		"GET": {
 			handler:  e.handleGet,
@@ -311,21 +329,25 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleDel,
 			validate:   minArgsValidator("DEL", 1),
 			propagates: true,
+			durable:    true,
 		},
 		"INCR": {
 			handler:    e.handleIncr,
 			validate:   exactArgsValidator("INCR", 1),
 			propagates: true,
+			durable:    true,
 		},
 		"LPUSH": {
 			handler:    e.handleLPush,
 			validate:   minArgsValidator("LPUSH", 2),
 			propagates: true,
+			durable:    true,
 		},
 		"RPUSH": {
 			handler:    e.handleRPush,
 			validate:   minArgsValidator("RPUSH", 2),
 			propagates: true,
+			durable:    true,
 		},
 		"LRANGE": {
 			handler:  e.handleLRange,
@@ -335,11 +357,13 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleLPop,
 			validate:   validateLPopRequest,
 			propagates: true,
+			durable:    true,
 		},
 		"RPOP": {
 			handler:    e.handleRPop,
 			validate:   validateRPopRequest,
 			propagates: true,
+			durable:    true,
 		},
 		"BLPOP": {
 			handler:  e.handleBLPop,
@@ -349,6 +373,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleZAdd,
 			validate:   validateZAddRequest,
 			propagates: true,
+			durable:    true,
 		},
 		"ZRANGE": {
 			handler:  e.handleZRange,
@@ -357,6 +382,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 		"XADD": {
 			handler:  e.handleXAdd,
 			validate: validateXAddRequest,
+			durable:  true,
 		},
 		"XREAD": {
 			handler:  e.handleXRead,
@@ -366,6 +392,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleHSet,
 			validate:   validateHSetRequest,
 			propagates: true,
+			durable:    true,
 		},
 		"HGET": {
 			handler:  e.handleHGet,
@@ -375,6 +402,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleHDel,
 			validate:   minArgsValidator("HDEL", 2),
 			propagates: true,
+			durable:    true,
 		},
 		"HGETALL": {
 			handler:  e.handleHGetAll,
@@ -384,6 +412,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleSAdd,
 			validate:   minArgsValidator("SADD", 2),
 			propagates: true,
+			durable:    true,
 		},
 		"SISMEMBER": {
 			handler:  e.handleSIsMember,
@@ -393,6 +422,7 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:    e.handleSRem,
 			validate:   minArgsValidator("SREM", 2),
 			propagates: true,
+			durable:    true,
 		},
 		"SMEMBERS": {
 			handler:  e.handleSMembers,
@@ -414,6 +444,10 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 		"WAIT": {
 			detailed: e.handleWait,
 			validate: validateWaitRequest,
+		},
+		"BGREWRITEAOF": {
+			handler:  e.handleBGRewriteAOF,
+			validate: exactArgsValidator("BGREWRITEAOF", 0),
 		},
 	}
 }

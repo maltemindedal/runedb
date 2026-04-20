@@ -142,6 +142,7 @@ func (e *Executor) handleExec(ctx context.Context, request *Request) (server.Exe
 	queued := state.DrainTransaction()
 	responses := make([]protocol.Value, 0, len(queued))
 	propagation := make([]protocol.Value, 0, len(queued))
+	durability := make([]protocol.Value, 0, len(queued))
 	for _, queuedCommand := range queued {
 		result, execErr := e.executeRequestDetailed(ctx, &Request{Name: queuedCommand.Name, Args: queuedCommand.Args}, false)
 		if execErr != nil {
@@ -157,11 +158,27 @@ func (e *Executor) handleExec(ctx context.Context, request *Request) (server.Exe
 		}
 		responses = append(responses, result.Responses[0])
 		propagation = append(propagation, result.Propagation...)
+		durability = append(durability, result.Durability...)
 	}
 
 	result := server.SingleResponse(protocol.Array{Elements: responses})
 	result.Propagation = propagation
+	result.Durability = durability
 	return result, nil
+}
+
+func (e *Executor) handleBGRewriteAOF(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 0 {
+		return nil, wrongNumberOfArgumentsError("BGREWRITEAOF")
+	}
+	if e.aofRewrite == nil {
+		return nil, fmt.Errorf("append only file persistence is not enabled")
+	}
+	if err := e.aofRewrite(ctx); err != nil {
+		return nil, err
+	}
+
+	return protocol.SimpleString{Value: "Background append only file rewriting started"}, nil
 }
 
 func (e *Executor) handleReplConf(ctx context.Context, request *Request) (server.ExecuteResult, error) {

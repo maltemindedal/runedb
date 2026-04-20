@@ -1,6 +1,6 @@
 # RuneDB Architecture
 
-This repository is structured as a Phase 1-first implementation of a Redis-compatible TCP server in Go. The current scaffold is intentionally narrow: it provides the networking, protocol, storage, and command boundaries needed for `PING`, `ECHO`, `SET`, and `GET`, while leaving space for RESP3, transactions, replication, and richer data types in later phases.
+This repository is structured as a phase-by-phase implementation of a Redis-compatible TCP server in Go. The codebase now covers the raw TCP server, RESP parsing/encoding, sharded in-memory storage, transactions, pub/sub, replication, RDB snapshots, and append-only-file durability while still keeping clear package seams for later phases.
 
 ## Package layout
 
@@ -19,6 +19,17 @@ Holds startup configuration such as host, port, log level, and TTL eviction sett
 ### `internal/logger`
 
 Provides a small `log/slog` initializer so the whole server shares one structured logging setup.
+
+### `internal/aof`
+
+Owns append-only-file durability.
+
+Current responsibilities:
+
+- replay RESP command streams on startup before the listener opens
+- append successful mutating commands in RESP form
+- apply `appendfsync` policies (`always`, `everysec`, `no`)
+- rewrite the current durable state in the background for `BGREWRITEAOF`
 
 ### `internal/protocol`
 
@@ -47,12 +58,7 @@ Current responsibilities:
 
 Translates RESP arrays into executable requests and dispatches them to handlers.
 
-Current command set:
-
-- `PING`
-- `ECHO`
-- `SET` with optional `EX` / `PX`
-- `GET`
+Current command surface includes strings, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication handshakes, `WAIT`, and `BGREWRITEAOF`.
 
 ### `internal/server`
 
@@ -65,6 +71,8 @@ Current responsibilities:
 - spawn one goroutine per client
 - parse → execute → respond for each request
 - maintain an active connection registry for shutdown
+- load startup persistence (RDB and/or AOF) before accepting TCP connections
+- append durable command frames and fan out replication writes after successful execution
 - stop cleanly when the process receives `SIGINT` or `SIGTERM`
 
 ### `test`
@@ -81,14 +89,11 @@ The scaffold starts with one `sync.RWMutex` around the entire keyspace because c
 
 The user requested RESP3-aware structure, but full RESP3 support is out of scope for the current implementation. The protocol package therefore exposes lightweight placeholder types so later expansion does not require redesigning the core abstraction.
 
-### Why only four commands?
+### Why keep persistence separate from replication?
 
-`PING`, `ECHO`, `SET`, and `GET` are enough to validate the entire stack:
+Replication and AOF both reuse RESP-encoded command frames, but they serve different correctness goals:
 
-- TCP listener and handler loop
-- RESP parsing and encoding
-- command routing
-- thread-safe store access
-- TTL behavior
+- replication forwards commands to live replicas
+- AOF records only durable state mutations for crash recovery
 
-That makes them an excellent Phase 1 foundation.
+Keeping those paths separate lets the server replicate transient commands like `PUBLISH` without persisting them, while still logging durable commands such as `XADD` even when they are not part of the replication handshake flow.
