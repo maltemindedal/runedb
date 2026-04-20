@@ -16,7 +16,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 5:** Done
 - **Phase 6:** Done
 - **Phase 7:** Planned
-- **Phase 8:** Planned
+- **Phase 8:** Done
 - **Phase 9:** Planned
 - **Phase 10:** Planned
 - **Phase 11:** Planned
@@ -257,30 +257,30 @@ Reduce the single-lock bottleneck by making key ownership explicit and shard-loc
 - [x] Handle multi-key commands such as `DEL key1 key2 key3` across different shards.
 - [x] Sort shard IDs before locking to avoid deadlocks, then unlock in reverse order.
 
-### Phase 8: Durability via Append-Only Files — **Planned**
+### Phase 8: Durability via Append-Only Files — **Done**
 
 Add an AOF-based durability path that complements the current snapshot-oriented persistence support.
 
-#### AOF Writer — **Planned**
+#### AOF Writer — **Done**
 
-- [ ] Create a background service that opens and manages a `.aof` file.
-- [ ] Append raw RESP for successful mutating commands such as `SET`, `DEL`, and `INCR`.
+- [x] Create a background service that opens and manages a `.aof` file.
+- [x] Append raw RESP for successful mutating commands such as `SET`, `DEL`, and `INCR`.
 
-#### AOF Recovery — **Planned**
+#### AOF Recovery — **Done**
 
-- [ ] On startup, detect the `.aof` file before accepting TCP connections.
-- [ ] Parse and replay commands to rebuild in-memory state.
+- [x] On startup, detect the `.aof` file before accepting TCP connections.
+- [x] Parse and replay commands to rebuild in-memory state.
 
-#### `appendfsync` Policies — **Planned**
+#### `appendfsync` Policies — **Done**
 
-- [ ] Add an `--appendfsync` flag.
-- [ ] Support at least `always` and `everysec` policies.
-- [ ] For `everysec`, flush to disk from a background goroutine once per second.
+- [x] Add an `--appendfsync` flag.
+- [x] Support at least `always` and `everysec` policies.
+- [x] For `everysec`, flush to disk from a background goroutine once per second.
 
-#### Background Rewrite (`BGREWRITEAOF`) — **Planned**
+#### Background Rewrite (`BGREWRITEAOF`) — **Done**
 
-- [ ] Compact large AOF files by writing a fresh command stream to a temporary file.
-- [ ] Emit the shortest practical rebuild sequence, then atomically rename it into place.
+- [x] Compact large AOF files by writing a fresh command stream to a temporary file.
+- [x] Emit the shortest practical rebuild sequence, then atomically rename it into place.
 
 ### Phase 9: Transaction Execution Hardening — **Planned**
 
@@ -353,4 +353,4 @@ Protect the server from unbounded memory growth under sustained write pressure.
 
 - Redis Cluster Mode (sharding / gossip protocol)
 - Lua scripting execution (`EVAL`)
-- Continuous AOF (Append Only File) writing
+- Multi-part AOF manifests / RDB preambles / automatic rewrite thresholds

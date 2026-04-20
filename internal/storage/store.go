@@ -125,31 +125,52 @@ func (s *Store) DeleteMany(keys []string) []string {
 		return nil
 	}
 
-	keysByShard := make(map[int][]string, len(keys))
-	shardIDs := make([]int, 0, len(keys))
+	shardCount := len(s.shards)
+	counts := make([]int, shardCount)
 	for _, key := range keys {
-		shardID := s.shardIndex(key)
-		if _, ok := keysByShard[shardID]; !ok {
-			shardIDs = append(shardIDs, shardID)
-		}
-		keysByShard[shardID] = append(keysByShard[shardID], key)
+		counts[s.shardIndex(key)]++
 	}
 
-	slices.Sort(shardIDs)
-	for _, shardID := range shardIDs {
+	offsets := make([]int, shardCount)
+	total := 0
+	for shardID, count := range counts {
+		offsets[shardID] = total
+		total += count
+	}
+
+	groupedKeys := make([]string, len(keys))
+	next := make([]int, shardCount)
+	copy(next, offsets)
+	for _, key := range keys {
+		shardID := s.shardIndex(key)
+		groupedKeys[next[shardID]] = key
+		next[shardID]++
+	}
+
+	for shardID, count := range counts {
+		if count == 0 {
+			continue
+		}
 		s.shards[shardID].mu.Lock()
 	}
 	defer func() {
-		for i := len(shardIDs) - 1; i >= 0; i-- {
-			s.shards[shardIDs[i]].mu.Unlock()
+		for shardID := shardCount - 1; shardID >= 0; shardID-- {
+			if counts[shardID] == 0 {
+				continue
+			}
+			s.shards[shardID].mu.Unlock()
 		}
 	}()
 
 	now := time.Now().UnixMilli()
 	removed := make([]string, 0, len(keys))
-	for _, shardID := range shardIDs {
+	for shardID, count := range counts {
+		if count == 0 {
+			continue
+		}
 		shard := &s.shards[shardID]
-		for _, key := range keysByShard[shardID] {
+		start := offsets[shardID]
+		for _, key := range groupedKeys[start : start+count] {
 			value, ok := shard.data[key]
 			if !ok {
 				continue
@@ -578,15 +599,13 @@ func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 	s.readLockAllShards()
 	defer s.readUnlockAllShards()
 
-	totalKeys := 0
+	stats := StringSnapshotStats{}
+	entries := make([]StringSnapshotEntry, 0)
 	for i := range s.shards {
-		totalKeys += len(s.shards[i].data)
-	}
-
-	stats := StringSnapshotStats{TotalKeys: totalKeys}
-	entries := make([]StringSnapshotEntry, 0, totalKeys)
-	for i := range s.shards {
-		for key, value := range s.shards[i].data {
+		shard := &s.shards[i]
+		stats.TotalKeys += len(shard.data)
+		entries = slices.Grow(entries, len(shard.data))
+		for key, value := range shard.data {
 			if isExpired(value, now) {
 				stats.SkippedExpiredKeys++
 				continue
@@ -603,6 +622,28 @@ func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 			})
 			stats.ExportedKeys++
 		}
+	}
+
+	return entries, stats
+}
+
+// SnapshotAll returns defensive copies of every currently supported non-expired value.
+func (s *Store) SnapshotAll() ([]SnapshotEntry, SnapshotStats) {
+	s.readLockAllShards()
+	defer s.readUnlockAllShards()
+
+	return s.snapshotAllLocked(time.Now().UnixMilli())
+}
+
+// SnapshotAllWithWriteBarrier snapshots the full keyspace while holding the store's
+// write locks, invoking barrier immediately before write traffic resumes.
+func (s *Store) SnapshotAllWithWriteBarrier(barrier func()) ([]SnapshotEntry, SnapshotStats) {
+	s.writeLockAllShards()
+	defer s.writeUnlockAllShards()
+
+	entries, stats := s.snapshotAllLocked(time.Now().UnixMilli())
+	if barrier != nil {
+		barrier()
 	}
 
 	return entries, stats
@@ -631,6 +672,56 @@ func (s *Store) ReplaceWith(other *Store) {
 		s.shards[i].data = replacement[i].data
 	}
 	s.writeUnlockAllShards()
+}
+
+func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
+	stats := SnapshotStats{}
+	entries := make([]SnapshotEntry, 0)
+	for i := range s.shards {
+		shard := &s.shards[i]
+		stats.TotalKeys += len(shard.data)
+		entries = slices.Grow(entries, len(shard.data))
+		for key, value := range shard.data {
+			if isExpired(value, now) {
+				stats.SkippedExpiredKeys++
+				continue
+			}
+
+			entry := SnapshotEntry{Key: key, Kind: value.Kind, ExpiresAt: value.ExpiresAt}
+			switch value.Kind {
+			case ValueKindString:
+				entry.String = cloneBytes(value.String)
+			case ValueKindList:
+				entry.List = cloneList(value.List)
+			case ValueKindZSet:
+				if value.ZSet != nil {
+					entry.ZSet = value.ZSet.rangeByRank(0, value.ZSet.len()-1)
+				}
+			case ValueKindStream:
+				if value.Stream != nil {
+					entry.Stream = make([]StreamEntry, 0, len(value.Stream.entries))
+					for _, record := range value.Stream.entries {
+						entry.Stream = append(entry.Stream, StreamEntry{ID: record.idText, Values: cloneList(record.values)})
+					}
+				}
+			case ValueKindHash:
+				entry.Hash = make([]HashFieldValue, 0, len(value.Hash))
+				for field, raw := range value.Hash {
+					entry.Hash = append(entry.Hash, HashFieldValue{Field: field, Value: cloneBytes(raw)})
+				}
+			case ValueKindSet:
+				entry.Set = make([][]byte, 0, len(value.Set))
+				for member := range value.Set {
+					entry.Set = append(entry.Set, []byte(member))
+				}
+			}
+
+			entries = append(entries, entry)
+			stats.ExportedKeys++
+		}
+	}
+
+	return entries, stats
 }
 
 func (s *Store) logDebug(msg string, args ...any) {

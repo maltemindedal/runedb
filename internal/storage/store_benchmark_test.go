@@ -10,6 +10,15 @@ import (
 
 func BenchmarkStore(b *testing.B) {
 	payload := []byte("value")
+	deleteKeys := make([]string, 0, 128)
+	for i := 0; i < 128; i++ {
+		deleteKeys = append(deleteKeys, fmt.Sprintf("delete-%d", i))
+	}
+
+	snapshotKeys := make([]string, 0, 1024)
+	for i := 0; i < 1024; i++ {
+		snapshotKeys = append(snapshotKeys, fmt.Sprintf("snapshot-%d", i))
+	}
 
 	b.Run("Set same key", func(b *testing.B) {
 		store := NewStore()
@@ -137,5 +146,43 @@ func BenchmarkStore(b *testing.B) {
 				_, _, _ = store.Get(key)
 			}
 		})
+	})
+
+	b.Run("DeleteMany 128 keys", func(b *testing.B) {
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			b.StopTimer()
+			store := NewStore()
+			for _, key := range deleteKeys {
+				store.Set(key, payload, 0)
+			}
+			b.StartTimer()
+
+			removed := store.DeleteMany(deleteKeys)
+			if len(removed) != len(deleteKeys) {
+				b.Fatalf("len(DeleteMany()) = %d, want %d", len(removed), len(deleteKeys))
+			}
+		}
+	})
+
+	b.Run("SnapshotAll 1024 strings", func(b *testing.B) {
+		store := NewStore()
+		for _, key := range snapshotKeys {
+			store.Set(key, payload, 0)
+		}
+
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			entries, stats := store.SnapshotAll()
+			if len(entries) != len(snapshotKeys) {
+				b.Fatalf("len(SnapshotAll()) = %d, want %d", len(entries), len(snapshotKeys))
+			}
+			if stats.TotalKeys != len(snapshotKeys) || stats.ExportedKeys != len(snapshotKeys) {
+				b.Fatalf("SnapshotAll() stats = %+v, want total/exported %d", stats, len(snapshotKeys))
+			}
+		}
 	})
 }

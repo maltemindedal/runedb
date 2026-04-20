@@ -68,21 +68,23 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			result = SingleResponse(responseError(execErr))
 		}
 
+		durabilityPayload, durableErr := s.prepareDurabilityBeforeResponse(result.Durability, logger)
+		if durableErr != nil {
+			result = SingleResponse(persistenceFailureResponse())
+			result.Propagation = nil
+			result.Durability = nil
+			durabilityPayload = nil
+		}
+
 		if err := s.writeClientResponses(ctx, writer, result.Responses); err != nil {
-			if len(result.Propagation) > 0 {
-				report := s.propagateToReplicas(result.Propagation)
-				s.recordClientWriteOffset(ctx, report.endOffset)
-			}
+			s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
 			logger.Warn("failed to write response", "error", err, "propagation_frames", len(result.Propagation))
 			return
 		}
 		if result.RegisterReplica {
 			s.registerReplicaPeer(clientID, conn)
 		}
-		if len(result.Propagation) > 0 {
-			report := s.propagateToReplicas(result.Propagation)
-			s.recordClientWriteOffset(ctx, report.endOffset)
-		}
+		s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
 	}
 }
 

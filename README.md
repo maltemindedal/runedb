@@ -7,6 +7,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - raw TCP listener with one goroutine per client
 - RESP parser and writer
 - thread-safe in-memory store with TTL **support**
+- append-only-file durability with startup replay, configurable `appendfsync`, and `BGREWRITEAOF`
 - active connection registry for cleaner shutdowns
 - Commands: `PING`, `ECHO`, `SET`, `GET`, `DEL`, `INCR`
 - password-gated connections via `--requirepass` and `AUTH <password>`
@@ -47,6 +48,14 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - active TTL eviction in a background loop
 - atomic `INCR` at the storage layer
 
+### Persistence
+
+- startup RDB loading via `--rdb`
+- graceful shutdown RDB snapshots via `--dump`
+- append-only file replay via `--aof`
+- configurable `--appendfsync=always|everysec|no`
+- background AOF compaction via `BGREWRITEAOF`
+
 ### Commands
 
 - `PING`
@@ -56,6 +65,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - `GET <key>`
 - `DEL <key> [key ...]`
 - `INCR <key>`
+- `BGREWRITEAOF`
 
 ### Quality and verification
 
@@ -84,6 +94,7 @@ From `d:\10_personal\runedb`:
 ### Start the server
 
 - `go run ./cmd/runedb --port 6379`
+- `go run ./cmd/runedb --port 6379 --aof appendonly.aof --appendfsync everysec`
 
 ### Validate the project
 
@@ -133,9 +144,11 @@ Then try:
 - The store currently uses a single `sync.RWMutex` for correctness and simplicity.
 - TTLs are normalized to Unix milliseconds internally.
 - Startup-time RDB loading is available via `--rdb`, currently for DB `0` string keys only.
+- Append-only durability is available via `--aof`; when the file exists and is non-empty it takes precedence over `--rdb` during startup.
+- `BGREWRITEAOF` compacts the current append-only file in the background by snapshotting live state and atomically swapping in a rewritten command stream.
 - The server is still intentionally RESP2-centric at the command-behavior level, even though RESP3 boolean/null support exists in the protocol layer.
 - `--requirepass` and one-argument `AUTH <password>` are implemented. Unauthenticated clients may still use `PING`, but protected masters now require authenticated replica handshakes before `REPLCONF` / `PSYNC`; replica mode can supply that password with `--masterauth`.
-- Core replication protocol support exists (`REPLCONF`, `PSYNC`, and `WAIT`), but broader replication completeness, broader persistence coverage, richer data structures, pub/sub, and full security features remain future milestones.
+- Core replication protocol support exists (`REPLCONF`, `PSYNC`, and `WAIT`), and append-only persistence now covers the supported mutating command surface; broader replication completeness and further persistence hardening remain future milestones.
 
 ## Related docs
 
