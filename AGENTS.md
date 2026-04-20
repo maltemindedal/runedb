@@ -1,41 +1,65 @@
 # AGENTS.md
 
-## Quick Commands
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-- `go test ./...` runs the full test suite.
-- `go test -race ./...` is the concurrency-focused verification pass already documented by the repo.
-- `golangci-lint run` runs the configured linters from `.golangci.yml` (`errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`).
-- Run one package with `go test ./internal/protocol` or similar.
-- Run one test with `go test ./test -run TestServerHandlesPhaseOneCommands` or `go test ./internal/command -run TestExecutorExecute`.
-- Start the server with `go run ./cmd/runedb --port 6379`.
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-## Required Workflow
+## 1. Think Before Coding
 
-- Before any agentic implementation or investigation, check `.agents/skills/` for relevant skills and load/use the matching guidance.
-- Before making technical decisions, check the relevant library or tool docs via the Context7 MCP server; prefer those docs over memory when they conflict.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Architecture
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-- The only production entrypoint is `cmd/runedb/main.go`: it wires `config.ParseFlags()` -> logger -> `storage.NewStore()` -> `command.NewExecutor()` -> `server.New()`.
-- Request flow is `internal/server` parse loop -> `command.DecodeRequest` / `Executor.Execute` -> RESP write-back. If behavior changes at the protocol boundary, inspect both `internal/server/handler.go` and `internal/command`.
-- Current command surface is only `PING`, `ECHO`, `SET`, and `GET`. `Executor` registers handlers in `internal/command/types.go`.
-- `internal/storage` is intentionally simple: one global `sync.RWMutex`, string values only, TTL stored as Unix milliseconds.
-- TTL eviction happens in two places: passive eviction on `Get`, and active background sampling via `Store.StartEviction()`.
+## 2. Simplicity First
 
-## Protocol / Behavior Quirks
+**Minimum code that solves the problem. Nothing speculative.**
 
-- The server is Phase 1 / RESP2-centric even though `internal/protocol` already contains RESP3 placeholder types like `Boolean` and `Null`. Do not assume broader RESP3 server support exists.
-- Command names are normalized to uppercase in `DecodeRequest`, so handler registration and error expectations are case-insensitive at the wire level.
-- `PING` supports an optional single payload and returns it as a bulk string, matching the current tests.
-- `SET` only supports optional `EX` / `PX`; unsupported modifiers should still fail with syntax-style errors, not be silently ignored.
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-## Testing Notes
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-- `test/integration_test.go` boots a real TCP server on `127.0.0.1` with port `0`; integration coverage does not require external services.
-- TTL tests rely on short sleeps and short eviction intervals. Keep timing margins generous if you change expiration behavior or background eviction cadence.
-- Server shutdown is context-driven: `server.NotifyContext()` handles signals in production, while tests cancel contexts directly.
+## 3. Surgical Changes
 
-## Constraints That Matter
+**Touch only what you must. Clean up only your own mess.**
 
-- There is no Makefile, Taskfile, CI workflow, or existing repo-local agent instruction set; use raw Go commands instead of guessing wrapper scripts.
-- `Config.RequirePass` is a placeholder flag only; AUTH is not implemented.
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
