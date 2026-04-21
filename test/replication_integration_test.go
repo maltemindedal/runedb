@@ -952,6 +952,38 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	}}, "EXEC")
 	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("1")}, 2*time.Second, "GET", "tx-key")
 
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-bad", "hello")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "QUEUED"}, "INCR", "tx-bad")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-good", "1")
+	assertCommandResponse(t, masterConn, masterParser, protocol.Array{Elements: []protocol.Value{
+		protocol.SimpleString{Value: "OK"},
+		protocol.ErrorValue{Message: "ERR value is not an integer or out of range"},
+		protocol.SimpleString{Value: "OK"},
+	}}, "EXEC")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("hello")}, 2*time.Second, "GET", "tx-bad")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("1")}, 2*time.Second, "GET", "tx-good")
+
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, masterConn, masterParser, protocol.ErrorValue{Message: "ERR unknown command \"NOPE\""}, "NOPE")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-abort", "1")
+	assertCommandResponse(t, masterConn, masterParser, protocol.ErrorValue{Message: "EXECABORT Transaction discarded because of previous errors."}, "EXEC")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Null: true}, 2*time.Second, "GET", "tx-abort")
+
+	watcherConn, err := net.Dial("tcp", masterAddr)
+	if err != nil {
+		t.Fatalf("Dial(%q) watcher error = %v", masterAddr, err)
+	}
+	defer func() { _ = watcherConn.Close() }()
+	watcherParser := protocol.NewParser(watcherConn)
+
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "tx-watch")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "tx-watch", "1")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-watch", "2")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.Array{Null: true}, "EXEC")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("1")}, 2*time.Second, "GET", "tx-watch")
+
 	cancelReplica()
 	select {
 	case err := <-replicaErrCh:

@@ -281,6 +281,7 @@ func (s *Server) removeClientState(clientID uint64) {
 	s.clientStatesMu.Unlock()
 
 	if state != nil {
+		state.ResetTransaction()
 		state.UnsubscribeAll()
 		state.UnwatchAll()
 	}
@@ -296,6 +297,7 @@ func (s *Server) clearClientStates() {
 	s.clientStatesMu.Unlock()
 
 	for _, state := range states {
+		state.ResetTransaction()
 		state.UnsubscribeAll()
 		state.UnwatchAll()
 	}
