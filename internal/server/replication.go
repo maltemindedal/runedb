@@ -464,17 +464,17 @@ func (s *Server) startReplicaLink(ctx context.Context, listenerAddr string) {
 			return
 		}
 
-		encoded, err := protocol.Encode(value)
+		encodedLen, err := protocol.EncodedLen(value)
 		if err != nil {
-			s.logger.Warn("failed to encode replication stream value", "master_addr", masterAddr, "error", err)
+			s.logger.Warn("failed to size replication stream value", "master_addr", masterAddr, "error", err)
 			return
 		}
-		replicaOffset := s.replication.AdvanceReplicaOffset(int64(len(encoded)))
+		replicaOffset := s.replication.AdvanceReplicaOffset(int64(encodedLen))
 		s.logger.Debug(
 			"replication stream command received",
 			"master_addr", masterAddr,
 			"command", replicationCommandName(value),
-			"payload_size", len(encoded),
+			"payload_size", encodedLen,
 			"replica_offset", replicaOffset,
 		)
 

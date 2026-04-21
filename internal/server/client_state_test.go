@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"io"
+	"net"
 	"testing"
+	"time"
 
 	"log/slog"
 
@@ -36,6 +38,116 @@ func (s stubWatchExecutor) ExecuteDetailed(context.Context, protocol.Value) (Exe
 
 func (s stubWatchExecutor) WatchRegistry() *WatchRegistry {
 	return s.registry
+}
+
+func TestClientStateTransactionLifecycle(t *testing.T) {
+	t.Run("BeginTransaction preserves watch invalidation and clears stale queue state", func(t *testing.T) {
+		state := &ClientState{ID: 1, Authenticated: true}
+		state.MarkTransactionFailed()
+		state.MarkTransactionDirty()
+		state.TxQueue = []QueuedCommand{{Name: "SET", Args: [][]byte{[]byte("name"), []byte("RuneDB")}}}
+
+		if ok := state.BeginTransaction(); !ok {
+			t.Fatal("BeginTransaction() = false, want true")
+		}
+		if !state.InTransactionActive() {
+			t.Fatal("InTransactionActive() = false, want true")
+		}
+		if !state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = false, want true")
+		}
+		if state.TransactionDirty() {
+			t.Fatal("TransactionDirty() = true, want false")
+		}
+		if state.TxQueue != nil {
+			t.Fatalf("TxQueue = %#v, want nil", state.TxQueue)
+		}
+		if ok := state.BeginTransaction(); ok {
+			t.Fatal("second BeginTransaction() = true, want false")
+		}
+	})
+
+	t.Run("DrainTransaction returns queued commands and exits transaction mode", func(t *testing.T) {
+		state := &ClientState{ID: 2, Authenticated: true}
+		if ok := state.BeginTransaction(); !ok {
+			t.Fatal("BeginTransaction() = false, want true")
+		}
+		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("RuneDB")})
+		state.MarkTransactionDirty()
+
+		queued := state.DrainTransaction()
+		if len(queued) != 1 {
+			t.Fatalf("len(queued) = %d, want 1", len(queued))
+		}
+		if queued[0].Name != "SET" {
+			t.Fatalf("queued[0].Name = %q, want %q", queued[0].Name, "SET")
+		}
+		if state.InTransactionActive() {
+			t.Fatal("InTransactionActive() = true, want false")
+		}
+		if state.TransactionDirty() {
+			t.Fatal("TransactionDirty() = true, want false")
+		}
+		if state.TxQueue != nil {
+			t.Fatalf("TxQueue = %#v after drain, want nil", state.TxQueue)
+		}
+	})
+
+	t.Run("ResetTransaction clears flags and queue idempotently", func(t *testing.T) {
+		state := &ClientState{ID: 3, Authenticated: true}
+		if ok := state.BeginTransaction(); !ok {
+			t.Fatal("BeginTransaction() = false, want true")
+		}
+		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("RuneDB")})
+		state.MarkTransactionDirty()
+		state.MarkTransactionFailed()
+
+		state.ResetTransaction()
+		state.ResetTransaction()
+
+		if state.InTransactionActive() {
+			t.Fatal("InTransactionActive() = true, want false")
+		}
+		if state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = true, want false")
+		}
+		if state.TransactionDirty() {
+			t.Fatal("TransactionDirty() = true, want false")
+		}
+		if state.TxQueue != nil {
+			t.Fatalf("TxQueue = %#v after reset, want nil", state.TxQueue)
+		}
+	})
+
+	t.Run("UnwatchAll clears watched keys and transaction failure idempotently", func(t *testing.T) {
+		registry := NewWatchRegistry()
+		state := &ClientState{ID: 4, Authenticated: true}
+		state.SetWatchRegistry(registry)
+		state.WatchKeys("alpha", "beta")
+		registry.Touch("alpha")
+
+		if !state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = false after touch, want true")
+		}
+		if got := len(state.watchedKeys); got != 2 {
+			t.Fatalf("len(watchedKeys) = %d, want 2", got)
+		}
+
+		state.UnwatchAll()
+		state.UnwatchAll()
+
+		if state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = true after UnwatchAll, want false")
+		}
+		if got := len(state.watchedKeys); got != 0 {
+			t.Fatalf("len(watchedKeys) = %d after UnwatchAll, want 0", got)
+		}
+
+		registry.Touch("alpha", "beta")
+		if state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = true after registry.Touch post-cleanup, want false")
+		}
+	})
 }
 
 func TestClientStateLifecycle(t *testing.T) {
@@ -99,6 +211,12 @@ func TestServerClientStateCleanupUnwatchesKeys(t *testing.T) {
 
 	state := srv.createClientState(1)
 	state.WatchKeys("alpha")
+	if ok := state.BeginTransaction(); !ok {
+		t.Fatal("BeginTransaction() = false, want true")
+	}
+	state.EnqueueCommand("SET", [][]byte{[]byte("alpha"), []byte("1")})
+	state.MarkTransactionDirty()
+	state.MarkTransactionFailed()
 
 	srv.removeClientState(1)
 	registry.Touch("alpha")
@@ -106,13 +224,90 @@ func TestServerClientStateCleanupUnwatchesKeys(t *testing.T) {
 	if state.TransactionFailed() {
 		t.Fatal("TransactionFailed() = true, want false after cleanup removed all watchers")
 	}
+	if state.InTransactionActive() {
+		t.Fatal("InTransactionActive() = true after cleanup, want false")
+	}
+	if state.TransactionDirty() {
+		t.Fatal("TransactionDirty() = true after cleanup, want false")
+	}
+	if state.TxQueue != nil {
+		t.Fatalf("TxQueue = %#v after cleanup, want nil", state.TxQueue)
+	}
 
 	other := srv.createClientState(2)
 	other.WatchKeys("beta")
+	if ok := other.BeginTransaction(); !ok {
+		t.Fatal("BeginTransaction() for second state = false, want true")
+	}
+	other.EnqueueCommand("SET", [][]byte{[]byte("beta"), []byte("2")})
+	other.MarkTransactionFailed()
 	srv.clearClientStates()
 	registry.Touch("beta")
 
 	if other.TransactionFailed() {
 		t.Fatal("TransactionFailed() for cleared state = true, want false after clearClientStates cleanup")
+	}
+	if other.InTransactionActive() {
+		t.Fatal("InTransactionActive() for cleared state = true, want false")
+	}
+	if other.TxQueue != nil {
+		t.Fatalf("TxQueue for cleared state = %#v, want nil", other.TxQueue)
+	}
+}
+
+func TestHandleConnectionDisconnectCleansTransactionState(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := NewWatchRegistry()
+	srv := New(config.Default(), logger, storage.NewStore(), stubWatchExecutor{registry: registry})
+
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+
+	clientID := srv.registry.Add(serverConn)
+	state := srv.createClientState(clientID)
+	state.WatchKeys("alpha")
+	if ok := state.BeginTransaction(); !ok {
+		t.Fatal("BeginTransaction() = false, want true")
+	}
+	state.EnqueueCommand("SET", [][]byte{[]byte("alpha"), []byte("1")})
+	state.MarkTransactionDirty()
+	state.MarkTransactionFailed()
+
+	srv.handlerWG.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleConnection(context.Background(), clientID, serverConn)
+	}()
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("Close() client side error = %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleConnection() did not exit after disconnect")
+	}
+
+	if got := srv.getClientState(clientID); got != nil {
+		t.Fatalf("getClientState(%d) after disconnect = %p, want nil", clientID, got)
+	}
+	if state.InTransactionActive() {
+		t.Fatal("InTransactionActive() = true after disconnect cleanup, want false")
+	}
+	if state.TransactionFailed() {
+		t.Fatal("TransactionFailed() = true after disconnect cleanup, want false")
+	}
+	if state.TransactionDirty() {
+		t.Fatal("TransactionDirty() = true after disconnect cleanup, want false")
+	}
+	if state.TxQueue != nil {
+		t.Fatalf("TxQueue after disconnect cleanup = %#v, want nil", state.TxQueue)
+	}
+
+	registry.Touch("alpha")
+	if state.TransactionFailed() {
+		t.Fatal("TransactionFailed() = true after registry.Touch post-disconnect, want false")
 	}
 }

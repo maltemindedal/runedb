@@ -556,6 +556,75 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 			requestValue("SET", "name", "RuneDB"),
 			requestValue("DEL", "missing"),
 		)
+		assertPropagationFrames(t, result.Durability,
+			requestValue("SET", "name", "RuneDB"),
+			requestValue("DEL", "missing"),
+		)
+	})
+
+	t.Run("empty EXEC returns no propagation or durability", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 2)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+
+		result, err := executor.ExecuteDetailed(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Array{Elements: []protocol.Value{}})
+		if len(result.Propagation) != 0 {
+			t.Fatalf("len(result.Propagation) = %d, want 0", len(result.Propagation))
+		}
+		if len(result.Durability) != 0 {
+			t.Fatalf("len(result.Durability) = %d, want 0", len(result.Durability))
+		}
+	})
+
+	t.Run("mixed-success EXEC only aggregates successful propagation and durability", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 3)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "bad", "hello")); err != nil {
+			t.Fatalf("queued SET bad error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("INCR", "bad")); err != nil {
+			t.Fatalf("queued INCR error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "good", "1")); err != nil {
+			t.Fatalf("queued SET good error = %v", err)
+		}
+
+		result, err := executor.ExecuteDetailed(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Array{Elements: []protocol.Value{
+			protocol.SimpleString{Value: "OK"},
+			protocol.ErrorValue{Message: "ERR value is not an integer or out of range"},
+			protocol.SimpleString{Value: "OK"},
+		}})
+		assertPropagationFrames(t, result.Propagation,
+			requestValue("SET", "bad", "hello"),
+			requestValue("SET", "good", "1"),
+		)
+		assertPropagationFrames(t, result.Durability,
+			requestValue("SET", "bad", "hello"),
+			requestValue("SET", "good", "1"),
+		)
 	})
 }
 
@@ -1043,6 +1112,21 @@ func TestExecutorTransactions(t *testing.T) {
 		}})
 	})
 
+	t.Run("empty EXEC returns an empty array", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+
+		value, err := executor.Execute(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{}})
+	})
+
 	t.Run("transaction state errors use Redis-compatible sentinels", func(t *testing.T) {
 		executor := newTestExecutor()
 		ctx := withClientStateForExecutor(context.Background(), executor, 1)
@@ -1080,6 +1164,236 @@ func TestExecutorTransactions(t *testing.T) {
 		}
 
 		value, err := executor.Execute(watcherCtx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Null: true})
+
+		value, err = executor.Execute(watcherCtx, requestValue("GET", "counter"))
+		if err != nil {
+			t.Fatalf("GET after aborted EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("1")})
+	})
+
+	t.Run("repeated WATCH calls accumulate watched keys", func(t *testing.T) {
+		executor := newTestExecutor()
+		watcherCtx := withClientStateForExecutor(context.Background(), executor, 1)
+		writerCtx := withClientStateForExecutor(context.Background(), executor, 2)
+
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "alpha")); err != nil {
+			t.Fatalf("WATCH alpha error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "beta")); err != nil {
+			t.Fatalf("WATCH beta error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("SET", "beta", "1")); err != nil {
+			t.Fatalf("writer SET beta error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("SET", "alpha", "2")); err != nil {
+			t.Fatalf("queued SET alpha error = %v", err)
+		}
+
+		value, err := executor.Execute(watcherCtx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Null: true})
+	})
+
+	t.Run("WATCH on an untouched missing key still allows EXEC", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+
+		if _, err := executor.Execute(ctx, requestValue("WATCH", "missing")); err != nil {
+			t.Fatalf("WATCH error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "missing", "1")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+
+		value, err := executor.Execute(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{protocol.SimpleString{Value: "OK"}}})
+
+		value, err = executor.Execute(ctx, requestValue("GET", "missing"))
+		if err != nil {
+			t.Fatalf("GET after EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("1")})
+	})
+
+	t.Run("DISCARD clears queued state so later commands execute immediately", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+		state, ok := server.ClientStateFromContext(ctx)
+		if !ok || state == nil {
+			t.Fatal("ClientStateFromContext() returned no state")
+		}
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "temp", "discarded")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		value, err := executor.Execute(ctx, requestValue("DISCARD"))
+		if err != nil {
+			t.Fatalf("DISCARD error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
+
+		if state.InTransactionActive() {
+			t.Fatal("InTransactionActive() = true after DISCARD, want false")
+		}
+		if state.TxQueue != nil {
+			t.Fatalf("TxQueue = %#v after DISCARD, want nil", state.TxQueue)
+		}
+
+		value, err = executor.Execute(ctx, requestValue("SET", "after-discard", "1"))
+		if err != nil {
+			t.Fatalf("SET after DISCARD error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
+
+		value, err = executor.Execute(ctx, requestValue("GET", "temp"))
+		if err != nil {
+			t.Fatalf("GET temp error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Null: true})
+
+		value, err = executor.Execute(ctx, requestValue("GET", "after-discard"))
+		if err != nil {
+			t.Fatalf("GET after-discard error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("1")})
+	})
+
+	t.Run("DISCARD clears dirty transaction state for the next MULTI", func(t *testing.T) {
+		executor := newTestExecutor()
+		ctx := withClientStateForExecutor(context.Background(), executor, 1)
+		state, ok := server.ClientStateFromContext(ctx)
+		if !ok || state == nil {
+			t.Fatal("ClientStateFromContext() returned no state")
+		}
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("first MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("NOPE")); err == nil {
+			t.Fatal("NOPE error = nil, want unknown command error")
+		}
+		if !state.TransactionDirty() {
+			t.Fatal("TransactionDirty() = false after queue-time error, want true")
+		}
+
+		value, err := executor.Execute(ctx, requestValue("DISCARD"))
+		if err != nil {
+			t.Fatalf("DISCARD error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
+		if state.TransactionDirty() {
+			t.Fatal("TransactionDirty() = true after DISCARD, want false")
+		}
+
+		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
+			t.Fatalf("second MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("SET", "clean", "1")); err != nil {
+			t.Fatalf("queued clean SET error = %v", err)
+		}
+
+		value, err = executor.Execute(ctx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{protocol.SimpleString{Value: "OK"}}})
+	})
+
+	t.Run("DISCARD clears failed watch state for the next transaction", func(t *testing.T) {
+		executor := newTestExecutor()
+		watcherCtx := withClientStateForExecutor(context.Background(), executor, 1)
+		writerCtx := withClientStateForExecutor(context.Background(), executor, 2)
+		state, ok := server.ClientStateFromContext(watcherCtx)
+		if !ok || state == nil {
+			t.Fatal("ClientStateFromContext() returned no watcher state")
+		}
+
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "counter")); err != nil {
+			t.Fatalf("WATCH error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("SET", "counter", "1")); err != nil {
+			t.Fatalf("writer SET error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("SET", "counter", "2")); err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		if !state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = false before DISCARD, want true")
+		}
+
+		value, err := executor.Execute(watcherCtx, requestValue("DISCARD"))
+		if err != nil {
+			t.Fatalf("DISCARD error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
+		if state.TransactionFailed() {
+			t.Fatal("TransactionFailed() = true after DISCARD, want false")
+		}
+
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("second MULTI error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("SET", "counter", "3")); err != nil {
+			t.Fatalf("queued SET after DISCARD error = %v", err)
+		}
+
+		value, err = executor.Execute(watcherCtx, requestValue("EXEC"))
+		if err != nil {
+			t.Fatalf("EXEC after DISCARD error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{protocol.SimpleString{Value: "OK"}}})
+
+		value, err = executor.Execute(watcherCtx, requestValue("GET", "counter"))
+		if err != nil {
+			t.Fatalf("GET counter error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("3")})
+	})
+
+	t.Run("WATCH invalidation before MULTI still aborts EXEC", func(t *testing.T) {
+		executor := newTestExecutor()
+		watcherCtx := withClientStateForExecutor(context.Background(), executor, 1)
+		writerCtx := withClientStateForExecutor(context.Background(), executor, 2)
+
+		if _, err := executor.Execute(watcherCtx, requestValue("WATCH", "counter")); err != nil {
+			t.Fatalf("WATCH error = %v", err)
+		}
+		if _, err := executor.Execute(writerCtx, requestValue("SET", "counter", "1")); err != nil {
+			t.Fatalf("writer SET error = %v", err)
+		}
+		if _, err := executor.Execute(watcherCtx, requestValue("MULTI")); err != nil {
+			t.Fatalf("MULTI error = %v", err)
+		}
+
+		value, err := executor.Execute(watcherCtx, requestValue("SET", "counter", "2"))
+		if err != nil {
+			t.Fatalf("queued SET error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.SimpleString{Value: "QUEUED"})
+
+		value, err = executor.Execute(watcherCtx, requestValue("EXEC"))
 		if err != nil {
 			t.Fatalf("EXEC error = %v", err)
 		}

@@ -17,7 +17,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 6:** Done
 - **Phase 7:** Planned
 - **Phase 8:** Done
-- **Phase 9:** Planned
+- **Phase 9:** Done
 - **Phase 10:** Planned
 - **Phase 11:** Planned
 
@@ -75,7 +75,7 @@ Establish the core TCP loop, memory store, and parser.
 
 - [x] Create a global state struct containing a `map[string]Value` and a `sync.RWMutex`
 - [x] `Value` should be a struct containing:
-  - [x] `Data ([]byte)` *(implemented as the string payload field on the stored value type)*
+  - [x] `Data ([]byte)` _(implemented as the string payload field on the stored value type)_
   - [x] `ExpiresAt (int64)`
 - [x] `GET`:
   - [x] Acquire `RLock()`
@@ -143,7 +143,7 @@ Handle complex, multi-step operations safely.
 
 #### Optimistic Locking (`WATCH`) — **Done**
 
-- [x] Create a global `map[string][]net.Conn` mapping keys to watching clients *(implemented with a shared watch registry keyed by key and client state)*
+- [x] Create a global `map[string][]net.Conn` mapping keys to watching clients _(implemented with a shared watch registry keyed by key and client state)_
 - [x] Whenever a key is modified (e.g., via `SET`), check this map
 - [x] If a watching client is found, mark their connection state `TxFailed = true`
 - [x] When a client calls `EXEC`, if `TxFailed` is `true`, abort the transaction and return a Null Array: `*-1\r\n`
@@ -187,7 +187,7 @@ Current implementation scope: startup-time loading via `--rdb` plus graceful shu
 
 #### Pub/Sub Engine (`SUBSCRIBE`, `PUBLISH`) — **Done**
 
-- [x] Maintain a global `map[string][]net.Conn` mapping channel names to active client sockets *(implemented as a shared channel-to-client-state registry with synchronized connection writers)*
+- [x] Maintain a global `map[string][]net.Conn` mapping channel names to active client sockets _(implemented as a shared channel-to-client-state registry with synchronized connection writers)_
 - [x] When a client issues `SUBSCRIBE`, flag their connection
 - [x] They can now only issue `PING`, `SUBSCRIBE`, and `UNSUBSCRIBE` commands
 - [x] `PUBLISH <channel> <msg>`:
@@ -282,28 +282,33 @@ Add an AOF-based durability path that complements the current snapshot-oriented 
 - [x] Compact large AOF files by writing a fresh command stream to a temporary file.
 - [x] Emit the shortest practical rebuild sequence, then atomically rename it into place.
 
-### Phase 9: Transaction Execution Hardening — **Planned**
+### Phase 9: Transaction Execution Hardening — **Done**
 
-Formalize and harden transaction semantics around queued execution and optimistic locking.
+Formalize and harden the existing transaction semantics around queued execution and optimistic locking.
 
-#### Command Queue — **Planned**
+#### Command Queue — **Done**
 
-- [ ] Keep explicit queued command state and transaction mode in `ClientState`.
+- [x] Keep explicit queued command state and transaction mode in `ClientState`.
+- [x] Preserve watched-key invalidation across `WATCH` → external write → `MULTI`.
+- [x] Continue tightening transaction lifecycle invariants and regression coverage.
 
-#### `MULTI` & `DISCARD` — **Planned**
+#### `MULTI` & `DISCARD` — **Done**
 
-- [ ] Queue subsequent commands after `MULTI` and return `+QUEUED`.
-- [ ] Clear queued state and exit transaction mode on `DISCARD`.
+- [x] Queue subsequent commands after `MULTI` and return `+QUEUED`.
+- [x] Clear queued state and exit transaction mode on `DISCARD`.
+- [x] Expand coverage around `DISCARD` cleanup and queue invalidation edge cases.
 
-#### `EXEC` — **Planned**
+#### `EXEC` — **Done**
 
-- [ ] Execute queued commands sequentially against the store.
-- [ ] Package per-command results into a RESP array and clear the queue.
+- [x] Execute queued commands sequentially against the store.
+- [x] Package per-command results into a RESP array and clear the queue.
+- [x] Harden propagation and durability coverage for mixed-success `EXEC` payloads.
 
-#### `WATCH` (Optimistic Locking) — **Planned**
+#### `WATCH` (Optimistic Locking) — **Done**
 
-- [ ] Track watched keys in shared state and associate them with clients.
-- [ ] Abort `EXEC` with a null array when a watched key changed before commit.
+- [x] Track watched keys in shared state and associate them with clients.
+- [x] Abort `EXEC` with a null array when a watched key changed before commit.
+- [x] Expand lifecycle coverage around pre-`MULTI` invalidation and connection cleanup.
 
 ### Phase 10: Pub/Sub Broker Hardening — **Planned**
 

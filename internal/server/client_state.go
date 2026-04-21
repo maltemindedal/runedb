@@ -54,6 +54,8 @@ func ClientStateFromContext(ctx context.Context) (*ClientState, bool) {
 }
 
 // BeginTransaction marks the client as inside a transaction.
+// It preserves any optimistic-lock invalidation recorded by prior WATCH
+// activity so a watched key changed before MULTI still aborts the next EXEC.
 // It returns false when the client is already inside a transaction.
 func (s *ClientState) BeginTransaction() bool {
 	s.mu.Lock()
@@ -64,7 +66,6 @@ func (s *ClientState) BeginTransaction() bool {
 	}
 
 	s.InTransaction = true
-	s.TxFailed = false
 	s.TxDirty = false
 	s.TxQueue = nil
 	return true

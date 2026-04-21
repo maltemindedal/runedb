@@ -37,6 +37,34 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("1-0")}, "XADD", "events", "1-0", "type", "start")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "INCR", "counter")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 2}, "INCR", "counter")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-bad", "hello")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "INCR", "tx-bad")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-good", "1")
+	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{
+		protocol.SimpleString{Value: "OK"},
+		protocol.ErrorValue{Message: "ERR value is not an integer or out of range"},
+		protocol.SimpleString{Value: "OK"},
+	}}, "EXEC")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR unknown command \"NOPE\""}, "NOPE")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-abort", "1")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "EXECABORT Transaction discarded because of previous errors."}, "EXEC")
+
+	watcherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) watcher error = %v", addr, err)
+	}
+	defer func() { _ = watcherConn.Close() }()
+	watcherParser := protocol.NewParser(watcherConn)
+
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "tx-watch")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "tx-watch", "1")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "tx-watch", "2")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.Array{Null: true}, "EXEC")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{}}, "EXEC")
 
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -80,6 +108,10 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 		}},
 	}}, "XREAD", "STREAMS", "events", "0-0")
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("2")}, "GET", "counter")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("hello")}, "GET", "tx-bad")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("1")}, "GET", "tx-good")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Null: true}, "GET", "tx-abort")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("1")}, "GET", "tx-watch")
 
 	restartStop()
 	waitForServerStop(t, restartErrCh)
