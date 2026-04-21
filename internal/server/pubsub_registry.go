@@ -2,7 +2,14 @@ package server
 
 import "sync"
 
-// PubSubRegistry tracks active exact-channel subscriptions across all client states.
+// PubSubRegistry tracks active exact-channel subscriptions across all client
+// states.
+//
+// A plain map plus RWMutex is used here because registry mutations must preserve
+// a second invariant on ClientState.subscribedChannels. When both structures are
+// touched, registry.mu is acquired before ClientState.mu. Subscriber snapshots
+// are copied while holding RLock and then used outside the lock so network I/O
+// never blocks registry mutations.
 type PubSubRegistry struct {
 	mu          sync.RWMutex
 	subscribers map[string]map[uint64]*ClientState

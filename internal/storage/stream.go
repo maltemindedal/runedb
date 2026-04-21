@@ -77,9 +77,9 @@ func (s *streamValue) add(rawID string, values [][]byte, nowMillis int64) (strin
 	return idText, nil
 }
 
-func (s *streamValue) readAfter(rawID string) ([]StreamEntry, error) {
+func (s *streamValue) snapshotAfter(rawID string) ([]streamRecord, error) {
 	if len(s.entries) == 0 {
-		return []StreamEntry{}, nil
+		return nil, nil
 	}
 
 	after, err := parseStreamReadID(rawID, s.lastID)
@@ -90,13 +90,26 @@ func (s *streamValue) readAfter(rawID string) ([]StreamEntry, error) {
 	start := sort.Search(len(s.entries), func(i int) bool {
 		return compareStreamIDs(s.entries[i].id, after) > 0
 	})
-
-	entries := make([]StreamEntry, 0, len(s.entries)-start)
-	for _, entry := range s.entries[start:] {
-		entries = append(entries, StreamEntry{ID: entry.idText, Values: cloneList(entry.values)})
+	if start == len(s.entries) {
+		return nil, nil
 	}
 
-	return entries, nil
+	snapshot := make([]streamRecord, len(s.entries)-start)
+	copy(snapshot, s.entries[start:])
+	return snapshot, nil
+}
+
+func cloneStreamEntries(records []streamRecord) []StreamEntry {
+	if len(records) == 0 {
+		return []StreamEntry{}
+	}
+
+	entries := make([]StreamEntry, 0, len(records))
+	for _, record := range records {
+		entries = append(entries, StreamEntry{ID: record.idText, Values: cloneList(record.values)})
+	}
+
+	return entries
 }
 
 func (s *streamValue) nextAutoID(nowMillis int64) streamID {

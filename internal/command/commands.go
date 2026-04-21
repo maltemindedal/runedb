@@ -9,6 +9,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -16,6 +17,13 @@ import (
 	"github.com/maltemindedal/runedb/internal/server"
 	"github.com/maltemindedal/runedb/internal/storage"
 )
+
+var cachedReplConfGetAckPayload = sync.OnceValues(func() ([]byte, error) {
+	return protocol.Encode(propagationFrame(&Request{
+		Name: "REPLCONF",
+		Args: [][]byte{[]byte("GETACK"), []byte("*")},
+	}))
+})
 
 func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) == 0 {
@@ -432,23 +440,7 @@ func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.
 		return nil, fmt.Errorf("encode pub/sub message: %w", err)
 	}
 
-	matched := int64(0)
-	for _, subscriber := range subscribers {
-		if subscriber == nil {
-			continue
-		}
-		if err := subscriber.WriteEncoded(encodedMessage); err != nil {
-			e.logger.Warn(
-				"failed to deliver pub/sub message",
-				"channel", channel,
-				"subscriber_id", subscriber.ID,
-				"error", err,
-			)
-			subscriber.UnsubscribeAll()
-			continue
-		}
-		matched++
-	}
+	matched := e.deliverPubSubMessage(channel, encodedMessage, subscribers)
 
 	return protocol.Integer{Value: matched}, nil
 }
@@ -830,6 +822,35 @@ func pubSubMessageResponse(channel []byte, payload []byte) protocol.Array {
 	}}
 }
 
+func (e *Executor) deliverPubSubMessage(channel string, payload []byte, subscribers []*server.ClientState) int64 {
+	matched := int64(0)
+	for _, subscriber := range subscribers {
+		if e.deliverPubSubMessageToSubscriber(channel, payload, subscriber) {
+			matched++
+		}
+	}
+
+	return matched
+}
+
+func (e *Executor) deliverPubSubMessageToSubscriber(channel string, payload []byte, subscriber *server.ClientState) bool {
+	if subscriber == nil {
+		return false
+	}
+	if err := subscriber.WriteEncoded(payload); err != nil {
+		e.logger.Warn(
+			"failed to deliver pub/sub message",
+			"channel", channel,
+			"subscriber_id", subscriber.ID,
+			"error", err,
+		)
+		subscriber.Disconnect()
+		return false
+	}
+
+	return true
+}
+
 func parseIntegerArgument(raw []byte) (int64, error) {
 	value, err := strconv.ParseInt(string(raw), 10, 64)
 	if err != nil {
@@ -908,8 +929,7 @@ func (e *Executor) requestReplicaAcknowledgements() error {
 		return nil
 	}
 
-	request := propagationFrame(&Request{Name: "REPLCONF", Args: [][]byte{[]byte("GETACK"), []byte("*")}})
-	encoded, err := protocol.Encode(request)
+	encoded, err := cachedReplConfGetAckPayload()
 	if err != nil {
 		return fmt.Errorf("encode REPLCONF GETACK: %w", err)
 	}

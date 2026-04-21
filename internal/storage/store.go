@@ -90,10 +90,9 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 		shard.mu.RUnlock()
 		return nil, true, err
 	}
-	cloned := cloneBytes(data)
 	shard.mu.RUnlock()
 
-	return cloned, true, nil
+	return cloneBytes(data), true, nil
 }
 
 // Delete removes a key from the store.
@@ -404,9 +403,11 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 		return [][]byte{}, nil
 	}
 
-	cloned := cloneList(list[from : to+1])
+	snapshot := make([][]byte, to-from+1)
+	copy(snapshot, list[from:to+1])
 	shard.mu.RUnlock()
-	return cloned, nil
+
+	return cloneList(snapshot), nil
 }
 
 // ZAdd inserts or updates one or more sorted-set members and returns the number of newly added members.
@@ -559,13 +560,13 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 		return nil, err
 	}
 
-	entries, err := stream.readAfter(rawID)
+	records, err := stream.snapshotAfter(rawID)
 	shard.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
 
-	return entries, nil
+	return cloneStreamEntries(records), nil
 }
 
 // SubscribeListPush registers a waiter that is notified when a push occurs for key.

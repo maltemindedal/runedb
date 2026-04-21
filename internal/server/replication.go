@@ -84,6 +84,11 @@ type propagationReport struct {
 	endOffset   int64
 }
 
+const (
+	replicaFanoutAsyncThreshold = 8
+	replicaFanoutMaxWorkers     = 32
+)
+
 // WriteEncoded writes a pre-encoded RESP payload to the replica socket.
 func (p *ReplicaPeer) WriteEncoded(payload []byte) error {
 	if p == nil || p.writer == nil {
@@ -290,17 +295,7 @@ func (s *Server) propagateToReplicas(values []protocol.Value) propagationReport 
 	report := propagationReport{attempted: len(peers), payloadSize: len(payload)}
 	report.endOffset = s.replication.AdvanceMasterOffset(int64(len(payload)))
 
-	for _, peer := range peers {
-		if err := peer.WriteEncoded(payload); err != nil {
-			s.logger.Warn("failed to propagate command to replica", "replica_id", peer.ID, "error", err)
-			report.failed++
-			if closeErr := s.replicaPeers.RemoveAndClose(peer.ID); closeErr != nil {
-				s.logger.Debug("failed to close replica after propagation failure", "replica_id", peer.ID, "error", closeErr)
-			}
-			continue
-		}
-		report.succeeded++
-	}
+	report.succeeded, report.failed = s.writePropagationPayload(payload, peers)
 	if report.attempted > 0 {
 		s.logger.Debug(
 			"propagated command to replicas",
@@ -328,6 +323,71 @@ func (s *Server) propagateToReplicas(values []protocol.Value) propagationReport 
 	}
 
 	return report
+}
+
+func (s *Server) writePropagationPayload(payload []byte, peers []*ReplicaPeer) (int, int) {
+	if len(peers) == 0 {
+		return 0, 0
+	}
+	if len(peers) < replicaFanoutAsyncThreshold {
+		return s.writePropagationPayloadSequential(payload, peers)
+	}
+
+	workerCount := min(len(peers), replicaFanoutMaxWorkers)
+	jobs := make(chan *ReplicaPeer, len(peers))
+	var succeeded atomic.Int64
+	var failed atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go func() {
+			defer wg.Done()
+			for peer := range jobs {
+				if s.writePropagationPayloadToReplica(peer, payload) {
+					succeeded.Add(1)
+				} else {
+					failed.Add(1)
+				}
+			}
+		}()
+	}
+
+	for _, peer := range peers {
+		jobs <- peer
+	}
+	close(jobs)
+	wg.Wait()
+
+	return int(succeeded.Load()), int(failed.Load())
+}
+
+func (s *Server) writePropagationPayloadSequential(payload []byte, peers []*ReplicaPeer) (int, int) {
+	succeeded := 0
+	failed := 0
+	for _, peer := range peers {
+		if s.writePropagationPayloadToReplica(peer, payload) {
+			succeeded++
+		} else {
+			failed++
+		}
+	}
+
+	return succeeded, failed
+}
+
+func (s *Server) writePropagationPayloadToReplica(peer *ReplicaPeer, payload []byte) bool {
+	if peer == nil {
+		return false
+	}
+	if err := peer.WriteEncoded(payload); err != nil {
+		s.logger.Warn("failed to propagate command to replica", "replica_id", peer.ID, "error", err)
+		if closeErr := s.replicaPeers.RemoveAndClose(peer.ID); closeErr != nil {
+			s.logger.Debug("failed to close replica after propagation failure", "replica_id", peer.ID, "error", closeErr)
+		}
+		return false
+	}
+
+	return true
 }
 
 func (s *Server) recordClientWriteOffset(ctx context.Context, offset int64) {

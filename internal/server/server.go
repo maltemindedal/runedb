@@ -274,17 +274,21 @@ func (s *Server) getClientState(clientID uint64) *ClientState {
 	return s.clientStates[clientID]
 }
 
+func (s *Server) disconnectClientState(state *ClientState) {
+	if state == nil {
+		return
+	}
+
+	state.Disconnect()
+}
+
 func (s *Server) removeClientState(clientID uint64) {
 	s.clientStatesMu.Lock()
 	state := s.clientStates[clientID]
 	delete(s.clientStates, clientID)
 	s.clientStatesMu.Unlock()
 
-	if state != nil {
-		state.ResetTransaction()
-		state.UnsubscribeAll()
-		state.UnwatchAll()
-	}
+	s.disconnectClientState(state)
 }
 
 func (s *Server) clearClientStates() {
@@ -297,9 +301,7 @@ func (s *Server) clearClientStates() {
 	s.clientStatesMu.Unlock()
 
 	for _, state := range states {
-		state.ResetTransaction()
-		state.UnsubscribeAll()
-		state.UnwatchAll()
+		s.disconnectClientState(state)
 	}
 }
 

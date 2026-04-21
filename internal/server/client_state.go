@@ -24,11 +24,15 @@ type ClientState struct {
 	mu         sync.RWMutex
 	responseMu sync.Mutex
 
-	watchRegistry      *WatchRegistry
-	watchedKeys        map[string]struct{}
+	watchRegistry *WatchRegistry
+	watchedKeys   map[string]struct{}
+	// pubSubRegistry and subscribedChannels mirror the same exact-channel
+	// membership. Registry mutations take PubSubRegistry.mu before mutating the
+	// client-local subscribedChannels set via ClientState.mu.
 	pubSubRegistry     *PubSubRegistry
 	subscribedChannels map[string]struct{}
 	responseWriter     *bufio.Writer
+	writerClosed       bool
 
 	Authenticated     bool
 	Replica           bool
@@ -101,6 +105,37 @@ func (s *ClientState) BindResponseWriter(writer *bufio.Writer) {
 	defer s.responseMu.Unlock()
 
 	s.responseWriter = writer
+	s.writerClosed = writer == nil
+}
+
+// HasActiveResponseWriter reports whether the client can currently receive
+// command replies or async push messages.
+func (s *ClientState) HasActiveResponseWriter() bool {
+	if s == nil {
+		return false
+	}
+
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	return !s.writerClosed && s.responseWriter != nil
+}
+
+// Disconnect marks the client inactive and detaches it from shared registries so
+// future async deliveries fail fast.
+func (s *ClientState) Disconnect() {
+	if s == nil {
+		return
+	}
+
+	s.responseMu.Lock()
+	s.writerClosed = true
+	s.responseWriter = nil
+	s.responseMu.Unlock()
+
+	s.ResetTransaction()
+	s.UnsubscribeAll()
+	s.UnwatchAll()
 }
 
 // SetAuthenticated records whether the client has successfully authenticated.
@@ -125,7 +160,7 @@ func (s *ClientState) WriteResponses(values []protocol.Value) error {
 	s.responseMu.Lock()
 	defer s.responseMu.Unlock()
 
-	if s.responseWriter == nil {
+	if s.writerClosed || s.responseWriter == nil {
 		return fmt.Errorf("client response writer unavailable")
 	}
 
@@ -145,7 +180,7 @@ func (s *ClientState) WriteEncoded(payload []byte) error {
 	s.responseMu.Lock()
 	defer s.responseMu.Unlock()
 
-	if s.responseWriter == nil {
+	if s.writerClosed || s.responseWriter == nil {
 		return fmt.Errorf("client response writer unavailable")
 	}
 	if _, err := s.responseWriter.Write(payload); err != nil {

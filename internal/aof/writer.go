@@ -308,86 +308,14 @@ func (w *Writer) runRewrite(ctx context.Context, store *storage.Store) {
 		return
 	}
 
-	w.mu.Lock()
-	if w.closed {
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		_ = tempFile.Close()
-		return
-	}
-	if _, err := tempFile.Write(w.rewriteBuffer.Bytes()); err != nil {
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		_ = tempFile.Close()
-		w.logError("failed to write buffered rewrite payload", "path", tempPath, "error", err)
-		return
-	}
-	if err := tempFile.Sync(); err != nil {
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		_ = tempFile.Close()
-		w.logError("failed to sync rewritten append-only file", "path", tempPath, "error", err)
-		return
-	}
-	if err := tempFile.Close(); err != nil {
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		w.logError("failed to close rewritten append-only temp file", "path", tempPath, "error", err)
-		return
-	}
-	oldFile := w.file
-	if oldFile != nil {
-		if err := oldFile.Close(); err != nil {
-			w.rewriteActive = false
-			w.rewritePending = false
-			w.rewriteBuffer.Reset()
-			w.mu.Unlock()
-			w.logError("failed to close current append-only file before rewrite swap", "path", w.path, "error", err)
-			return
-		}
-	}
-	if err := replaceFile(tempPath, w.path); err != nil {
-		reopened, reopenErr := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if reopenErr == nil {
-			w.file = reopened
-			w.writer = bufio.NewWriter(reopened)
-		}
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		if reopenErr != nil {
-			w.logError("failed to replace append-only file with rewrite and reopen original file", "path", w.path, "error", err, "reopen_error", reopenErr)
-		} else {
-			w.logError("failed to replace append-only file with rewrite", "path", w.path, "error", err)
-		}
-		return
-	}
-
-	newFile, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	completed, err := w.finalizeRewrite(tempFile, tempPath)
 	if err != nil {
-		w.rewriteActive = false
-		w.rewritePending = false
-		w.rewriteBuffer.Reset()
-		w.mu.Unlock()
-		w.logError("failed to reopen append-only file after rewrite", "path", w.path, "error", err)
+		w.logError("failed to finalize append-only file rewrite", "path", w.path, "error", err)
 		return
 	}
-
-	w.file = newFile
-	w.writer = bufio.NewWriter(newFile)
-	w.rewriteActive = false
-	w.rewritePending = false
-	w.rewriteBuffer.Reset()
-	w.mu.Unlock()
+	if !completed {
+		return
+	}
 
 	cleanupTemp = false
 
@@ -404,11 +332,84 @@ func (w *Writer) runRewrite(ctx context.Context, store *storage.Store) {
 func (w *Writer) clearRewriteState(active bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.clearRewriteStateLocked(active)
+}
+
+func (w *Writer) clearRewriteStateLocked(active bool) {
 	if active {
 		w.rewriteActive = false
 		w.rewriteBuffer.Reset()
 	}
 	w.rewritePending = false
+}
+
+func (w *Writer) finalizeRewrite(tempFile *os.File, tempPath string) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.closed {
+		w.clearRewriteStateLocked(true)
+		_ = tempFile.Close()
+		return false, nil
+	}
+	if err := w.appendBufferedRewriteLocked(tempFile); err != nil {
+		w.clearRewriteStateLocked(true)
+		_ = tempFile.Close()
+		return false, fmt.Errorf("write buffered rewrite payload to %q: %w", tempPath, err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		w.clearRewriteStateLocked(true)
+		_ = tempFile.Close()
+		return false, fmt.Errorf("sync rewritten append-only file %q: %w", tempPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		w.clearRewriteStateLocked(true)
+		return false, fmt.Errorf("close rewritten append-only temp file %q: %w", tempPath, err)
+	}
+	if err := w.swapRewriteFileLocked(tempPath); err != nil {
+		w.clearRewriteStateLocked(true)
+		return false, err
+	}
+
+	w.clearRewriteStateLocked(true)
+	return true, nil
+}
+
+func (w *Writer) appendBufferedRewriteLocked(tempFile *os.File) error {
+	_, err := tempFile.Write(w.rewriteBuffer.Bytes())
+	return err
+}
+
+func (w *Writer) swapRewriteFileLocked(tempPath string) error {
+	oldFile := w.file
+	if oldFile != nil {
+		if err := oldFile.Close(); err != nil {
+			return fmt.Errorf("close current append-only file before rewrite swap: %w", err)
+		}
+	}
+	if err := replaceFile(tempPath, w.path); err != nil {
+		reopenErr := w.reopenAppendOnlyFileLocked()
+		if reopenErr != nil {
+			return fmt.Errorf("replace append-only file with rewrite: %w; reopen original file: %v", err, reopenErr)
+		}
+		return fmt.Errorf("replace append-only file with rewrite: %w", err)
+	}
+	if err := w.reopenAppendOnlyFileLocked(); err != nil {
+		return fmt.Errorf("reopen append-only file after rewrite: %w", err)
+	}
+
+	return nil
+}
+
+func (w *Writer) reopenAppendOnlyFileLocked() error {
+	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+
+	w.file = file
+	w.writer = bufio.NewWriter(file)
+	return nil
 }
 
 func (w *Writer) logInfo(msg string, args ...any) {
