@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -377,5 +378,211 @@ func TestHandleConnectionDisconnectCleansTransactionState(t *testing.T) {
 	registry.Touch("alpha")
 	if state.TransactionFailed() {
 		t.Fatal("TransactionFailed() = true after registry.Touch post-disconnect, want false")
+	}
+}
+
+func TestHandleConnectionClosesConnectionBeforeDisconnect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := New(config.Default(), logger, storage.NewStore(), stubExecutor{})
+
+	conn := newBlockingConn()
+	clientID := srv.registry.Add(conn)
+	state := srv.createClientState(clientID)
+
+	srv.handlerWG.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleConnection(context.Background(), clientID, conn)
+	}()
+
+	waitForCondition(t, time.Second, func() bool {
+		return state.HasActiveResponseWriter()
+	}, "handleConnection to bind the client response writer")
+
+	writeErrCh := make(chan error, 1)
+	go func() {
+		writeErrCh <- state.WriteEncoded([]byte("+push\r\n"))
+	}()
+
+	waitForSignal(t, time.Second, conn.writeStarted, "async client write to start")
+	conn.ReleaseRead()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleConnection() did not exit; expected it to close the connection before disconnecting client state")
+	}
+
+	select {
+	case err := <-writeErrCh:
+		if err == nil {
+			t.Fatal("WriteEncoded() error = nil, want close-induced error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WriteEncoded() did not unblock after handleConnection closed the connection")
+	}
+
+	if got := srv.getClientState(clientID); got != nil {
+		t.Fatalf("getClientState(%d) after close-before-disconnect cleanup = %p, want nil", clientID, got)
+	}
+	if state.HasActiveResponseWriter() {
+		t.Fatal("HasActiveResponseWriter() = true after handleConnection cleanup, want false")
+	}
+	if got := srv.registry.Count(); got != 0 {
+		t.Fatalf("registry.Count() after handleConnection cleanup = %d, want 0", got)
+	}
+}
+
+func TestShutdownClosesConnectionsBeforeDisconnectingClientStates(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cfg := config.Default()
+	cfg.DumpPath = ""
+	srv := New(cfg, logger, storage.NewStore(), stubExecutor{})
+
+	conn := newBlockingConn()
+	clientID := srv.registry.Add(conn)
+	state := srv.createClientState(clientID)
+	state.BindResponseWriter(bufio.NewWriter(conn))
+
+	writeErrCh := make(chan error, 1)
+	go func() {
+		writeErrCh <- state.WriteEncoded([]byte("+push\r\n"))
+	}()
+
+	waitForSignal(t, time.Second, conn.writeStarted, "shutdown write to start")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.shutdown()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown() did not return; expected it to close client connections before disconnecting client state")
+	}
+
+	select {
+	case err := <-writeErrCh:
+		if err == nil {
+			t.Fatal("WriteEncoded() error = nil, want close-induced error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WriteEncoded() did not unblock after shutdown closed the client connection")
+	}
+
+	if got := srv.getClientState(clientID); got != nil {
+		t.Fatalf("getClientState(%d) after shutdown cleanup = %p, want nil", clientID, got)
+	}
+	if state.HasActiveResponseWriter() {
+		t.Fatal("HasActiveResponseWriter() = true after shutdown cleanup, want false")
+	}
+	if got := srv.registry.Count(); got != 0 {
+		t.Fatalf("registry.Count() after shutdown cleanup = %d, want 0", got)
+	}
+}
+
+type blockingConn struct {
+	closed           chan struct{}
+	readRelease      chan struct{}
+	writeStarted     chan struct{}
+	closeOnce        sync.Once
+	readReleaseOnce  sync.Once
+	writeStartedOnce sync.Once
+}
+
+func newBlockingConn() *blockingConn {
+	return &blockingConn{
+		closed:       make(chan struct{}),
+		readRelease:  make(chan struct{}),
+		writeStarted: make(chan struct{}),
+	}
+}
+
+func (c *blockingConn) ReleaseRead() {
+	c.readReleaseOnce.Do(func() {
+		close(c.readRelease)
+	})
+}
+
+func (c *blockingConn) Read(_ []byte) (int, error) {
+	<-c.readRelease
+	return 0, io.EOF
+}
+
+func (c *blockingConn) Write(_ []byte) (int, error) {
+	c.writeStartedOnce.Do(func() {
+		close(c.writeStarted)
+	})
+	<-c.closed
+	return 0, net.ErrClosed
+}
+
+func (c *blockingConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closed)
+	})
+	return nil
+}
+
+func (c *blockingConn) LocalAddr() net.Addr {
+	return blockingConnAddr("local")
+}
+
+func (c *blockingConn) RemoteAddr() net.Addr {
+	return blockingConnAddr("remote")
+}
+
+func (c *blockingConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *blockingConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *blockingConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+type blockingConnAddr string
+
+func (a blockingConnAddr) Network() string {
+	return "test"
+}
+
+func (a blockingConnAddr) String() string {
+	return string(a)
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, condition func() bool, description string) {
+	t.Helper()
+
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if condition() {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", description)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForSignal(t *testing.T, timeout time.Duration, signal <-chan struct{}, description string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for %s", description)
 	}
 }

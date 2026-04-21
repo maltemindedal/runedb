@@ -30,12 +30,12 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			logger.Info("replica disconnected", "replica_id", clientID, "listening_port", peer.ListeningPort)
 		}
 	}()
+	defer s.removeClientState(clientID)
 	defer func() {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Debug("failed to close connection", "error", err)
 		}
 	}()
-	defer s.removeClientState(clientID)
 
 	stopClose := context.AfterFunc(ctx, func() {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {

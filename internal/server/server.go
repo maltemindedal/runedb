@@ -209,10 +209,10 @@ func (s *Server) shutdown() {
 				s.logger.Debug("failed to close listener during shutdown", "error", err)
 			}
 		}
-		s.clearClientStates()
 		if err := s.registry.CloseAll(); err != nil {
 			s.logger.Debug("failed to close one or more client connections during shutdown", "error", err)
 		}
+		s.clearClientStates()
 	})
 }
 
