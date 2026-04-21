@@ -1640,6 +1640,40 @@ func TestExecutorPubSub(t *testing.T) {
 		if _, err := executor.Execute(ctx, requestValue("MULTI")); !errors.Is(err, ErrSubscribedModeOnly) {
 			t.Fatalf("MULTI error = %v, want ErrSubscribedModeOnly", err)
 		}
+		if _, err := executor.Execute(ctx, requestValue("WATCH", "news")); !errors.Is(err, ErrSubscribedModeOnly) {
+			t.Fatalf("WATCH error = %v, want ErrSubscribedModeOnly", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("EXEC")); !errors.Is(err, ErrSubscribedModeOnly) {
+			t.Fatalf("EXEC error = %v, want ErrSubscribedModeOnly", err)
+		}
+		if _, err := executor.Execute(ctx, requestValue("DISCARD")); !errors.Is(err, ErrSubscribedModeOnly) {
+			t.Fatalf("DISCARD error = %v, want ErrSubscribedModeOnly", err)
+		}
+	})
+
+	t.Run("PUBLISH skips disconnected subscribers and prunes the registry", func(t *testing.T) {
+		executor := newTestExecutor()
+		state := newTestClientState(executor, 1)
+		state.BindResponseWriter(bufio.NewWriter(io.Discard))
+		ctx := server.WithClientState(context.Background(), state)
+
+		if _, err := executor.ExecuteDetailed(ctx, requestValue("SUBSCRIBE", "news")); err != nil {
+			t.Fatalf("SUBSCRIBE error = %v", err)
+		}
+
+		state.Disconnect()
+
+		published, err := executor.Execute(context.Background(), requestValue("PUBLISH", "news", "hello"))
+		if err != nil {
+			t.Fatalf("PUBLISH error = %v", err)
+		}
+		assertValueEqual(t, published, protocol.Integer{Value: 0})
+		if got := len(executor.PubSubRegistry().Subscribers("news")); got != 0 {
+			t.Fatalf("len(Subscribers(news)) = %d after disconnected publish, want 0", got)
+		}
+		if state.IsSubscribed() {
+			t.Fatal("IsSubscribed() = true after disconnected publish cleanup, want false")
+		}
 	})
 
 	t.Run("SUBSCRIBE is rejected inside MULTI", func(t *testing.T) {

@@ -18,7 +18,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 7:** Planned
 - **Phase 8:** Done
 - **Phase 9:** Done
-- **Phase 10:** Planned
+- **Phase 10:** Done
 - **Phase 11:** Planned
 
 ## 1. Executive Summary
@@ -310,23 +310,23 @@ Formalize and harden the existing transaction semantics around queued execution 
 - [x] Abort `EXEC` with a null array when a watched key changed before commit.
 - [x] Expand lifecycle coverage around pre-`MULTI` invalidation and connection cleanup.
 
-### Phase 10: Pub/Sub Broker Hardening — **Planned**
+### Phase 10: Pub/Sub Broker Hardening — **Done**
 
 Strengthen Pub/Sub delivery semantics and subscription bookkeeping.
 
-#### Broker Registry — **Planned**
+#### Broker Registry — **Done**
 
-- [ ] Maintain a central channel-to-client registry for subscriber tracking.
+- [x] Maintain a central channel-to-client registry for subscriber tracking.
 
-#### Subscriber Mode Enforcement — **Planned**
+#### Subscriber Mode Enforcement — **Done**
 
-- [ ] Restrict subscribed clients to the allowed command surface.
-- [ ] Keep subscription bookkeeping synchronized with connection lifecycle changes.
+- [x] Restrict subscribed clients to the allowed command surface.
+- [x] Keep subscription bookkeeping synchronized with connection lifecycle changes.
 
-#### Fan-Out Delivery — **Planned**
+#### Fan-Out Delivery — **Done**
 
-- [ ] Deliver published payloads to every subscribed client on the target channel.
-- [ ] Harden writer synchronization and cleanup on disconnect.
+- [x] Deliver published payloads to every subscribed client on the target channel.
+- [x] Harden writer synchronization and cleanup on disconnect.
 
 ### Phase 11: Memory Limits & Eviction — **Planned**
 

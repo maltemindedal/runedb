@@ -80,10 +80,9 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 		shard.mu.RUnlock()
 		return nil, false, nil
 	}
-	cloned := cloneBytes(raw)
 	shard.mu.RUnlock()
 
-	return cloned, true, nil
+	return cloneBytes(raw), true, nil
 }
 
 // HDel removes the named fields from the hash stored at key and returns the
@@ -157,9 +156,13 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 
 	entries := make([]HashFieldValue, 0, len(hash))
 	for field, raw := range hash {
-		entries = append(entries, HashFieldValue{Field: field, Value: cloneBytes(raw)})
+		entries = append(entries, HashFieldValue{Field: field, Value: raw})
 	}
 	shard.mu.RUnlock()
+
+	for i := range entries {
+		entries[i].Value = cloneBytes(entries[i].Value)
+	}
 
 	return entries, nil
 }

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -148,6 +150,72 @@ func TestClientStateTransactionLifecycle(t *testing.T) {
 			t.Fatal("TransactionFailed() = true after registry.Touch post-cleanup, want false")
 		}
 	})
+}
+
+func TestClientStateDisconnectClearsWriterAndPubSubState(t *testing.T) {
+	registry := NewPubSubRegistry()
+	watchRegistry := NewWatchRegistry()
+	state := &ClientState{ID: 5, Authenticated: true}
+	state.SetPubSubRegistry(registry)
+	state.SetWatchRegistry(watchRegistry)
+
+	var outbound bytes.Buffer
+	state.BindResponseWriter(bufio.NewWriter(&outbound))
+	state.SubscribeChannel("alpha")
+	state.SubscribeChannel("beta")
+	state.WatchKeys("pubsub-key")
+	if ok := state.BeginTransaction(); !ok {
+		t.Fatal("BeginTransaction() = false, want true")
+	}
+	state.EnqueueCommand("SET", [][]byte{[]byte("pubsub-key"), []byte("1")})
+	state.MarkTransactionDirty()
+	state.MarkTransactionFailed()
+
+	if got := len(registry.Subscribers("alpha")); got != 1 {
+		t.Fatalf("len(Subscribers(alpha)) = %d, want 1", got)
+	}
+	if got := len(registry.Subscribers("beta")); got != 1 {
+		t.Fatalf("len(Subscribers(beta)) = %d, want 1", got)
+	}
+
+	state.Disconnect()
+	state.Disconnect()
+
+	if state.HasActiveResponseWriter() {
+		t.Fatal("HasActiveResponseWriter() = true after Disconnect, want false")
+	}
+	if got := state.SubscriptionCount(); got != 0 {
+		t.Fatalf("SubscriptionCount() = %d after Disconnect, want 0", got)
+	}
+	if len(state.SubscribedChannels()) != 0 {
+		t.Fatalf("SubscribedChannels() = %#v after Disconnect, want empty", state.SubscribedChannels())
+	}
+	if state.InTransactionActive() {
+		t.Fatal("InTransactionActive() = true after Disconnect, want false")
+	}
+	if state.TransactionFailed() {
+		t.Fatal("TransactionFailed() = true after Disconnect, want false")
+	}
+	if state.TransactionDirty() {
+		t.Fatal("TransactionDirty() = true after Disconnect, want false")
+	}
+	if state.TxQueue != nil {
+		t.Fatalf("TxQueue = %#v after Disconnect, want nil", state.TxQueue)
+	}
+	if got := len(registry.Subscribers("alpha")); got != 0 {
+		t.Fatalf("len(Subscribers(alpha)) = %d after Disconnect, want 0", got)
+	}
+	if got := len(registry.Subscribers("beta")); got != 0 {
+		t.Fatalf("len(Subscribers(beta)) = %d after Disconnect, want 0", got)
+	}
+	if err := state.WriteEncoded([]byte("+OK\r\n")); err == nil {
+		t.Fatal("WriteEncoded() error = nil after Disconnect, want error")
+	}
+
+	watchRegistry.Touch("pubsub-key")
+	if state.TransactionFailed() {
+		t.Fatal("TransactionFailed() = true after Disconnect and Touch, want false")
+	}
 }
 
 func TestClientStateLifecycle(t *testing.T) {

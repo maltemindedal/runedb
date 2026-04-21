@@ -13,7 +13,6 @@ import (
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {
 	defer s.handlerWG.Done()
 	defer s.registry.Remove(clientID)
-	defer s.removeClientState(clientID)
 
 	parser := protocol.NewParser(conn)
 	writer := bufio.NewWriter(conn)
@@ -36,6 +35,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			logger.Debug("failed to close connection", "error", err)
 		}
 	}()
+	defer s.removeClientState(clientID)
 
 	stopClose := context.AfterFunc(ctx, func() {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {

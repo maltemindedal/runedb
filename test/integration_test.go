@@ -614,6 +614,147 @@ func TestServerHandlesPubSubCommands(t *testing.T) {
 	}
 }
 
+func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	subscriberOneConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) subscriber one error = %v", addr, err)
+	}
+	defer func() { _ = subscriberOneConn.Close() }()
+	subscriberOneParser := protocol.NewParser(subscriberOneConn)
+
+	subscriberTwoConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) subscriber two error = %v", addr, err)
+	}
+	defer func() { _ = subscriberTwoConn.Close() }()
+	subscriberTwoParser := protocol.NewParser(subscriberTwoConn)
+
+	publisherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
+	}
+	defer func() { _ = publisherConn.Close() }()
+	publisherParser := protocol.NewParser(publisherConn)
+
+	assertCommandResponse(t, subscriberOneConn, subscriberOneParser, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "subscribe"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.Integer{Value: 1},
+	}}, "SUBSCRIBE", "updates")
+	assertCommandResponse(t, subscriberTwoConn, subscriberTwoParser, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "subscribe"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.Integer{Value: 1},
+	}}, "SUBSCRIBE", "updates")
+
+	assertCommandResponse(t, publisherConn, publisherParser, protocol.Integer{Value: 2}, "PUBLISH", "updates", "hello")
+
+	messageOne, err := subscriberOneParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() subscriber one message error = %v", err)
+	}
+	assertValuesEqual(t, messageOne, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "message"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.BulkString{Data: []byte("hello")},
+	}})
+
+	messageTwo, err := subscriberTwoParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() subscriber two message error = %v", err)
+	}
+	assertValuesEqual(t, messageTwo, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "message"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.BulkString{Data: []byte("hello")},
+	}})
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+	parser := protocol.NewParser(conn)
+
+	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{
+		protocol.TextBulkString{Value: "subscribe"},
+		protocol.BulkString{Data: []byte("updates")},
+		protocol.Integer{Value: 1},
+	}}, "SUBSCRIBE", "updates")
+
+	blocked := protocol.ErrorValue{Message: "ERR only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context"}
+	assertCommandResponse(t, conn, parser, blocked, "WATCH", "updates")
+	assertCommandResponse(t, conn, parser, blocked, "MULTI")
+	assertCommandResponse(t, conn, parser, blocked, "EXEC")
+	assertCommandResponse(t, conn, parser, blocked, "DISCARD")
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
 func TestServerPubSubDisconnectCleanup(t *testing.T) {
 	cfg := config.Default()
 	cfg.Host = "127.0.0.1"
