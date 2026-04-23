@@ -40,6 +40,8 @@ var (
 	ErrSubscribedModeOnly = errors.New("only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context")
 	// ErrSubscribeInsideMulti reports that subscribe state changes are not allowed inside MULTI.
 	ErrSubscribeInsideMulti = errors.New("SUBSCRIBE and UNSUBSCRIBE inside MULTI are not allowed")
+	// ErrOutOfMemory reports that a write could not fit under maxmemory.
+	ErrOutOfMemory = errors.New("command not allowed when used memory > 'maxmemory'")
 )
 
 // RESPError exposes the wire error prefix to use when returning a RESP error.
@@ -173,6 +175,11 @@ func ErrSubscribedModeOnlyError() error {
 // ErrSubscribeInsideMultiError reports that subscription state changes are disallowed in MULTI.
 func ErrSubscribeInsideMultiError() error {
 	return newRESPWrappedError("ERR", ErrSubscribeInsideMulti)
+}
+
+// ErrOutOfMemoryError reports a Redis-style OOM failure.
+func ErrOutOfMemoryError() error {
+	return newRESPError("OOM", "command not allowed when used memory > 'maxmemory'", ErrOutOfMemory)
 }
 
 func wrongNumberOfArgumentsError(command string) error {

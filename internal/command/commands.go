@@ -25,6 +25,26 @@ var cachedReplConfGetAckPayload = sync.OnceValues(func() ([]byte, error) {
 	}))
 })
 
+var pubSubSubscriberSlicePool = sync.Pool{
+	New: func() any {
+		subscribers := make([]*server.ClientState, 0, 32)
+		return &subscribers
+	},
+}
+
+func getPooledPubSubSubscribers() *[]*server.ClientState {
+	return pubSubSubscriberSlicePool.Get().(*[]*server.ClientState)
+}
+
+func putPooledPubSubSubscribers(subscribers *[]*server.ClientState) {
+	if cap(*subscribers) > 1024 {
+		return
+	}
+
+	*subscribers = (*subscribers)[:0]
+	pubSubSubscriberSlicePool.Put(subscribers)
+}
+
 func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) == 0 {
 		return nil, wrongNumberOfArgumentsError("WATCH")
@@ -429,12 +449,17 @@ func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.
 	}
 
 	channel := string(request.Args[0])
-	message := pubSubMessageResponse(request.Args[0], request.Args[1])
-	subscribers := e.pubSubRegistry.Subscribers(channel)
+	pooledSubscribers := getPooledPubSubSubscribers()
+	subscribers := e.pubSubRegistry.AppendSubscribers(channel, (*pooledSubscribers)[:0])
+	defer func() {
+		*pooledSubscribers = subscribers
+		putPooledPubSubSubscribers(pooledSubscribers)
+	}()
 	if len(subscribers) == 0 {
 		return protocol.Integer{Value: 0}, nil
 	}
 
+	message := pubSubMessageResponse(request.Args[0], request.Args[1])
 	encodedMessage, err := protocol.Encode(message)
 	if err != nil {
 		return nil, fmt.Errorf("encode pub/sub message: %w", err)
@@ -445,7 +470,7 @@ func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.
 	return protocol.Integer{Value: matched}, nil
 }
 
-func (e *Executor) handleSet(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleSet(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 2 {
 		return nil, wrongNumberOfArgumentsError("SET")
 	}
@@ -463,8 +488,15 @@ func (e *Executor) handleSet(_ context.Context, request *Request) (protocol.Valu
 	}
 
 	key := string(request.Args[0])
-	e.store.Set(key, request.Args[1], expiresAt)
+	evicted, err := e.store.SetWithEviction(key, request.Args[1], expiresAt)
+	if err != nil {
+		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
+			return nil, ErrOutOfMemoryError()
+		}
+		return nil, err
+	}
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
@@ -518,61 +550,72 @@ func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Valu
 	return protocol.Integer{Value: removed}, nil
 }
 
-func (e *Executor) handleIncr(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleIncr(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) != 1 {
 		return nil, wrongNumberOfArgumentsError("INCR")
 	}
 
 	key := string(request.Args[0])
-	value, err := e.store.Increment(key)
+	value, evicted, err := e.store.IncrementWithEviction(key)
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
 			return nil, ErrWrongTypeError()
 		case storage.ErrValueNotInteger:
 			return nil, ErrValueNotIntegerError()
+		case storage.ErrMemoryLimitExceeded:
+			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
 		}
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: value}, nil
 }
 
-func (e *Executor) handleLPush(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleLPush(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 2 {
 		return nil, wrongNumberOfArgumentsError("LPUSH")
 	}
 
 	key := string(request.Args[0])
-	length, err := e.store.LeftPush(key, request.Args[1:])
+	length, evicted, err := e.store.LeftPushWithEviction(key, request.Args[1:])
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
+		}
+		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
+			return nil, ErrOutOfMemoryError()
 		}
 		return nil, err
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: length}, nil
 }
 
-func (e *Executor) handleRPush(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleRPush(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 2 {
 		return nil, wrongNumberOfArgumentsError("RPUSH")
 	}
 
 	key := string(request.Args[0])
-	length, err := e.store.RightPush(key, request.Args[1:])
+	length, evicted, err := e.store.RightPushWithEviction(key, request.Args[1:])
 	if err != nil {
 		if err == storage.ErrWrongType {
 			return nil, ErrWrongTypeError()
+		}
+		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
+			return nil, ErrOutOfMemoryError()
 		}
 		return nil, err
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -638,7 +681,7 @@ func (e *Executor) handleBLPop(ctx context.Context, request *Request) (protocol.
 	}
 }
 
-func (e *Executor) handleZAdd(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 3 || len(request.Args)%2 == 0 {
 		return nil, wrongNumberOfArgumentsError("ZADD")
 	}
@@ -657,19 +700,22 @@ func (e *Executor) handleZAdd(_ context.Context, request *Request) (protocol.Val
 	}
 
 	key := string(request.Args[0])
-	added, err := e.store.ZAdd(key, entries)
+	added, evicted, err := e.store.ZAddWithEviction(key, entries)
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
 			return nil, ErrWrongTypeError()
 		case storage.ErrSyntax:
 			return nil, ErrSyntaxError()
+		case storage.ErrMemoryLimitExceeded:
+			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
 		}
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -707,13 +753,13 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 	return zsetResponse(entries, withScores), nil
 }
 
-func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleXAdd(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 4 || len(request.Args)%2 != 0 {
 		return nil, wrongNumberOfArgumentsError("XADD")
 	}
 
 	key := string(request.Args[0])
-	id, err := e.store.XAdd(key, string(request.Args[1]), request.Args[2:])
+	id, evicted, err := e.store.XAddWithEviction(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
@@ -724,12 +770,15 @@ func (e *Executor) handleXAdd(_ context.Context, request *Request) (protocol.Val
 			return nil, ErrInvalidStreamIDError()
 		case storage.ErrStreamIDTooSmall:
 			return nil, ErrStreamIDTooSmallError()
+		case storage.ErrMemoryLimitExceeded:
+			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
 		}
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.TextBulkString{Value: id}, nil
 }
 

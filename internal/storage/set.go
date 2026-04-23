@@ -16,8 +16,13 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
+	}
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting && ok {
+		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
 	var set map[string]struct{}
@@ -43,9 +48,17 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 	}
 
 	if ok {
-		value.LastAccessedAt = now
+		value.touch(now)
+		if accounting {
+			newSize := s.approximateValueObjectSize(key, value)
+			s.usedMemory.Add(newSize - oldSize)
+		}
 	} else {
-		shard.data[key] = newSetValue(set, 0)
+		newValue := newSetValue(set, 0)
+		shard.data[key] = newValue
+		if accounting {
+			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
+		}
 	}
 
 	return added, nil
@@ -68,7 +81,7 @@ func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return false, nil
@@ -78,6 +91,7 @@ func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 		shard.mu.RUnlock()
 		return false, err
 	}
+	value.touch(now)
 	_, exists := set[string(member)]
 	shard.mu.RUnlock()
 
@@ -97,7 +111,7 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
@@ -106,6 +120,11 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	set, err := value.SetValue()
 	if err != nil {
 		return 0, err
+	}
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
 	removed := int64(0)
@@ -119,9 +138,14 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 		removed++
 	}
 
-	value.LastAccessedAt = time.Now().UnixMilli()
+	value.touch(time.Now().UnixMilli())
 	if len(set) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyWithSizeLocked(shard, key, oldSize)
+		return removed, nil
+	}
+	if accounting {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
 	}
 
 	return removed, nil
@@ -145,7 +169,7 @@ func (s *Store) SMembers(key string) ([][]byte, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return [][]byte{}, nil
@@ -155,6 +179,7 @@ func (s *Store) SMembers(key string) ([][]byte, error) {
 		shard.mu.RUnlock()
 		return nil, err
 	}
+	value.touch(now)
 
 	members := make([][]byte, 0, len(set))
 	for member := range set {

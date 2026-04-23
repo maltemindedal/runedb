@@ -150,6 +150,443 @@ func TestStoreValueBehavior(t *testing.T) {
 	}
 }
 
+func TestStoreAccessTracking(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*testing.T, *Store, string)
+	}{
+		{
+			name: "Get refreshes string last accessed",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				store.Set(key, []byte("RuneDB"), 0)
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, ok, err := store.Get(key); err != nil {
+					t.Fatalf("Get() error = %v", err)
+				} else if !ok {
+					t.Fatal("Get() ok = false, want true")
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after Get = %d, want > %d", after, before)
+				}
+			},
+		},
+		{
+			name: "ListRange refreshes list last accessed",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				if _, err := store.RightPush(key, [][]byte{[]byte("a"), []byte("b")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, err := store.ListRange(key, 0, -1); err != nil {
+					t.Fatalf("ListRange() error = %v", err)
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after ListRange = %d, want > %d", after, before)
+				}
+			},
+		},
+		{
+			name: "HGet refreshes hash last accessed even for missing fields",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				if _, err := store.HSet(key, []HashFieldValue{{Field: "lang", Value: []byte("go")}}); err != nil {
+					t.Fatalf("HSet() error = %v", err)
+				}
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, _, err := store.HGet(key, "missing"); err != nil {
+					t.Fatalf("HGet() error = %v", err)
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after HGet = %d, want > %d", after, before)
+				}
+			},
+		},
+		{
+			name: "SIsMember refreshes set last accessed for misses",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				if _, err := store.SAdd(key, [][]byte{[]byte("alpha")}); err != nil {
+					t.Fatalf("SAdd() error = %v", err)
+				}
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, err := store.SIsMember(key, []byte("beta")); err != nil {
+					t.Fatalf("SIsMember() error = %v", err)
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after SIsMember = %d, want > %d", after, before)
+				}
+			},
+		},
+		{
+			name: "ZRange refreshes sorted set last accessed",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				if _, err := store.ZAdd(key, []ZSetEntry{{Member: []byte("alpha"), Score: 1}}); err != nil {
+					t.Fatalf("ZAdd() error = %v", err)
+				}
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, err := store.ZRange(key, 0, -1); err != nil {
+					t.Fatalf("ZRange() error = %v", err)
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after ZRange = %d, want > %d", after, before)
+				}
+			},
+		},
+		{
+			name: "XRead refreshes stream last accessed when no newer entries exist",
+			run: func(t *testing.T, store *Store, key string) {
+				t.Helper()
+				if _, err := store.XAdd(key, "1-0", [][]byte{[]byte("field"), []byte("value")}); err != nil {
+					t.Fatalf("XAdd() error = %v", err)
+				}
+
+				before := store.lastAccessedAtForTest(key)
+				time.Sleep(2 * time.Millisecond)
+
+				if _, err := store.XRead(key, "$"); err != nil {
+					t.Fatalf("XRead() error = %v", err)
+				}
+
+				after := store.lastAccessedAtForTest(key)
+				if after <= before {
+					t.Fatalf("lastAccessedAt after XRead = %d, want > %d", after, before)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore()
+			tt.run(t, store, "phase11")
+		})
+	}
+}
+
+func TestStoreMaxMemoryAccountingOnLegacyMutators(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *Store)
+	}{
+		{
+			name: "Set updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				store.Set("name", []byte("RuneDB"), 0)
+			},
+		},
+		{
+			name: "Increment updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.Increment("counter"); err != nil {
+					t.Fatalf("Increment() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "RightPush updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("build")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "HSet updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.HSet("profile", []HashFieldValue{{Field: "lang", Value: []byte("go")}}); err != nil {
+					t.Fatalf("HSet() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "SAdd updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.SAdd("tags", [][]byte{[]byte("fast")}); err != nil {
+					t.Fatalf("SAdd() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "ZAdd updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("alpha"), Score: 1}}); err != nil {
+					t.Fatalf("ZAdd() error = %v", err)
+				}
+			},
+		},
+		{
+			name: "XAdd updates approximate usage",
+			mutate: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); err != nil {
+					t.Fatalf("XAdd() error = %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore()
+			store.ConfigureMaxMemory(1<<30, 16)
+
+			before := store.UsedMemory()
+			tt.mutate(t, store)
+			after := store.UsedMemory()
+			if after <= before {
+				t.Fatalf("UsedMemory() after mutation = %d, want > %d", after, before)
+			}
+		})
+	}
+}
+
+func TestStoreMaxMemoryAccountingReclaimsExpiredBytesOnLegacyWrite(t *testing.T) {
+	store := NewStore()
+	store.ConfigureMaxMemory(1<<30, 16)
+
+	store.Set("stale", []byte(strings.Repeat("x", 4096)), time.Now().Add(-time.Millisecond).UnixMilli())
+	before := store.UsedMemory()
+	if before == 0 {
+		t.Fatal("UsedMemory() before expired replacement = 0, want non-zero")
+	}
+
+	if _, err := store.ZAdd("stale", []ZSetEntry{{Member: []byte("fresh"), Score: 1}}); err != nil {
+		t.Fatalf("ZAdd() error = %v", err)
+	}
+
+	after := store.UsedMemory()
+	if after >= before {
+		t.Fatalf("UsedMemory() after expired replacement = %d, want < %d", after, before)
+	}
+}
+
+func TestStoreMaxMemoryAccountingDropsDrainedCollections(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *Store)
+		drain func(*testing.T, *Store)
+	}{
+		{
+			name: "LeftPop subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				value, ok, err := store.LeftPop("jobs")
+				if err != nil {
+					t.Fatalf("LeftPop() error = %v", err)
+				}
+				if !ok || string(value) != "one" {
+					t.Fatalf("LeftPop() = (%q, %v), want (%q, true)", string(value), ok, "one")
+				}
+			},
+		},
+		{
+			name: "RightPop subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				value, ok, err := store.RightPop("jobs")
+				if err != nil {
+					t.Fatalf("RightPop() error = %v", err)
+				}
+				if !ok || string(value) != "one" {
+					t.Fatalf("RightPop() = (%q, %v), want (%q, true)", string(value), ok, "one")
+				}
+			},
+		},
+		{
+			name: "LeftPopN subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one"), []byte("two")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				values, ok, err := store.LeftPopN("jobs", 2)
+				if err != nil {
+					t.Fatalf("LeftPopN() error = %v", err)
+				}
+				if !ok || len(values) != 2 {
+					t.Fatalf("LeftPopN() = (%v, %v), want (len=2, true)", values, ok)
+				}
+			},
+		},
+		{
+			name: "RightPopN subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one"), []byte("two")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				values, ok, err := store.RightPopN("jobs", 2)
+				if err != nil {
+					t.Fatalf("RightPopN() error = %v", err)
+				}
+				if !ok || len(values) != 2 {
+					t.Fatalf("RightPopN() = (%v, %v), want (len=2, true)", values, ok)
+				}
+			},
+		},
+		{
+			name: "HDel subtracts the full drained hash size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.HSet("hash", []HashFieldValue{{Field: "field", Value: []byte("value")}}); err != nil {
+					t.Fatalf("HSet() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				removed, err := store.HDel("hash", []string{"field"})
+				if err != nil {
+					t.Fatalf("HDel() error = %v", err)
+				}
+				if removed != 1 {
+					t.Fatalf("HDel() = %d, want 1", removed)
+				}
+			},
+		},
+		{
+			name: "SRem subtracts the full drained set size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.SAdd("set", [][]byte{[]byte("member")}); err != nil {
+					t.Fatalf("SAdd() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				removed, err := store.SRem("set", [][]byte{[]byte("member")})
+				if err != nil {
+					t.Fatalf("SRem() error = %v", err)
+				}
+				if removed != 1 {
+					t.Fatalf("SRem() = %d, want 1", removed)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore()
+			store.ConfigureMaxMemory(1<<30, 16)
+
+			tt.setup(t, store)
+			before := store.UsedMemory()
+			if before == 0 {
+				t.Fatal("UsedMemory() before drain = 0, want non-zero")
+			}
+
+			tt.drain(t, store)
+
+			if got := store.UsedMemory(); got != 0 {
+				t.Fatalf("UsedMemory() after drain = %d, want 0", got)
+			}
+			if got := store.Len(); got != 0 {
+				t.Fatalf("Len() after drain = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestStoreMaxMemoryConcurrentConfiguration(t *testing.T) {
+	store := NewStore()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			limit := int64(0)
+			if i%2 == 1 {
+				limit = 1 << 20
+			}
+			store.ConfigureMaxMemory(limit, 16)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			_ = store.MaxMemory()
+			_ = store.maxMemoryEnabled()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			if _, err := store.SetWithEviction("key", []byte("value"), 0); err != nil {
+				errCh <- fmt.Errorf("SetWithEviction() error = %w", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	store := NewStore()
 	store.Set("a", []byte("1"), time.Now().Add(-time.Millisecond).UnixMilli())
@@ -217,6 +654,53 @@ func TestStoreSnapshotStrings(t *testing.T) {
 		}
 		if stats.SkippedUnsupportedKeys != 1 {
 			t.Fatalf("stats.SkippedUnsupportedKeys = %d, want 1", stats.SkippedUnsupportedKeys)
+		}
+	})
+}
+
+func TestStoreSnapshotAll(t *testing.T) {
+	t.Run("returns defensive string copies without aliasing sibling entries", func(t *testing.T) {
+		store := NewStore()
+		store.Set("first", []byte("one"), 0)
+		store.Set("second", []byte("two"), 0)
+
+		entries, stats := store.SnapshotAll()
+		if stats.TotalKeys != 2 || stats.ExportedKeys != 2 {
+			t.Fatalf("SnapshotAll() stats = %+v, want total/exported 2", stats)
+		}
+
+		var firstSnapshot []byte
+		var secondSnapshot []byte
+		for _, entry := range entries {
+			if entry.Kind != ValueKindString {
+				continue
+			}
+			switch entry.Key {
+			case "first":
+				firstSnapshot = entry.String
+			case "second":
+				secondSnapshot = entry.String
+			}
+		}
+
+		if string(firstSnapshot) != "one" || string(secondSnapshot) != "two" {
+			t.Fatalf("SnapshotAll() string entries = %q, %q, want %q, %q", string(firstSnapshot), string(secondSnapshot), "one", "two")
+		}
+
+		firstSnapshot[0] = 'O'
+		if got := string(secondSnapshot); got != "two" {
+			t.Fatalf("second snapshot after first mutation = %q, want %q", got, "two")
+		}
+
+		got, ok, err := store.Get("first")
+		if err != nil {
+			t.Fatalf("Get(first) error = %v", err)
+		}
+		if !ok {
+			t.Fatal("Get(first) ok = false, want true")
+		}
+		if string(got) != "one" {
+			t.Fatalf("Get(first) value = %q, want %q", string(got), "one")
 		}
 	})
 }

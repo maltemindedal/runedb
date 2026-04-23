@@ -84,18 +84,27 @@ func (r *PubSubRegistry) UnsubscribeAll(state *ClientState) {
 
 // Subscribers returns a snapshot of the clients currently subscribed to channel.
 func (r *PubSubRegistry) Subscribers(channel string) []*ClientState {
+	return r.AppendSubscribers(channel, nil)
+}
+
+// AppendSubscribers appends a snapshot of the clients currently subscribed to
+// channel into dst and returns the resulting slice.
+func (r *PubSubRegistry) AppendSubscribers(channel string, dst []*ClientState) []*ClientState {
 	if r == nil {
-		return nil
+		return dst[:0]
 	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	subscribers := r.subscribers[channel]
-	states := make([]*ClientState, 0, len(subscribers))
+	dst = dst[:0]
+	if cap(dst) < len(subscribers) {
+		dst = make([]*ClientState, 0, len(subscribers))
+	}
 	for _, state := range subscribers {
-		states = append(states, state)
+		dst = append(dst, state)
 	}
 
-	return states
+	return dst
 }

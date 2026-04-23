@@ -2,6 +2,7 @@ package storage
 
 import (
 	"errors"
+	"sync/atomic"
 	"time"
 )
 
@@ -90,9 +91,10 @@ type SnapshotStats struct {
 //
 // The type is a tagged union: Kind selects which payload field is valid.
 // ExpiresAt is stored as a Unix timestamp in milliseconds; 0 means no TTL.
-// LastAccessedAt is Phase 11 scaffolding: constructors stamp it at write
-// time so LRU-style eviction can consume it later. Read paths intentionally
-// do not refresh it here to preserve the RLock fast path on Get.
+// LastAccessedAt stores the last observed successful access in Unix
+// milliseconds. Reads refresh it with atomic stores so shard read paths can
+// keep their RLock fast path while still providing data for approximate LRU
+// eviction.
 type ValueObject struct {
 	String         []byte
 	List           [][]byte
@@ -103,6 +105,22 @@ type ValueObject struct {
 	ExpiresAt      int64
 	LastAccessedAt int64
 	Kind           ValueKind
+}
+
+func (v *ValueObject) touch(now int64) {
+	if v == nil {
+		return
+	}
+
+	atomic.StoreInt64(&v.LastAccessedAt, now)
+}
+
+func (v *ValueObject) lastAccessed() int64 {
+	if v == nil {
+		return 0
+	}
+
+	return atomic.LoadInt64(&v.LastAccessedAt)
 }
 
 // StringValue returns the string payload for a string value.

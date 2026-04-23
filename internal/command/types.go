@@ -35,6 +35,13 @@ type commandSpec struct {
 	durable            bool
 }
 
+type executionEffects struct {
+	propagation []protocol.Value
+	durability  []protocol.Value
+}
+
+type executionEffectsContextKey struct{}
+
 // Executor routes protocol frames to concrete command handlers.
 type Executor struct {
 	store          *storage.Store
@@ -114,6 +121,8 @@ func (e *Executor) ExecuteDetailed(ctx context.Context, value protocol.Value) (s
 }
 
 func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request, allowQueue bool) (server.ExecuteResult, error) {
+	ctx, effects := withExecutionEffects(ctx)
+
 	if err := e.validateSubscriptionContext(ctx, request); err != nil {
 		return server.ExecuteResult{}, err
 	}
@@ -135,36 +144,28 @@ func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request,
 		return server.ExecuteResult{}, ErrUnknownCommand(request.Name)
 	}
 	if spec.detailed != nil {
-		return spec.detailed(ctx, request)
+		result, err := spec.detailed(ctx, request)
+		if err != nil {
+			return server.ExecuteResult{}, err
+		}
+		result.Propagation = append(result.Propagation, effects.propagation...)
+		result.Durability = append(result.Durability, effects.durability...)
+		return result, nil
+	}
+	if spec.handler == nil {
+		return server.ExecuteResult{}, fmt.Errorf("command: %s does not support single-response execution", request.Name)
 	}
 
-	response, err := e.executeRequest(ctx, request, false)
+	response, err := spec.handler(ctx, request)
 	if err != nil {
 		return server.ExecuteResult{}, err
 	}
 
+	propagation, durability := executionFrames(ctx, request, spec)
 	result := server.SingleResponse(response)
-	result.Propagation = e.propagationFrames(ctx, request)
-	result.Durability = e.durabilityFrames(request)
+	result.Propagation = append(propagation, effects.propagation...)
+	result.Durability = append(durability, effects.durability...)
 	return result, nil
-}
-
-func (e *Executor) executeRequest(ctx context.Context, request *Request, allowQueue bool) (protocol.Value, error) {
-	if allowQueue {
-		if queued, response, err := e.maybeQueueRequest(ctx, request); queued || err != nil {
-			return response, err
-		}
-	}
-
-	spec, ok := e.command(request.Name)
-	if !ok {
-		return nil, ErrUnknownCommand(request.Name)
-	}
-	if spec.handler == nil {
-		return nil, fmt.Errorf("command: %s does not support single-response execution", request.Name)
-	}
-
-	return spec.handler(ctx, request)
 }
 
 func (e *Executor) validateQueueableRequest(request *Request) error {
@@ -204,26 +205,31 @@ func responseErrorValue(err error) protocol.ErrorValue {
 	return protocol.ErrorValue{Message: prefix + " " + err.Error()}
 }
 
-func (e *Executor) propagationFrames(ctx context.Context, request *Request) []protocol.Value {
-	if server.IsReplicationOrigin(ctx) {
-		return nil
+func executionFrames(ctx context.Context, request *Request, spec commandSpec) ([]protocol.Value, []protocol.Value) {
+	var (
+		frame     protocol.Array
+		haveFrame bool
+	)
+	ensureFrame := func() protocol.Array {
+		if !haveFrame {
+			frame = propagationFrame(request)
+			haveFrame = true
+		}
+
+		return frame
 	}
 
-	spec, ok := e.command(request.Name)
-	if !ok || !spec.propagates {
-		return nil
+	var propagation []protocol.Value
+	if spec.propagates && !server.IsReplicationOrigin(ctx) {
+		propagation = []protocol.Value{ensureFrame()}
 	}
 
-	return []protocol.Value{propagationFrame(request)}
-}
-
-func (e *Executor) durabilityFrames(request *Request) []protocol.Value {
-	spec, ok := e.command(request.Name)
-	if !ok || !spec.durable {
-		return nil
+	var durability []protocol.Value
+	if spec.durable {
+		durability = []protocol.Value{ensureFrame()}
 	}
 
-	return []protocol.Value{propagationFrame(request)}
+	return propagation, durability
 }
 
 func propagationFrame(request *Request) protocol.Array {
@@ -236,6 +242,38 @@ func propagationFrame(request *Request) protocol.Array {
 	return protocol.Array{Elements: elements}
 }
 
+func withExecutionEffects(ctx context.Context) (context.Context, *executionEffects) {
+	effects := &executionEffects{}
+	return context.WithValue(ctx, executionEffectsContextKey{}, effects), effects
+}
+
+func executionEffectsFromContext(ctx context.Context) *executionEffects {
+	effects, _ := ctx.Value(executionEffectsContextKey{}).(*executionEffects)
+	return effects
+}
+
+func (e *Executor) recordEvictedKeys(ctx context.Context, keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+
+	e.touchWatchKeys(keys...)
+	effects := executionEffectsFromContext(ctx)
+	if effects == nil {
+		return
+	}
+
+	args := make([][]byte, 0, len(keys))
+	for _, key := range keys {
+		args = append(args, []byte(key))
+	}
+	frame := propagationFrame(&Request{Name: "DEL", Args: args})
+	if !server.IsReplicationOrigin(ctx) {
+		effects.propagation = append(effects.propagation, frame)
+	}
+	effects.durability = append(effects.durability, frame)
+}
+
 // DecodeRequest converts a RESP array into a command request.
 func DecodeRequest(value protocol.Value) (*Request, error) {
 	array, ok := value.(protocol.Array)
@@ -246,18 +284,23 @@ func DecodeRequest(value protocol.Value) (*Request, error) {
 		return nil, ErrProtocol("expected array with at least one element")
 	}
 
-	parts := make([][]byte, 0, len(array.Elements))
-	for _, element := range array.Elements {
-		part, err := protocol.Bytes(element)
+	name, err := protocol.Bytes(array.Elements[0])
+	if err != nil {
+		return nil, ErrProtocol(err.Error())
+	}
+
+	args := make([][]byte, len(array.Elements)-1)
+	for i, element := range array.Elements[1:] {
+		arg, err := protocol.Bytes(element)
 		if err != nil {
 			return nil, ErrProtocol(err.Error())
 		}
-		parts = append(parts, part)
+		args[i] = arg
 	}
 
 	return &Request{
-		Name: strings.ToUpper(string(parts[0])),
-		Args: parts[1:],
+		Name: strings.ToUpper(string(name)),
+		Args: args,
 	}, nil
 }
 

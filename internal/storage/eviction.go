@@ -55,7 +55,7 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) int {
 
 		value, ok := shard.data[keys[0]]
 		if ok && isExpired(value, now) {
-			delete(shard.data, keys[0])
+			s.deleteKeyLocked(shard, keys[0])
 			return 1
 		}
 
@@ -110,7 +110,7 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) int {
 		for _, key := range groupedKeys[start : start+count] {
 			value, ok := shard.data[key]
 			if ok && isExpired(value, now) {
-				delete(shard.data, key)
+				s.deleteKeyLocked(shard, key)
 				removed++
 			}
 		}

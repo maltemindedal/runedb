@@ -27,6 +27,27 @@ func newStream() *streamValue {
 	return &streamValue{}
 }
 
+func cloneStreamValue(src *streamValue) *streamValue {
+	if src == nil {
+		return nil
+	}
+
+	cloned := &streamValue{
+		entries:    make([]streamRecord, 0, len(src.entries)),
+		lastID:     src.lastID,
+		hasEntries: src.hasEntries,
+	}
+	for _, entry := range src.entries {
+		cloned.entries = append(cloned.entries, streamRecord{
+			id:     entry.id,
+			idText: entry.idText,
+			values: cloneList(entry.values),
+		})
+	}
+
+	return cloned
+}
+
 // ValidateXAddID reports whether raw is a syntactically valid XADD ID.
 func ValidateXAddID(raw string) error {
 	if raw == "*" {

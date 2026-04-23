@@ -18,6 +18,9 @@ func TestDefaultIncludesShutdownSnapshotPath(t *testing.T) {
 	if cfg.AppendFsync != "everysec" {
 		t.Fatalf("AppendFsync = %q, want %q", cfg.AppendFsync, "everysec")
 	}
+	if cfg.MaxMemory != 0 {
+		t.Fatalf("MaxMemory = %d, want 0", cfg.MaxMemory)
+	}
 }
 
 func TestParseFlags(t *testing.T) {
@@ -25,7 +28,7 @@ func TestParseFlags(t *testing.T) {
 		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
-		cfg, err := parseFlags(fs, []string{"--aof", "appendonly.aof", "--appendfsync", "always", "--dump", "snapshot.rdb"})
+		cfg, err := parseFlags(fs, []string{"--aof", "appendonly.aof", "--appendfsync", "always", "--dump", "snapshot.rdb", "--maxmemory", "2048"})
 		if err != nil {
 			t.Fatalf("parseFlags() error = %v", err)
 		}
@@ -38,6 +41,9 @@ func TestParseFlags(t *testing.T) {
 		if cfg.DumpPath != "snapshot.rdb" {
 			t.Fatalf("DumpPath = %q, want %q", cfg.DumpPath, "snapshot.rdb")
 		}
+		if cfg.MaxMemory != 2048 {
+			t.Fatalf("MaxMemory = %d, want 2048", cfg.MaxMemory)
+		}
 	})
 
 	t.Run("rejects invalid appendfsync policy", func(t *testing.T) {
@@ -46,6 +52,15 @@ func TestParseFlags(t *testing.T) {
 
 		if _, err := parseFlags(fs, []string{"--appendfsync", "sometimes"}); err == nil {
 			t.Fatal("parseFlags() error = nil, want invalid appendfsync failure")
+		}
+	})
+
+	t.Run("rejects negative maxmemory", func(t *testing.T) {
+		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+
+		if _, err := parseFlags(fs, []string{"--maxmemory", "-1"}); err == nil {
+			t.Fatal("parseFlags() error = nil, want negative maxmemory failure")
 		}
 	})
 }
