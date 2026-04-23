@@ -40,6 +40,19 @@ func newSortedSet() *sortedSet {
 	}
 }
 
+func cloneSortedSet(src *sortedSet) *sortedSet {
+	if src == nil {
+		return nil
+	}
+
+	cloned := newSortedSet()
+	for _, entry := range src.rangeByRank(0, src.len()-1) {
+		cloned.add(entry.Member, entry.Score)
+	}
+
+	return cloned
+}
+
 func newZSetSkipList() *zsetSkipList {
 	header := &zsetNode{levels: make([]zsetLevel, zsetMaxLevel)}
 	return &zsetSkipList{header: header, level: 1}

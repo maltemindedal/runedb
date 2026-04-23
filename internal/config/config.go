@@ -23,6 +23,7 @@ type Config struct {
 	ReplicaOf          string
 	MasterAuth         string
 	RequirePass        string
+	MaxMemory          int64
 }
 
 // Default returns the default runtime configuration for local development.
@@ -39,6 +40,7 @@ func Default() Config {
 		AppendFsync:        "everysec",
 		ReplicaOf:          "",
 		MasterAuth:         "",
+		MaxMemory:          0,
 	}
 }
 
@@ -65,6 +67,7 @@ func parseFlags(fs *flag.FlagSet, args []string) (Config, error) {
 	fs.StringVar(&cfg.RDBPath, "rdb", cfg.RDBPath, "optional path to an RDB file to load before accepting TCP connections")
 	fs.StringVar(&cfg.DumpPath, "dump", cfg.DumpPath, "path to write an RDB snapshot during graceful shutdown")
 	fs.StringVar(&cfg.AOFPath, "aof", cfg.AOFPath, "optional path to an append-only file used for durable command logging")
+	fs.Int64Var(&cfg.MaxMemory, "maxmemory", cfg.MaxMemory, "approximate keyspace memory limit in bytes; 0 disables memory pressure eviction")
 	fs.StringVar(&cfg.ReplicaOf, "replicaof", cfg.ReplicaOf, "optional master address in host:port form for replica mode")
 	fs.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "optional password used by replica mode to AUTH against a protected master")
 	fs.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password required for AUTH-protected client commands")
@@ -80,6 +83,9 @@ func parseFlags(fs *flag.FlagSet, args []string) (Config, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+	if cfg.MaxMemory < 0 {
+		return Config{}, fmt.Errorf("invalid maxmemory %d: expected non-negative bytes", cfg.MaxMemory)
 	}
 
 	return cfg, nil

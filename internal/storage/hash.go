@@ -16,9 +16,10 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	var fields map[string][]byte
 	if ok {
@@ -40,9 +41,17 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 	}
 
 	if ok {
-		value.LastAccessedAt = now
+		value.touch(now)
+		if s.maxMemoryEnabled() {
+			newSize := s.approximateValueObjectSize(key, value)
+			s.usedMemory.Add(newSize - oldSize)
+		}
 	} else {
-		shard.data[key] = newHashValue(fields, 0)
+		newValue := newHashValue(fields, 0)
+		shard.data[key] = newValue
+		if s.maxMemoryEnabled() {
+			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
+		}
 	}
 
 	return added, nil
@@ -65,7 +74,7 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return nil, false, nil
@@ -75,6 +84,7 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 		shard.mu.RUnlock()
 		return nil, false, err
 	}
+	value.touch(now)
 	raw, exists := fields[field]
 	if !exists {
 		shard.mu.RUnlock()
@@ -98,7 +108,7 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
@@ -108,6 +118,7 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	removed := int64(0)
 	for _, field := range fields {
@@ -117,9 +128,14 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 		}
 	}
 
-	value.LastAccessedAt = time.Now().UnixMilli()
+	value.touch(time.Now().UnixMilli())
 	if len(hash) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
+		return removed, nil
+	}
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
 	}
 
 	return removed, nil
@@ -143,7 +159,7 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return []HashFieldValue{}, nil
@@ -153,6 +169,7 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 		shard.mu.RUnlock()
 		return nil, err
 	}
+	value.touch(now)
 
 	entries := make([]HashFieldValue, 0, len(hash))
 	for field, raw := range hash {

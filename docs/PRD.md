@@ -19,7 +19,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 8:** Done
 - **Phase 9:** Done
 - **Phase 10:** Done
-- **Phase 11:** Planned
+- **Phase 11:** Done
 
 ## 1. Executive Summary
 
@@ -328,25 +328,25 @@ Strengthen Pub/Sub delivery semantics and subscription bookkeeping.
 - [x] Deliver published payloads to every subscribed client on the target channel.
 - [x] Harden writer synchronization and cleanup on disconnect.
 
-### Phase 11: Memory Limits & Eviction — **Planned**
+### Phase 11: Memory Limits & Eviction — **Done**
 
 Protect the server from unbounded memory growth under sustained write pressure.
 
-#### Access Tracking — **Planned**
+#### Access Tracking — **Done**
 
-- [ ] Extend `ValueObject` with a `lastAccessed` timestamp.
-- [ ] Refresh the timestamp on reads and writes such as `GET` and `SET`.
+- [x] Extend `ValueObject` with a `lastAccessed` timestamp.
+- [x] Refresh the timestamp on reads and writes such as `GET` and `SET`.
 
-#### `maxmemory` — **Planned**
+#### `maxmemory` — **Done**
 
-- [ ] Add a `--maxmemory` flag.
-- [ ] Track approximate memory usage, or start with a simpler proxy such as key count.
-- [ ] Reject new writes or trigger eviction when the configured limit is reached.
+- [x] Add a `--maxmemory` flag.
+- [x] Track approximate memory usage, or start with a simpler proxy such as key count.
+- [x] Reject new writes or trigger eviction when the configured limit is reached.
 
-#### Probabilistic LRU Eviction — **Planned**
+#### Probabilistic LRU Eviction — **Done**
 
-- [ ] Sample a small random set of keys instead of maintaining a strict global LRU list.
-- [ ] Evict the stalest candidate and repeat until memory usage falls below the limit.
+- [x] Sample a small random set of keys instead of maintaining a strict global LRU list.
+- [x] Evict the stalest candidate and repeat until memory usage falls below the limit.
 
 ## 4. Non-Functional Requirements (Production Readiness)
 

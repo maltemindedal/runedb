@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,15 +28,20 @@ var (
 	ErrValueNotFloat = errors.New("value is not a valid float")
 	// ErrWrongType reports that a command targeted the wrong logical value type.
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
+	// ErrMemoryLimitExceeded reports that a write would exceed the configured maxmemory limit.
+	ErrMemoryLimitExceeded = errors.New("command not allowed when used memory > 'maxmemory'")
 )
 
 // Store is a thread-safe in-memory key/value store.
 type Store struct {
-	shards   []Shard
-	seed     maphash.Seed
-	waiters  *listWaiters
-	loggerMu sync.RWMutex
-	logger   *slog.Logger
+	shards                   []Shard
+	seed                     maphash.Seed
+	waiters                  *listWaiters
+	loggerMu                 sync.RWMutex
+	logger                   *slog.Logger
+	usedMemory               atomic.Int64
+	maxMemory                int64
+	memoryEvictionSampleSize int
 }
 
 // NewStore constructs an empty Store.
@@ -60,7 +66,20 @@ func (s *Store) Set(key string, value []byte, expiresAt int64) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	shard.data[key] = newStringValue(value, expiresAt)
+	now := time.Now().UnixMilli()
+	current, ok := shard.data[key]
+	if ok && isExpired(current, now) {
+		s.deleteKeyLocked(shard, key)
+		current = nil
+	}
+
+	oldSize := s.approximateValueObjectSize(key, current)
+	newValue := newStringValue(value, expiresAt)
+	shard.data[key] = newValue
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, newValue)
+		s.usedMemory.Add(newSize - oldSize)
+	}
 }
 
 // Get fetches a value from the store, passively evicting it if it has expired.
@@ -80,7 +99,7 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return nil, false, nil
@@ -90,6 +109,7 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 		shard.mu.RUnlock()
 		return nil, true, err
 	}
+	value.touch(now)
 	shard.mu.RUnlock()
 
 	return cloneBytes(data), true, nil
@@ -103,11 +123,11 @@ func (s *Store) Delete(key string) bool {
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		return false
 	}
 
-	delete(shard.data, key)
+	s.deleteKeyLocked(shard, key)
 	return ok
 }
 
@@ -175,11 +195,11 @@ func (s *Store) DeleteMany(keys []string) []string {
 				continue
 			}
 			if isExpired(value, now) {
-				delete(shard.data, key)
+				s.deleteKeyLocked(shard, key)
 				continue
 			}
 
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 			removed = append(removed, key)
 		}
 	}
@@ -196,18 +216,23 @@ func (s *Store) Increment(key string) (int64, error) {
 	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 
 	if !ok {
-		shard.data[key] = newStringValue([]byte("1"), 0)
+		newValue := newStringValue([]byte("1"), 0)
+		shard.data[key] = newValue
+		if s.maxMemoryEnabled() {
+			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
+		}
 		return 1, nil
 	}
 	currentValue, err := value.StringValue()
 	if err != nil {
 		return 0, err
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	current, err := strconv.ParseInt(string(currentValue), 10, 64)
 	if err != nil || current == math.MaxInt64 {
@@ -216,7 +241,11 @@ func (s *Store) Increment(key string) (int64, error) {
 
 	current++
 	value.String = []byte(strconv.FormatInt(current, 10))
-	value.LastAccessedAt = now
+	value.touch(now)
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
+	}
 	return current, nil
 }
 
@@ -238,7 +267,7 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
@@ -249,17 +278,23 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	item := list[0]
 	list[0] = nil
 	list = list[1:]
 	value.List = list
-	value.LastAccessedAt = time.Now().UnixMilli()
+	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
+		return item, true, nil
+	}
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
 	}
 
 	return item, true, nil
@@ -273,7 +308,7 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
@@ -284,18 +319,24 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	last := len(list) - 1
 	item := list[last]
 	list[last] = nil
 	list = list[:last]
 	value.List = list
-	value.LastAccessedAt = time.Now().UnixMilli()
+	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
+		return item, true, nil
+	}
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
 	}
 
 	return item, true, nil
@@ -324,7 +365,7 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 
 	value, ok := shard.data[key]
 	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
@@ -335,9 +376,10 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 		return nil, false, err
 	}
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	take := int64(len(list))
 	if count < take {
@@ -361,9 +403,14 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 	}
 
 	value.List = list
-	value.LastAccessedAt = time.Now().UnixMilli()
+	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		delete(shard.data, key)
+		s.deleteKeyLocked(shard, key)
+		return popped, true, nil
+	}
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, value)
+		s.usedMemory.Add(newSize - oldSize)
 	}
 
 	return popped, true, nil
@@ -386,7 +433,7 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return [][]byte{}, nil
@@ -396,6 +443,7 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 		shard.mu.RUnlock()
 		return nil, err
 	}
+	value.touch(now)
 
 	from, to, ok := normalizeListRange(len(list), start, stop)
 	if !ok {
@@ -420,11 +468,13 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
+	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
-	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+	if ok && isExpired(value, now) {
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	var (
 		set       *sortedSet
@@ -448,7 +498,12 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		}
 	}
 
-	shard.data[key] = newZSetValue(set, expiresAt)
+	newValue := newZSetValue(set, expiresAt)
+	shard.data[key] = newValue
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, newValue)
+		s.usedMemory.Add(newSize - oldSize)
+	}
 	return added, nil
 }
 
@@ -469,7 +524,7 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return []ZSetRangeEntry{}, nil
@@ -479,6 +534,7 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 		shard.mu.RUnlock()
 		return nil, err
 	}
+	value.touch(now)
 
 	from, to, ok := normalizeListRange(set.len(), start, stop)
 	if !ok {
@@ -502,11 +558,13 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
+	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
-	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+	if ok && isExpired(value, now) {
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	var (
 		stream    *streamValue
@@ -523,12 +581,17 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 		stream = newStream()
 	}
 
-	id, err := stream.add(rawID, values, time.Now().UnixMilli())
+	id, err := stream.add(rawID, values, now)
 	if err != nil {
 		return "", err
 	}
 
-	shard.data[key] = newStreamValue(stream, expiresAt)
+	newValue := newStreamValue(stream, expiresAt)
+	shard.data[key] = newValue
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, newValue)
+		s.usedMemory.Add(newSize - oldSize)
+	}
 	return id, nil
 }
 
@@ -549,7 +612,7 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 		shard.mu.Lock()
 		value, ok = shard.data[key]
 		if ok && isExpired(value, time.Now().UnixMilli()) {
-			delete(shard.data, key)
+			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
 		return []StreamEntry{}, nil
@@ -559,6 +622,7 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 		shard.mu.RUnlock()
 		return nil, err
 	}
+	value.touch(now)
 
 	records, err := stream.snapshotAfter(rawID)
 	shard.mu.RUnlock()
@@ -602,6 +666,7 @@ func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 
 	stats := StringSnapshotStats{}
 	entries := make([]StringSnapshotEntry, 0)
+	valueArena := make([]byte, 0)
 	for i := range s.shards {
 		shard := &s.shards[i]
 		stats.TotalKeys += len(shard.data)
@@ -616,9 +681,12 @@ func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 				continue
 			}
 
+			var clonedValue []byte
+			valueArena, clonedValue = appendClonedBytesArena(valueArena, value.String)
+
 			entries = append(entries, StringSnapshotEntry{
 				Key:       key,
-				Value:     cloneBytes(value.String),
+				Value:     clonedValue,
 				ExpiresAt: value.ExpiresAt,
 			})
 			stats.ExportedKeys++
@@ -672,12 +740,16 @@ func (s *Store) ReplaceWith(other *Store) {
 	for i := range s.shards {
 		s.shards[i].data = replacement[i].data
 	}
+	if s.maxMemoryEnabled() {
+		s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
+	}
 	s.writeUnlockAllShards()
 }
 
 func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 	stats := SnapshotStats{}
 	entries := make([]SnapshotEntry, 0)
+	valueArena := make([]byte, 0)
 	for i := range s.shards {
 		shard := &s.shards[i]
 		stats.TotalKeys += len(shard.data)
@@ -691,9 +763,12 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 			entry := SnapshotEntry{Key: key, Kind: value.Kind, ExpiresAt: value.ExpiresAt}
 			switch value.Kind {
 			case ValueKindString:
-				entry.String = cloneBytes(value.String)
+				valueArena, entry.String = appendClonedBytesArena(valueArena, value.String)
 			case ValueKindList:
-				entry.List = cloneList(value.List)
+				entry.List = make([][]byte, len(value.List))
+				for j, item := range value.List {
+					valueArena, entry.List[j] = appendClonedBytesArena(valueArena, item)
+				}
 			case ValueKindZSet:
 				if value.ZSet != nil {
 					entry.ZSet = value.ZSet.rangeByRank(0, value.ZSet.len()-1)
@@ -702,18 +777,26 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 				if value.Stream != nil {
 					entry.Stream = make([]StreamEntry, 0, len(value.Stream.entries))
 					for _, record := range value.Stream.entries {
-						entry.Stream = append(entry.Stream, StreamEntry{ID: record.idText, Values: cloneList(record.values)})
+						clonedValues := make([][]byte, len(record.values))
+						for j, item := range record.values {
+							valueArena, clonedValues[j] = appendClonedBytesArena(valueArena, item)
+						}
+						entry.Stream = append(entry.Stream, StreamEntry{ID: record.idText, Values: clonedValues})
 					}
 				}
 			case ValueKindHash:
 				entry.Hash = make([]HashFieldValue, 0, len(value.Hash))
 				for field, raw := range value.Hash {
-					entry.Hash = append(entry.Hash, HashFieldValue{Field: field, Value: cloneBytes(raw)})
+					var clonedValue []byte
+					valueArena, clonedValue = appendClonedBytesArena(valueArena, raw)
+					entry.Hash = append(entry.Hash, HashFieldValue{Field: field, Value: clonedValue})
 				}
 			case ValueKindSet:
 				entry.Set = make([][]byte, 0, len(value.Set))
 				for member := range value.Set {
-					entry.Set = append(entry.Set, []byte(member))
+					var clonedMember []byte
+					valueArena, clonedMember = appendClonedStringBytesArena(valueArena, member)
+					entry.Set = append(entry.Set, clonedMember)
 				}
 			}
 
@@ -788,6 +871,24 @@ func cloneBytes(src []byte) []byte {
 	return dst
 }
 
+func appendClonedBytesArena(arena []byte, src []byte) ([]byte, []byte) {
+	if src == nil {
+		return arena, nil
+	}
+
+	start := len(arena)
+	arena = append(arena, src...)
+	cloned := arena[start:len(arena):len(arena)]
+	return arena, cloned
+}
+
+func appendClonedStringBytesArena(arena []byte, src string) ([]byte, []byte) {
+	start := len(arena)
+	arena = append(arena, src...)
+	cloned := arena[start:len(arena):len(arena)]
+	return arena, cloned
+}
+
 func cloneList(items [][]byte) [][]byte {
 	if items == nil {
 		return nil
@@ -808,11 +909,13 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 
 	shard := s.shardForKey(key)
 	shard.mu.Lock()
+	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
-	if ok && isExpired(value, time.Now().UnixMilli()) {
-		delete(shard.data, key)
+	if ok && isExpired(value, now) {
+		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
+	oldSize := s.approximateValueObjectSize(key, value)
 
 	var list [][]byte
 	var expiresAt int64
@@ -838,7 +941,12 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 		list = append(list, additions...)
 	}
 
-	shard.data[key] = newListValue(list, expiresAt)
+	newValue := newListValue(list, expiresAt)
+	shard.data[key] = newValue
+	if s.maxMemoryEnabled() {
+		newSize := s.approximateValueObjectSize(key, newValue)
+		s.usedMemory.Add(newSize - oldSize)
+	}
 	newLen := int64(len(list))
 	shard.mu.Unlock()
 

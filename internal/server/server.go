@@ -123,6 +123,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	if err := s.initializePersistence(ctx); err != nil {
 		return err
 	}
+	if s.store != nil {
+		s.store.ConfigureMaxMemory(s.cfg.MaxMemory, s.cfg.EvictionSampleSize)
+		if evicted, err := s.store.EnforceMaxMemory(); err != nil {
+			return fmt.Errorf("server: enforce maxmemory: %w", err)
+		} else if len(evicted) > 0 {
+			s.logger.Info("applied startup maxmemory eviction", "evicted_keys", len(evicted), "used_memory", s.store.UsedMemory(), "maxmemory", s.cfg.MaxMemory)
+		}
+	}
 
 	listener, err := net.Listen("tcp", s.cfg.Address())
 	if err != nil {

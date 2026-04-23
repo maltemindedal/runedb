@@ -628,6 +628,71 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 	})
 }
 
+func TestExecutorMaxMemory(t *testing.T) {
+	t.Run("SET returns OOM when an oversized protected update cannot fit", func(t *testing.T) {
+		executor := newTestExecutor()
+		if _, err := executor.Execute(context.Background(), requestValue("SET", "item", strings.Repeat("a", 64))); err != nil {
+			t.Fatalf("initial SET error = %v", err)
+		}
+
+		executor.store.ConfigureMaxMemory(1<<30, 16)
+		baseline := executor.store.UsedMemory()
+		executor.store.ConfigureMaxMemory(baseline, 16)
+
+		if _, err := executor.Execute(context.Background(), requestValue("SET", "item", strings.Repeat("b", 4096))); !errors.Is(err, ErrOutOfMemory) {
+			t.Fatalf("oversized SET error = %v, want ErrOutOfMemory", err)
+		}
+
+		value, err := executor.Execute(context.Background(), requestValue("GET", "item"))
+		if err != nil {
+			t.Fatalf("GET after OOM error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte(strings.Repeat("a", 64))})
+	})
+
+	t.Run("SET evicts stale keys and emits DEL side effects", func(t *testing.T) {
+		executor := newTestExecutor()
+		payload := strings.Repeat("x", 96)
+		if _, err := executor.Execute(context.Background(), requestValue("SET", "cold", payload)); err != nil {
+			t.Fatalf("initial SET error = %v", err)
+		}
+
+		executor.store.ConfigureMaxMemory(1<<30, 16)
+		baseline := executor.store.UsedMemory()
+		executor.store.ConfigureMaxMemory(baseline+baseline/2, 16)
+		time.Sleep(2 * time.Millisecond)
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "hot!", payload))
+		if err != nil {
+			t.Fatalf("evicting SET error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+		assertValueEqual(t, result.Responses[0], protocol.SimpleString{Value: "OK"})
+		assertPropagationFrames(t, result.Propagation,
+			requestValue("SET", "hot!", payload),
+			requestValue("DEL", "cold"),
+		)
+		assertPropagationFrames(t, result.Durability,
+			requestValue("SET", "hot!", payload),
+			requestValue("DEL", "cold"),
+		)
+
+		cold, err := executor.Execute(context.Background(), requestValue("GET", "cold"))
+		if err != nil {
+			t.Fatalf("GET cold error = %v", err)
+		}
+		assertValueEqual(t, cold, protocol.BulkString{Null: true})
+
+		hot, err := executor.Execute(context.Background(), requestValue("GET", "hot!"))
+		if err != nil {
+			t.Fatalf("GET hot error = %v", err)
+		}
+		assertValueEqual(t, hot, protocol.BulkString{Data: []byte(payload)})
+	})
+}
+
 func TestExecutorReplicationAcknowledgements(t *testing.T) {
 	t.Run("replica-origin GETACK emits upstream ACK reply", func(t *testing.T) {
 		executor := newTestExecutor()
@@ -1029,30 +1094,60 @@ func storageParseStreamIDForTest(raw string) (struct{ milliseconds, sequence int
 }
 
 func TestExecutorBLPop(t *testing.T) {
-	executor := newTestExecutor()
+	t.Run("unblocks on regular push", func(t *testing.T) {
+		executor := newTestExecutor()
 
-	pushErrCh := make(chan error, 1)
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
-		pushErrCh <- err
-	}()
+		pushErrCh := make(chan error, 1)
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
+			pushErrCh <- err
+		}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
 
-	value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if pushErr := <-pushErrCh; pushErr != nil {
-		t.Fatalf("RPUSH error = %v", pushErr)
-	}
+		value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if pushErr := <-pushErrCh; pushErr != nil {
+			t.Fatalf("RPUSH error = %v", pushErr)
+		}
 
-	assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
-		protocol.BulkString{Data: []byte("jobs")},
-		protocol.BulkString{Data: []byte("build")},
-	}})
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.BulkString{Data: []byte("jobs")},
+			protocol.BulkString{Data: []byte("build")},
+		}})
+	})
+
+	t.Run("unblocks when maxmemory is enabled", func(t *testing.T) {
+		executor := newTestExecutor()
+		executor.store.ConfigureMaxMemory(1<<20, 16)
+
+		pushErrCh := make(chan error, 1)
+		go func() {
+			time.Sleep(20 * time.Millisecond)
+			_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
+			pushErrCh <- err
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
+		if err != nil {
+			t.Fatalf("Execute() error = %v", err)
+		}
+		if pushErr := <-pushErrCh; pushErr != nil {
+			t.Fatalf("RPUSH error = %v", pushErr)
+		}
+
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.BulkString{Data: []byte("jobs")},
+			protocol.BulkString{Data: []byte("build")},
+		}})
+	})
 }
 
 func TestExecutorTransactions(t *testing.T) {

@@ -84,7 +84,7 @@ func (e *Executor) popList(request *Request, name string, left bool) (protocol.V
 	return listResponse(values), nil
 }
 
-func (e *Executor) handleHSet(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleHSet(ctx context.Context, request *Request) (protocol.Value, error) {
 	if err := validateHSetRequest(request); err != nil {
 		return nil, err
 	}
@@ -98,19 +98,22 @@ func (e *Executor) handleHSet(_ context.Context, request *Request) (protocol.Val
 		})
 	}
 
-	added, err := e.store.HSet(key, pairs)
+	added, evicted, err := e.store.HSetWithEviction(key, pairs)
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
 			return nil, ErrWrongTypeError()
 		case storage.ErrSyntax:
 			return nil, ErrSyntaxError()
+		case storage.ErrMemoryLimitExceeded:
+			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
 		}
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -184,25 +187,28 @@ func (e *Executor) handleHGetAll(_ context.Context, request *Request) (protocol.
 	return protocol.Array{Elements: elements}, nil
 }
 
-func (e *Executor) handleSAdd(_ context.Context, request *Request) (protocol.Value, error) {
+func (e *Executor) handleSAdd(ctx context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 2 {
 		return nil, wrongNumberOfArgumentsError("SADD")
 	}
 
 	key := string(request.Args[0])
-	added, err := e.store.SAdd(key, request.Args[1:])
+	added, evicted, err := e.store.SAddWithEviction(key, request.Args[1:])
 	if err != nil {
 		switch err {
 		case storage.ErrWrongType:
 			return nil, ErrWrongTypeError()
 		case storage.ErrSyntax:
 			return nil, ErrSyntaxError()
+		case storage.ErrMemoryLimitExceeded:
+			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
 		}
 	}
 
 	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 
