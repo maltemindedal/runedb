@@ -40,7 +40,7 @@ type Store struct {
 	loggerMu                 sync.RWMutex
 	logger                   *slog.Logger
 	usedMemory               atomic.Int64
-	maxMemory                int64
+	maxMemory                atomic.Int64
 	memoryEvictionSampleSize int
 }
 
@@ -281,7 +281,11 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	item := list[0]
 	list[0] = nil
@@ -289,10 +293,10 @@ func (s *Store) LeftPop(key string) ([]byte, bool, error) {
 	value.List = list
 	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		s.deleteKeyLocked(shard, key)
+		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return item, true, nil
 	}
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, value)
 		s.usedMemory.Add(newSize - oldSize)
 	}
@@ -322,7 +326,11 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	last := len(list) - 1
 	item := list[last]
@@ -331,10 +339,10 @@ func (s *Store) RightPop(key string) ([]byte, bool, error) {
 	value.List = list
 	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		s.deleteKeyLocked(shard, key)
+		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return item, true, nil
 	}
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, value)
 		s.usedMemory.Add(newSize - oldSize)
 	}
@@ -379,7 +387,11 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 		s.deleteKeyLocked(shard, key)
 		return nil, false, nil
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	take := int64(len(list))
 	if count < take {
@@ -405,10 +417,10 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 	value.List = list
 	value.touch(time.Now().UnixMilli())
 	if len(list) == 0 {
-		s.deleteKeyLocked(shard, key)
+		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return popped, true, nil
 	}
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, value)
 		s.usedMemory.Add(newSize - oldSize)
 	}
@@ -474,7 +486,11 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting && ok {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	var (
 		set       *sortedSet
@@ -500,7 +516,7 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 
 	newValue := newZSetValue(set, expiresAt)
 	shard.data[key] = newValue
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
 	}

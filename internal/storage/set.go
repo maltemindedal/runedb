@@ -19,7 +19,11 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting && ok {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	var set map[string]struct{}
 	if ok {
@@ -45,14 +49,14 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 
 	if ok {
 		value.touch(now)
-		if s.maxMemoryEnabled() {
+		if accounting {
 			newSize := s.approximateValueObjectSize(key, value)
 			s.usedMemory.Add(newSize - oldSize)
 		}
 	} else {
 		newValue := newSetValue(set, 0)
 		shard.data[key] = newValue
-		if s.maxMemoryEnabled() {
+		if accounting {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
 		}
 	}
@@ -117,7 +121,11 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	removed := int64(0)
 	for _, member := range members {
@@ -132,10 +140,10 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 
 	value.touch(time.Now().UnixMilli())
 	if len(set) == 0 {
-		s.deleteKeyLocked(shard, key)
+		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return removed, nil
 	}
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, value)
 		s.usedMemory.Add(newSize - oldSize)
 	}

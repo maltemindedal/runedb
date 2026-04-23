@@ -396,6 +396,197 @@ func TestStoreMaxMemoryAccountingReclaimsExpiredBytesOnLegacyWrite(t *testing.T)
 	}
 }
 
+func TestStoreMaxMemoryAccountingDropsDrainedCollections(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *Store)
+		drain func(*testing.T, *Store)
+	}{
+		{
+			name: "LeftPop subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				value, ok, err := store.LeftPop("jobs")
+				if err != nil {
+					t.Fatalf("LeftPop() error = %v", err)
+				}
+				if !ok || string(value) != "one" {
+					t.Fatalf("LeftPop() = (%q, %v), want (%q, true)", string(value), ok, "one")
+				}
+			},
+		},
+		{
+			name: "RightPop subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				value, ok, err := store.RightPop("jobs")
+				if err != nil {
+					t.Fatalf("RightPop() error = %v", err)
+				}
+				if !ok || string(value) != "one" {
+					t.Fatalf("RightPop() = (%q, %v), want (%q, true)", string(value), ok, "one")
+				}
+			},
+		},
+		{
+			name: "LeftPopN subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one"), []byte("two")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				values, ok, err := store.LeftPopN("jobs", 2)
+				if err != nil {
+					t.Fatalf("LeftPopN() error = %v", err)
+				}
+				if !ok || len(values) != 2 {
+					t.Fatalf("LeftPopN() = (%v, %v), want (len=2, true)", values, ok)
+				}
+			},
+		},
+		{
+			name: "RightPopN subtracts the full drained list size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.RightPush("jobs", [][]byte{[]byte("one"), []byte("two")}); err != nil {
+					t.Fatalf("RightPush() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				values, ok, err := store.RightPopN("jobs", 2)
+				if err != nil {
+					t.Fatalf("RightPopN() error = %v", err)
+				}
+				if !ok || len(values) != 2 {
+					t.Fatalf("RightPopN() = (%v, %v), want (len=2, true)", values, ok)
+				}
+			},
+		},
+		{
+			name: "HDel subtracts the full drained hash size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.HSet("hash", []HashFieldValue{{Field: "field", Value: []byte("value")}}); err != nil {
+					t.Fatalf("HSet() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				removed, err := store.HDel("hash", []string{"field"})
+				if err != nil {
+					t.Fatalf("HDel() error = %v", err)
+				}
+				if removed != 1 {
+					t.Fatalf("HDel() = %d, want 1", removed)
+				}
+			},
+		},
+		{
+			name: "SRem subtracts the full drained set size",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.SAdd("set", [][]byte{[]byte("member")}); err != nil {
+					t.Fatalf("SAdd() error = %v", err)
+				}
+			},
+			drain: func(t *testing.T, store *Store) {
+				t.Helper()
+				removed, err := store.SRem("set", [][]byte{[]byte("member")})
+				if err != nil {
+					t.Fatalf("SRem() error = %v", err)
+				}
+				if removed != 1 {
+					t.Fatalf("SRem() = %d, want 1", removed)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore()
+			store.ConfigureMaxMemory(1<<30, 16)
+
+			tt.setup(t, store)
+			before := store.UsedMemory()
+			if before == 0 {
+				t.Fatal("UsedMemory() before drain = 0, want non-zero")
+			}
+
+			tt.drain(t, store)
+
+			if got := store.UsedMemory(); got != 0 {
+				t.Fatalf("UsedMemory() after drain = %d, want 0", got)
+			}
+			if got := store.Len(); got != 0 {
+				t.Fatalf("Len() after drain = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestStoreMaxMemoryConcurrentConfiguration(t *testing.T) {
+	store := NewStore()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			limit := int64(0)
+			if i%2 == 1 {
+				limit = 1 << 20
+			}
+			store.ConfigureMaxMemory(limit, 16)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			_ = store.MaxMemory()
+			_ = store.maxMemoryEnabled()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 256; i++ {
+			if _, err := store.SetWithEviction("key", []byte("value"), 0); err != nil {
+				errCh <- fmt.Errorf("SetWithEviction() error = %w", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	store := NewStore()
 	store.Set("a", []byte("1"), time.Now().Add(-time.Millisecond).UnixMilli())

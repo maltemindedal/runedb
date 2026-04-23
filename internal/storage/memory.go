@@ -30,7 +30,7 @@ func (s *Store) ConfigureMaxMemory(limit int64, sampleSize int) {
 	}
 
 	s.writeLockAllShards()
-	s.maxMemory = limit
+	s.maxMemory.Store(limit)
 	s.memoryEvictionSampleSize = sampleSize
 	if limit > 0 {
 		s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
@@ -46,7 +46,7 @@ func (s *Store) MaxMemory() int64 {
 		return 0
 	}
 
-	return s.maxMemory
+	return s.maxMemory.Load()
 }
 
 // UsedMemory returns the current approximate keyspace memory usage in bytes.
@@ -68,12 +68,13 @@ func (s *Store) EnforceMaxMemory() ([]string, error) {
 	s.writeLockAllShards()
 	defer s.writeUnlockAllShards()
 
+	limit := s.maxMemory.Load()
 	s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
-	if s.usedMemory.Load() <= s.maxMemory {
+	if s.usedMemory.Load() <= limit {
 		return nil, nil
 	}
 
-	return s.evictUntilMemoryAtOrBelowLocked(s.maxMemory, nil)
+	return s.evictUntilMemoryAtOrBelowLocked(limit, nil)
 }
 
 func (s *Store) SetWithEviction(key string, value []byte, expiresAt int64) ([]string, error) {
@@ -485,7 +486,8 @@ func (s *Store) ensureMemoryAvailableLocked(delta int64, protected map[string]st
 	}
 
 	current := s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
-	targetUsed := s.maxMemory - delta
+	limit := s.maxMemory.Load()
+	targetUsed := limit - delta
 	if targetUsed < 0 {
 		return nil, ErrMemoryLimitExceeded
 	}
@@ -602,6 +604,21 @@ func (s *Store) prepareExistingValueLocked(key string, now int64) (*Shard, *Valu
 	return shard, value
 }
 
+func (s *Store) deleteKeyWithSizeLocked(shard *Shard, key string, size int64) bool {
+	if shard == nil {
+		return false
+	}
+
+	if _, ok := shard.data[key]; !ok {
+		return false
+	}
+	if s.maxMemoryEnabled() {
+		s.usedMemory.Add(-size)
+	}
+	delete(shard.data, key)
+	return true
+}
+
 func (s *Store) deleteKeyLocked(shard *Shard, key string) bool {
 	if shard == nil {
 		return false
@@ -611,15 +628,16 @@ func (s *Store) deleteKeyLocked(shard *Shard, key string) bool {
 	if !ok {
 		return false
 	}
+	size := int64(0)
 	if s.maxMemoryEnabled() {
-		s.usedMemory.Add(-s.approximateValueObjectSize(key, value))
+		size = s.approximateValueObjectSize(key, value)
 	}
-	delete(shard.data, key)
-	return true
+
+	return s.deleteKeyWithSizeLocked(shard, key, size)
 }
 
 func (s *Store) maxMemoryEnabled() bool {
-	return s != nil && s.maxMemory > 0
+	return s != nil && s.maxMemory.Load() > 0
 }
 
 func protectedKeys(keys ...string) map[string]struct{} {
