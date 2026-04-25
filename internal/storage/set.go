@@ -55,7 +55,7 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		}
 	} else {
 		newValue := newSetValue(set, 0)
-		shard.data[key] = newValue
+		s.setKeyLocked(shard, key, newValue)
 		if accounting {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
 		}

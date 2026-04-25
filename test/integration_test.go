@@ -3,6 +3,7 @@ package test
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -822,6 +823,70 @@ func TestServerPubSubDisconnectCleanup(t *testing.T) {
 		}
 
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func TestServerMonitorStreamsCommands(t *testing.T) {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
+
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	monitorConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) monitor error = %v", addr, err)
+	}
+	defer func() { _ = monitorConn.Close() }()
+	monitorParser := protocol.NewParser(monitorConn)
+	assertCommandResponse(t, monitorConn, monitorParser, protocol.SimpleString{Value: "OK"}, "MONITOR")
+
+	clientConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) client error = %v", addr, err)
+	}
+	defer func() { _ = clientConn.Close() }()
+	clientParser := protocol.NewParser(clientConn)
+
+	assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "OK"}, "SET", "observed", "value")
+	message, err := monitorParser.Parse()
+	if err != nil {
+		t.Fatalf("Parse() monitor message error = %v", err)
+	}
+	line, ok := message.(protocol.SimpleString)
+	if !ok {
+		t.Fatalf("monitor message type = %T, want SimpleString", message)
+	}
+	for _, want := range []string{"\"SET\"", "\"observed\"", "\"value\""} {
+		if !strings.Contains(line.Value, want) {
+			t.Fatalf("monitor line = %q, missing %q", line.Value, want)
+		}
 	}
 
 	cancel()

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/aof"
 	"github.com/maltemindedal/runedb/internal/config"
@@ -43,6 +45,18 @@ type aofRewriteTriggerSetter interface {
 	SetAOFRewriteTrigger(func(context.Context) error)
 }
 
+type slowlogConfigSetter interface {
+	SetSlowlogConfig(*SlowlogRegistry, time.Duration)
+}
+
+type monitorRegistrySetter interface {
+	SetMonitorRegistry(*MonitorRegistry)
+}
+
+type serverStatsProviderSetter interface {
+	SetServerStatsProvider(func() ServerStats)
+}
+
 type temporaryError interface {
 	error
 	Temporary() bool
@@ -50,17 +64,20 @@ type temporaryError interface {
 
 // Server owns the TCP listener, active clients, and command execution pipeline.
 type Server struct {
-	cfg            config.Config
-	logger         *slog.Logger
-	store          *storage.Store
-	executor       executor
-	registry       *Registry
-	replicaPeers   *ReplicaRegistry
-	watchRegistry  *WatchRegistry
-	pubSubRegistry *PubSubRegistry
-	replication    *ReplicationState
-	aofWriter      *aof.Writer
-	runtimeCtx     context.Context
+	cfg               config.Config
+	logger            *slog.Logger
+	store             *storage.Store
+	executor          executor
+	registry          *Registry
+	replicaPeers      *ReplicaRegistry
+	watchRegistry     *WatchRegistry
+	pubSubRegistry    *PubSubRegistry
+	monitorRegistry   *MonitorRegistry
+	slowlogRegistry   *SlowlogRegistry
+	replication       *ReplicationState
+	aofWriter         *aof.Writer
+	runtimeCtx        context.Context
+	commandsProcessed atomic.Int64
 
 	clientStates   map[uint64]*ClientState
 	clientStatesMu sync.RWMutex
@@ -77,14 +94,16 @@ type Server struct {
 // New constructs a server ready to listen for TCP clients.
 func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor executor) *Server {
 	srv := &Server{
-		cfg:          cfg,
-		logger:       logger,
-		store:        store,
-		executor:     executor,
-		registry:     NewRegistry(),
-		replicaPeers: NewReplicaRegistry(),
-		replication:  newReplicationState(),
-		clientStates: make(map[uint64]*ClientState),
+		cfg:             cfg,
+		logger:          logger,
+		store:           store,
+		executor:        executor,
+		registry:        NewRegistry(),
+		replicaPeers:    NewReplicaRegistry(),
+		monitorRegistry: NewMonitorRegistry(),
+		slowlogRegistry: NewSlowlogRegistry(),
+		replication:     newReplicationState(),
+		clientStates:    make(map[uint64]*ClientState),
 	}
 	if store != nil {
 		store.SetLogger(logger)
@@ -106,6 +125,15 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 	}
 	if setter, ok := executor.(aofRewriteTriggerSetter); ok {
 		setter.SetAOFRewriteTrigger(srv.beginAOFRewrite)
+	}
+	if setter, ok := executor.(slowlogConfigSetter); ok {
+		setter.SetSlowlogConfig(srv.slowlogRegistry, cfg.SlowlogLogSlowerThan)
+	}
+	if setter, ok := executor.(monitorRegistrySetter); ok {
+		setter.SetMonitorRegistry(srv.monitorRegistry)
+	}
+	if setter, ok := executor.(serverStatsProviderSetter); ok {
+		setter.SetServerStatsProvider(srv.ServerStats)
 	}
 
 	return srv
@@ -267,6 +295,7 @@ func (s *Server) createClientState(clientID uint64) *ClientState {
 	}
 	state.SetWatchRegistry(s.watchRegistry)
 	state.SetPubSubRegistry(s.pubSubRegistry)
+	state.SetMonitorRegistry(s.monitorRegistry)
 
 	s.clientStatesMu.Lock()
 	defer s.clientStatesMu.Unlock()
@@ -316,4 +345,37 @@ func (s *Server) clearClientStates() {
 // ReplicaCount returns the number of replica peers connected to this server.
 func (s *Server) ReplicaCount() int {
 	return s.replicaPeers.Count()
+}
+
+// ServerStats returns a snapshot of server-level observability data.
+func (s *Server) ServerStats() ServerStats {
+	if s == nil {
+		return ServerStats{}
+	}
+
+	role := "master"
+	if s.cfg.IsReplica() {
+		role = "slave"
+	}
+
+	replicaPeers := s.replicaPeers.Snapshot()
+	replicas := make([]ReplicaInfo, 0, len(replicaPeers))
+	for _, peer := range replicaPeers {
+		replicas = append(replicas, ReplicaInfo{
+			ID:            peer.ID,
+			ListeningPort: peer.ListeningPort,
+			AckOffset:     peer.AckOffset,
+		})
+	}
+
+	return ServerStats{
+		ConnectedClients:    s.registry.Count(),
+		MonitoringClients:   s.monitorRegistry.Count(),
+		CommandsProcessed:   s.commandsProcessed.Load(),
+		Role:                role,
+		MasterReplicationID: s.replication.MasterReplicationID,
+		MasterOffset:        s.replication.MasterOffset(),
+		ReplicaOffset:       s.replication.ReplicaOffset(),
+		Replicas:            replicas,
+	}
 }

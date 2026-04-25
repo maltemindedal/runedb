@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
 )
@@ -19,7 +21,8 @@ type QueuedCommand struct {
 
 // ClientState holds connection-scoped state for auth and transaction features.
 type ClientState struct {
-	ID uint64
+	ID         uint64
+	RemoteAddr string
 
 	mu         sync.RWMutex
 	responseMu sync.Mutex
@@ -31,11 +34,14 @@ type ClientState struct {
 	// client-local subscribedChannels set via ClientState.mu.
 	pubSubRegistry     *PubSubRegistry
 	subscribedChannels map[string]struct{}
+	monitorRegistry    *MonitorRegistry
 	responseWriter     *bufio.Writer
+	responseConn       net.Conn
 	writerClosed       bool
 
 	Authenticated     bool
 	Replica           bool
+	Monitoring        bool
 	ReplicaListenPort int
 	LastWriteOffset   int64
 	InTransaction     bool
@@ -97,6 +103,14 @@ func (s *ClientState) SetPubSubRegistry(registry *PubSubRegistry) {
 	}
 }
 
+// SetMonitorRegistry binds the shared MONITOR fan-out registry to the client state.
+func (s *ClientState) SetMonitorRegistry(registry *MonitorRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.monitorRegistry = registry
+}
+
 // BindResponseWriter binds the connection-scoped writer used for command
 // replies, async push messages, and replica propagation. All writes for a
 // given connection must flow through this writer to avoid interleaving.
@@ -106,6 +120,15 @@ func (s *ClientState) BindResponseWriter(writer *bufio.Writer) {
 
 	s.responseWriter = writer
 	s.writerClosed = writer == nil
+}
+
+// BindResponseConn records the underlying connection used by the response
+// writer when one is available.
+func (s *ClientState) BindResponseConn(conn net.Conn) {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	s.responseConn = conn
 }
 
 // HasActiveResponseWriter reports whether the client can currently receive
@@ -131,9 +154,11 @@ func (s *ClientState) Disconnect() {
 	s.responseMu.Lock()
 	s.writerClosed = true
 	s.responseWriter = nil
+	s.responseConn = nil
 	s.responseMu.Unlock()
 
 	s.ResetTransaction()
+	s.StopMonitoring()
 	s.UnsubscribeAll()
 	s.UnwatchAll()
 }
@@ -144,6 +169,22 @@ func (s *ClientState) SetAuthenticated(authenticated bool) {
 	defer s.mu.Unlock()
 
 	s.Authenticated = authenticated
+}
+
+// SetRemoteAddr records the client's network address for observability output.
+func (s *ClientState) SetRemoteAddr(addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.RemoteAddr = addr
+}
+
+// RemoteAddress returns the client's recorded network address.
+func (s *ClientState) RemoteAddress() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.RemoteAddr
 }
 
 // IsAuthenticated reports whether the client has successfully authenticated.
@@ -190,6 +231,35 @@ func (s *ClientState) WriteEncoded(payload []byte) error {
 	return s.responseWriter.Flush()
 }
 
+// WriteEncodedWithDeadline writes a pre-encoded RESP payload with a temporary
+// write deadline when the underlying connection is known.
+func (s *ClientState) WriteEncodedWithDeadline(payload []byte, timeout time.Duration) error {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	if s.writerClosed || s.responseWriter == nil {
+		return fmt.Errorf("client response writer unavailable")
+	}
+	deadlineSet := false
+	if s.responseConn != nil && timeout > 0 {
+		if err := s.responseConn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		deadlineSet = true
+	}
+	_, writeErr := s.responseWriter.Write(payload)
+	if writeErr == nil {
+		writeErr = s.responseWriter.Flush()
+	}
+	if deadlineSet {
+		if clearErr := s.responseConn.SetWriteDeadline(time.Time{}); writeErr == nil {
+			writeErr = clearErr
+		}
+	}
+
+	return writeErr
+}
+
 // SetReplicaListeningPort records the port announced during REPLCONF listening-port.
 func (s *ClientState) SetReplicaListeningPort(port int) {
 	s.mu.Lock()
@@ -220,6 +290,41 @@ func (s *ClientState) IsReplica() bool {
 	defer s.mu.RUnlock()
 
 	return s.Replica
+}
+
+// StartMonitoring registers the client for MONITOR event fan-out.
+func (s *ClientState) StartMonitoring() {
+	s.mu.RLock()
+	registry := s.monitorRegistry
+	s.mu.RUnlock()
+
+	if registry == nil {
+		return
+	}
+
+	registry.Subscribe(s)
+}
+
+// StopMonitoring unregisters the client from MONITOR event fan-out.
+func (s *ClientState) StopMonitoring() {
+	s.mu.RLock()
+	registry := s.monitorRegistry
+	s.mu.RUnlock()
+
+	if registry == nil {
+		s.setMonitoring(false)
+		return
+	}
+
+	registry.Unsubscribe(s)
+}
+
+// IsMonitoring reports whether the client is currently in MONITOR mode.
+func (s *ClientState) IsMonitoring() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.Monitoring
 }
 
 // SetLastWriteReplicationOffset records the replication offset produced by the
@@ -420,6 +525,13 @@ func (s *ClientState) removeSubscribedChannel(channel string) {
 	defer s.mu.Unlock()
 
 	delete(s.subscribedChannels, channel)
+}
+
+func (s *ClientState) setMonitoring(monitoring bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Monitoring = monitoring
 }
 
 func (s *ClientState) drainWatchedKeys() []string {

@@ -20,6 +20,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 9:** Done
 - **Phase 10:** Done
 - **Phase 11:** Done
+- **Phase 12:** Done
 
 ## 1. Executive Summary
 
@@ -352,9 +353,9 @@ Protect the server from unbounded memory growth under sustained write pressure.
 
 A production-ready database requires tooling to monitor its internal state under load.
 
-- [ ] **The `INFO` Command:** Implement sections for `INFO memory` (heap stats, fragmentation), `INFO replication` (master/replica offsets, lag), and `INFO clients` (connected counts).
-- [ ] **The `SLOWLOG`:** Track queries that exceed a configurable execution time (`slowlog-log-slower-than`). Implement a bounded, thread-safe queue to store slow query metadata (timestamp, execution time, command array) without blocking the hot path.
-- [ ] **The `MONITOR` Command:** Implement a debugging command that streams every command processed by the server back to the calling client, utilizing the Pub/Sub fan-out architecture for internal server events.
+- [x] **The `INFO` Command:** Implement sections for `INFO memory` (heap stats, fragmentation), `INFO replication` (master/replica offsets, lag), and `INFO clients` (connected counts).
+- [x] **The `SLOWLOG`:** Track queries that exceed a configurable execution time (`slowlog-log-slower-than`). Implement a bounded, thread-safe queue to store slow query metadata (timestamp, execution time, command array) without blocking the hot path.
+- [x] **The `MONITOR` Command:** Implement a debugging command that streams every command processed by the server back to the calling client, utilizing the Pub/Sub fan-out architecture for internal server events.
 
 ### Phase 13: Advanced Memory Efficiency (Internal Encodings)
 

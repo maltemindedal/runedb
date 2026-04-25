@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -690,6 +691,129 @@ func TestExecutorMaxMemory(t *testing.T) {
 			t.Fatalf("GET hot error = %v", err)
 		}
 		assertValueEqual(t, hot, protocol.BulkString{Data: []byte(payload)})
+	})
+}
+
+func TestExecutorInfo(t *testing.T) {
+	executor := newTestExecutor()
+	if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "RuneDB")); err != nil {
+		t.Fatalf("SET error = %v", err)
+	}
+	if _, err := executor.Execute(context.Background(), requestValue("LPUSH", "letters", "a")); err != nil {
+		t.Fatalf("LPUSH error = %v", err)
+	}
+
+	value, err := executor.Execute(context.Background(), requestValue("INFO", "memory"))
+	if err != nil {
+		t.Fatalf("INFO memory error = %v", err)
+	}
+	text := mustBulkStringText(t, value)
+	for _, want := range []string{"# Memory", "used_memory:", "mem_fragmentation_ratio:", "go_heap_alloc:", "key_count:2", "key_count_string:1", "key_count_list:1"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("INFO memory = %q, missing %q", text, want)
+		}
+	}
+
+	value, err = executor.Execute(context.Background(), requestValue("INFO"))
+	if err != nil {
+		t.Fatalf("INFO error = %v", err)
+	}
+	text = mustBulkStringText(t, value)
+	for _, want := range []string{"# Memory", "# Replication", "# Clients", "role:master"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("INFO = %q, missing %q", text, want)
+		}
+	}
+}
+
+func TestExecutorSlowlog(t *testing.T) {
+	t.Run("records commands at zero threshold", func(t *testing.T) {
+		executor := newTestExecutor()
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+
+		if _, err := executor.Execute(context.Background(), requestValue("PING")); err != nil {
+			t.Fatalf("PING error = %v", err)
+		}
+		value, err := executor.Execute(context.Background(), requestValue("SLOWLOG", "LEN"))
+		if err != nil {
+			t.Fatalf("SLOWLOG LEN error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Integer{Value: 1})
+
+		value, err = executor.Execute(context.Background(), requestValue("SLOWLOG", "GET", "1"))
+		if err != nil {
+			t.Fatalf("SLOWLOG GET error = %v", err)
+		}
+		array, ok := value.(protocol.Array)
+		if !ok || len(array.Elements) != 1 {
+			t.Fatalf("SLOWLOG GET response = %#v, want one entry", value)
+		}
+	})
+
+	t.Run("negative threshold disables recording", func(t *testing.T) {
+		executor := newTestExecutor()
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, -time.Microsecond)
+
+		if _, err := executor.Execute(context.Background(), requestValue("PING")); err != nil {
+			t.Fatalf("PING error = %v", err)
+		}
+		if got := registry.Len(); got != 0 {
+			t.Fatalf("slowlog Len() = %d, want 0", got)
+		}
+	})
+
+	t.Run("reset clears entries", func(t *testing.T) {
+		executor := newTestExecutor()
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+
+		if _, err := executor.Execute(context.Background(), requestValue("PING")); err != nil {
+			t.Fatalf("PING error = %v", err)
+		}
+		if _, err := executor.Execute(context.Background(), requestValue("SLOWLOG", "RESET")); err != nil {
+			t.Fatalf("SLOWLOG RESET error = %v", err)
+		}
+		// RESET itself is recorded at a zero threshold after clearing older entries.
+		if got := registry.Len(); got != 1 {
+			t.Fatalf("slowlog Len() = %d after RESET at zero threshold, want 1", got)
+		}
+	})
+
+	t.Run("does not record commands rejected before dispatch", func(t *testing.T) {
+		executor := newTestExecutor()
+		executor.SetRequirePass("secret")
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+		ctx := withUnauthenticatedClientStateForExecutor(context.Background(), executor, 77)
+
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); !errors.Is(err, ErrNoAuth) {
+			t.Fatalf("SET unauthenticated error = %v, want ErrNoAuth", err)
+		}
+		if got := registry.Len(); got != 0 {
+			t.Fatalf("slowlog Len() = %d after rejected SET, want 0", got)
+		}
+	})
+
+	t.Run("redacts sensitive command arguments", func(t *testing.T) {
+		executor := newTestExecutor()
+		executor.SetRequirePass("secret")
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+		ctx := withUnauthenticatedClientStateForExecutor(context.Background(), executor, 78)
+
+		if _, err := executor.Execute(ctx, requestValue("AUTH", "secret")); err != nil {
+			t.Fatalf("AUTH error = %v", err)
+		}
+		entries := registry.Entries(1)
+		if len(entries) != 1 {
+			t.Fatalf("len(slowlog entries) = %d, want 1", len(entries))
+		}
+		want := []string{"AUTH", "[redacted]"}
+		if !reflect.DeepEqual(entries[0].Command, want) {
+			t.Fatalf("slowlog command = %#v, want %#v", entries[0].Command, want)
+		}
 	})
 }
 

@@ -40,6 +40,8 @@ var (
 	ErrSubscribedModeOnly = errors.New("only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context")
 	// ErrSubscribeInsideMulti reports that subscribe state changes are not allowed inside MULTI.
 	ErrSubscribeInsideMulti = errors.New("SUBSCRIBE and UNSUBSCRIBE inside MULTI are not allowed")
+	// ErrMonitorModeOnly reports that a MONITOR client attempted a disallowed command.
+	ErrMonitorModeOnly = errors.New("only PING is allowed in this context")
 	// ErrOutOfMemory reports that a write could not fit under maxmemory.
 	ErrOutOfMemory = errors.New("command not allowed when used memory > 'maxmemory'")
 )
@@ -175,6 +177,11 @@ func ErrSubscribedModeOnlyError() error {
 // ErrSubscribeInsideMultiError reports that subscription state changes are disallowed in MULTI.
 func ErrSubscribeInsideMultiError() error {
 	return newRESPWrappedError("ERR", ErrSubscribeInsideMulti)
+}
+
+// ErrMonitorModeOnlyError reports that only monitor-safe commands are allowed.
+func ErrMonitorModeOnlyError() error {
+	return newRESPWrappedError("ERR", ErrMonitorModeOnly)
 }
 
 // ErrOutOfMemoryError reports a Redis-style OOM failure.

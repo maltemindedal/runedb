@@ -5,7 +5,7 @@ func (s *Store) setValueObjectForTest(key string, value *ValueObject) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	shard.data[key] = value
+	s.setKeyLocked(shard, key, value)
 }
 
 func (s *Store) expireKeyForTest(key string, expiresAt int64) bool {

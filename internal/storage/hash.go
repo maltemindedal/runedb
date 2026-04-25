@@ -52,7 +52,7 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 		}
 	} else {
 		newValue := newHashValue(fields, 0)
-		shard.data[key] = newValue
+		s.setKeyLocked(shard, key, newValue)
 		if accounting {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
 		}

@@ -219,6 +219,28 @@ func TestClientStateDisconnectClearsWriterAndPubSubState(t *testing.T) {
 	}
 }
 
+func TestClientStateWriteEncodedWithDeadlineTimesOut(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer func() {
+		if err := serverConn.Close(); err != nil {
+			t.Errorf("serverConn.Close() error = %v", err)
+		}
+	}()
+	defer func() {
+		if err := clientConn.Close(); err != nil {
+			t.Errorf("clientConn.Close() error = %v", err)
+		}
+	}()
+
+	state := &ClientState{ID: 6, Authenticated: true}
+	state.BindResponseWriter(bufio.NewWriter(serverConn))
+	state.BindResponseConn(serverConn)
+
+	if err := state.WriteEncodedWithDeadline([]byte("+OK\r\n"), 5*time.Millisecond); err == nil {
+		t.Fatal("WriteEncodedWithDeadline() error = nil, want timeout error")
+	}
+}
+
 func TestClientStateLifecycle(t *testing.T) {
 	cfg := config.Default()
 	cfg.RequirePass = "secret"
