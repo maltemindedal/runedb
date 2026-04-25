@@ -5,42 +5,45 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // Config contains the runtime settings for the RuneDB server.
 type Config struct {
-	Host               string
-	Port               int
-	LogLevel           string
-	EvictionInterval   time.Duration
-	EvictionSampleSize int
-	RDBPath            string
-	DumpPath           string
-	AOFPath            string
-	AppendFsync        string
-	ReplicaOf          string
-	MasterAuth         string
-	RequirePass        string
-	MaxMemory          int64
+	Host                 string
+	Port                 int
+	LogLevel             string
+	EvictionInterval     time.Duration
+	EvictionSampleSize   int
+	RDBPath              string
+	DumpPath             string
+	AOFPath              string
+	AppendFsync          string
+	ReplicaOf            string
+	MasterAuth           string
+	RequirePass          string
+	MaxMemory            int64
+	SlowlogLogSlowerThan time.Duration
 }
 
 // Default returns the default runtime configuration for local development.
 func Default() Config {
 	return Config{
-		Host:               "",
-		Port:               6379,
-		LogLevel:           "info",
-		EvictionInterval:   100 * time.Millisecond,
-		EvictionSampleSize: 20,
-		RDBPath:            "",
-		DumpPath:           "dump.rdb",
-		AOFPath:            "",
-		AppendFsync:        "everysec",
-		ReplicaOf:          "",
-		MasterAuth:         "",
-		MaxMemory:          0,
+		Host:                 "",
+		Port:                 6379,
+		LogLevel:             "info",
+		EvictionInterval:     100 * time.Millisecond,
+		EvictionSampleSize:   20,
+		RDBPath:              "",
+		DumpPath:             "dump.rdb",
+		AOFPath:              "",
+		AppendFsync:          "everysec",
+		ReplicaOf:            "",
+		MasterAuth:           "",
+		MaxMemory:            0,
+		SlowlogLogSlowerThan: 10 * time.Millisecond,
 	}
 }
 
@@ -71,6 +74,15 @@ func parseFlags(fs *flag.FlagSet, args []string) (Config, error) {
 	fs.StringVar(&cfg.ReplicaOf, "replicaof", cfg.ReplicaOf, "optional master address in host:port form for replica mode")
 	fs.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "optional password used by replica mode to AUTH against a protected master")
 	fs.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password required for AUTH-protected client commands")
+	fs.Func("slowlog-log-slower-than", "slow query threshold in microseconds; 0 logs all commands and negative disables slowlog", func(value string) error {
+		threshold, err := parseSlowlogThreshold(value)
+		if err != nil {
+			return err
+		}
+
+		cfg.SlowlogLogSlowerThan = threshold
+		return nil
+	})
 	fs.Func("appendfsync", "appendfsync policy: always, everysec, no", func(value string) error {
 		normalized, err := normalizeAppendFsync(value)
 		if err != nil {
@@ -131,4 +143,16 @@ func normalizeAppendFsync(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid appendfsync policy %q: expected always, everysec, or no", value)
 	}
+}
+
+func parseSlowlogThreshold(value string) (time.Duration, error) {
+	micros, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid slowlog-log-slower-than %q: expected integer microseconds", value)
+	}
+	if micros < 0 {
+		return -1, nil
+	}
+
+	return time.Duration(micros) * time.Microsecond, nil
 }

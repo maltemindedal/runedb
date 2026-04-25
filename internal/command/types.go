@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/server"
@@ -44,15 +45,19 @@ type executionEffectsContextKey struct{}
 
 // Executor routes protocol frames to concrete command handlers.
 type Executor struct {
-	store          *storage.Store
-	logger         *slog.Logger
-	watchRegistry  *server.WatchRegistry
-	pubSubRegistry *server.PubSubRegistry
-	requirePass    string
-	commands       map[string]commandSpec
-	replication    *server.ReplicationState
-	replicaPeers   *server.ReplicaRegistry
-	aofRewrite     func(context.Context) error
+	store               *storage.Store
+	logger              *slog.Logger
+	watchRegistry       *server.WatchRegistry
+	pubSubRegistry      *server.PubSubRegistry
+	requirePass         string
+	commands            map[string]commandSpec
+	replication         *server.ReplicationState
+	replicaPeers        *server.ReplicaRegistry
+	monitorRegistry     *server.MonitorRegistry
+	slowlogRegistry     *server.SlowlogRegistry
+	slowlogThreshold    time.Duration
+	serverStatsProvider func() server.ServerStats
+	aofRewrite          func(context.Context) error
 }
 
 // NewExecutor constructs a command executor with the currently supported command set.
@@ -97,6 +102,22 @@ func (e *Executor) SetAOFRewriteTrigger(trigger func(context.Context) error) {
 	e.aofRewrite = trigger
 }
 
+// SetSlowlogConfig injects the shared slowlog registry and execution threshold.
+func (e *Executor) SetSlowlogConfig(registry *server.SlowlogRegistry, threshold time.Duration) {
+	e.slowlogRegistry = registry
+	e.slowlogThreshold = threshold
+}
+
+// SetMonitorRegistry injects the shared MONITOR fan-out registry.
+func (e *Executor) SetMonitorRegistry(registry *server.MonitorRegistry) {
+	e.monitorRegistry = registry
+}
+
+// SetServerStatsProvider injects a snapshot provider used by INFO.
+func (e *Executor) SetServerStatsProvider(provider func() server.ServerStats) {
+	e.serverStatsProvider = provider
+}
+
 // Execute dispatches a parsed RESP frame to its command handler.
 func (e *Executor) Execute(ctx context.Context, value protocol.Value) (protocol.Value, error) {
 	result, err := e.ExecuteDetailed(ctx, value)
@@ -122,6 +143,10 @@ func (e *Executor) ExecuteDetailed(ctx context.Context, value protocol.Value) (s
 
 func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request, allowQueue bool) (server.ExecuteResult, error) {
 	ctx, effects := withExecutionEffects(ctx)
+	startedAt := time.Now()
+	defer func() {
+		e.recordSlowCommand(ctx, request, startedAt, time.Since(startedAt))
+	}()
 
 	if err := e.validateSubscriptionContext(ctx, request); err != nil {
 		return server.ExecuteResult{}, err
@@ -492,6 +517,19 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleBGRewriteAOF,
 			validate: exactArgsValidator("BGREWRITEAOF", 0),
 		},
+		"INFO": {
+			handler:  e.handleInfo,
+			validate: validateInfoRequest,
+		},
+		"SLOWLOG": {
+			handler:  e.handleSlowlog,
+			validate: validateSlowlogRequest,
+		},
+		"MONITOR": {
+			handler:            e.handleMonitor,
+			validate:           exactArgsValidator("MONITOR", 0),
+			transactionControl: true,
+		},
 	}
 }
 
@@ -504,8 +542,28 @@ func (e *Executor) validateSubscriptionContext(ctx context.Context, request *Req
 	if state.IsSubscribed() && !isAllowedSubscribedModeCommand(request.Name) {
 		return ErrSubscribedModeOnlyError()
 	}
+	if state.IsMonitoring() && !isAllowedMonitoringModeCommand(request.Name) {
+		return ErrMonitorModeOnlyError()
+	}
 
 	return nil
+}
+
+func (e *Executor) recordSlowCommand(ctx context.Context, request *Request, timestamp time.Time, duration time.Duration) {
+	if e.slowlogRegistry == nil || request == nil || e.slowlogThreshold < 0 || duration < e.slowlogThreshold || server.IsReplicationOrigin(ctx) {
+		return
+	}
+
+	entry := server.SlowlogEntry{
+		Timestamp: timestamp,
+		Duration:  duration,
+		Command:   requestTokens(request),
+	}
+	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
+		entry.ClientID = state.ID
+		entry.ClientAddr = state.RemoteAddress()
+	}
+	e.slowlogRegistry.Record(entry)
 }
 
 func (e *Executor) validateAuthContext(ctx context.Context, request *Request) error {
@@ -548,6 +606,10 @@ func isAllowedSubscribedModeCommand(name string) bool {
 	default:
 		return false
 	}
+}
+
+func isAllowedMonitoringModeCommand(name string) bool {
+	return name == "PING"
 }
 
 func exactArgsValidator(name string, count int) commandValidator {

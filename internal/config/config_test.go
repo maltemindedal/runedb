@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"testing"
+	"time"
 )
 
 func TestDefaultIncludesShutdownSnapshotPath(t *testing.T) {
@@ -20,6 +21,9 @@ func TestDefaultIncludesShutdownSnapshotPath(t *testing.T) {
 	}
 	if cfg.MaxMemory != 0 {
 		t.Fatalf("MaxMemory = %d, want 0", cfg.MaxMemory)
+	}
+	if cfg.SlowlogLogSlowerThan != 10*time.Millisecond {
+		t.Fatalf("SlowlogLogSlowerThan = %v, want %v", cfg.SlowlogLogSlowerThan, 10*time.Millisecond)
 	}
 }
 
@@ -43,6 +47,41 @@ func TestParseFlags(t *testing.T) {
 		}
 		if cfg.MaxMemory != 2048 {
 			t.Fatalf("MaxMemory = %d, want 2048", cfg.MaxMemory)
+		}
+	})
+
+	t.Run("parses slowlog threshold as microseconds", func(t *testing.T) {
+		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+
+		cfg, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "2500"})
+		if err != nil {
+			t.Fatalf("parseFlags() error = %v", err)
+		}
+		if cfg.SlowlogLogSlowerThan != 2500*time.Microsecond {
+			t.Fatalf("SlowlogLogSlowerThan = %v, want %v", cfg.SlowlogLogSlowerThan, 2500*time.Microsecond)
+		}
+	})
+
+	t.Run("accepts negative slowlog threshold to disable", func(t *testing.T) {
+		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+
+		cfg, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "-1"})
+		if err != nil {
+			t.Fatalf("parseFlags() error = %v", err)
+		}
+		if cfg.SlowlogLogSlowerThan >= 0 {
+			t.Fatalf("SlowlogLogSlowerThan = %v, want disabled negative duration", cfg.SlowlogLogSlowerThan)
+		}
+	})
+
+	t.Run("rejects non-integer slowlog threshold", func(t *testing.T) {
+		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+
+		if _, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "10ms"}); err == nil {
+			t.Fatal("parseFlags() error = nil, want invalid slowlog threshold failure")
 		}
 	})
 

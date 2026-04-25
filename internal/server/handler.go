@@ -19,6 +19,9 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 
 	if state := s.getClientState(clientID); state != nil {
 		state.BindResponseWriter(writer)
+		if conn.RemoteAddr() != nil {
+			state.SetRemoteAddr(conn.RemoteAddr().String())
+		}
 		ctx = WithClientState(ctx, state)
 	}
 
@@ -59,6 +62,9 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			continue
 		}
 
+		if s.monitorRegistry.HasSubscribers() {
+			s.broadcastMonitorEvent(observeCommand(value, clientID, conn))
+		}
 		result, execErr := s.executor.ExecuteDetailed(ctx, value)
 		if execErr != nil {
 			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
@@ -85,6 +91,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			s.registerReplicaPeer(clientID, conn)
 		}
 		s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
+		s.commandsProcessed.Add(1)
 	}
 }
 
