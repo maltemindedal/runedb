@@ -2,17 +2,66 @@ package test
 
 import (
 	"context"
+	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/command"
+	"github.com/maltemindedal/runedb/internal/config"
 	runedblogger "github.com/maltemindedal/runedb/internal/logger"
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/server"
 	"github.com/maltemindedal/runedb/internal/storage"
 )
+
+func defaultTestConfig() config.Config {
+	cfg := config.Default()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = 0
+	cfg.LogLevel = "error"
+	cfg.EvictionInterval = 5 * time.Millisecond
+	cfg.EvictionSampleSize = 10
+	cfg.DumpPath = ""
+	return cfg
+}
+
+func startTestServer(t *testing.T, cfg config.Config) (string, context.CancelFunc, <-chan error) {
+	t.Helper()
+	logger := runedblogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	return waitForAddr(t, srv), cancel, errCh
+}
+
+func waitForServerStop(t *testing.T, errCh <-chan error) {
+	t.Helper()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("ListenAndServe() error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not stop within timeout")
+	}
+}
+
+func closeTestResource(t *testing.T, resource io.Closer) {
+	t.Helper()
+
+	if err := resource.Close(); err != nil {
+		t.Logf("failed to close test resource: %v", err)
+	}
+}
 
 func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	cfg := defaultTestConfig()
