@@ -35,14 +35,14 @@ var (
 	// ErrWrongPass reports that the supplied AUTH credentials were rejected.
 	ErrWrongPass = errors.New("invalid username-password pair or user is disabled")
 	// ErrAuthNotConfigured reports that AUTH was called without a configured password.
-	ErrAuthNotConfigured = errors.New("AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+	ErrAuthNotConfigured = errors.New("AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct")
 	// ErrSubscribedModeOnly reports that a subscribed client attempted a disallowed command.
 	ErrSubscribedModeOnly = errors.New("only PING, SUBSCRIBE, and UNSUBSCRIBE are allowed in this context")
 	// ErrSubscribeInsideMulti reports that subscribe state changes are not allowed inside MULTI.
 	ErrSubscribeInsideMulti = errors.New("SUBSCRIBE and UNSUBSCRIBE inside MULTI are not allowed")
 	// ErrMonitorModeOnly reports that a MONITOR client attempted a disallowed command.
 	ErrMonitorModeOnly = errors.New("only PING is allowed in this context")
-	// ErrOutOfMemory reports that a write could not fit under maxmemory.
+	// ErrOutOfMemory reports that write could not fit under maxmemory.
 	ErrOutOfMemory = errors.New("command not allowed when used memory > 'maxmemory'")
 )
 

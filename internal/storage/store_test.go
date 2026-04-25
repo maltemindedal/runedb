@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func TestStoreValueBehavior(t *testing.T) {
 				t.Helper()
 				store.Set("counter", []byte("hello"), 0)
 
-				if _, err := store.Increment("counter"); err != ErrValueNotInteger {
+				if _, err := store.Increment("counter"); !errors.Is(err, ErrValueNotInteger) {
 					t.Fatalf("Increment() error = %v, want ErrValueNotInteger", err)
 				}
 			},
@@ -134,7 +135,7 @@ func TestStoreValueBehavior(t *testing.T) {
 					t.Fatalf("LeftPush() error = %v", err)
 				}
 
-				if _, _, err := store.Get("numbers"); err != ErrWrongType {
+				if _, _, err := store.Get("numbers"); !errors.Is(err, ErrWrongType) {
 					t.Fatalf("Get() error = %v, want ErrWrongType", err)
 				}
 			},
@@ -1042,8 +1043,8 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 			t.Fatalf("len(ZRange()) = %d, want %d", len(values), len(wantMembers))
 		}
 		for i, got := range values {
-			if string(got.Member) != wantMembers[i] {
-				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, string(got.Member), wantMembers[i])
+			if got.Member != wantMembers[i] {
+				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, got.Member, wantMembers[i])
 			}
 			if got.Score != wantScores[i] {
 				t.Fatalf("ZRange()[%d].Score = %v, want %v", i, got.Score, wantScores[i])
@@ -1071,8 +1072,8 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 		}
 		want := []string{"beta", "alpha"}
 		for i, got := range values {
-			if string(got.Member) != want[i] {
-				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, string(got.Member), want[i])
+			if got.Member != want[i] {
+				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, got.Member, want[i])
 			}
 		}
 	})
@@ -1093,8 +1094,8 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 		}
 		want := []string{"beta", "charlie"}
 		for i, got := range values {
-			if string(got.Member) != want[i] {
-				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, string(got.Member), want[i])
+			if got.Member != want[i] {
+				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, got.Member, want[i])
 			}
 		}
 	})
@@ -1103,7 +1104,7 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 		store := NewStore()
 		store.Set("leaders", []byte("hello"), 0)
 
-		if _, err := store.ZRange("leaders", 0, -1); err != ErrWrongType {
+		if _, err := store.ZRange("leaders", 0, -1); !errors.Is(err, ErrWrongType) {
 			t.Fatalf("ZRange() error = %v, want ErrWrongType", err)
 		}
 	})
@@ -1255,13 +1256,13 @@ func TestStoreStreamBehavior(t *testing.T) {
 	t.Run("XAdd rejects malformed or non monotonic IDs", func(t *testing.T) {
 		store := NewStore()
 
-		if _, err := store.XAdd("events", "not-an-id", [][]byte{[]byte("field"), []byte("value")}); err != ErrInvalidStreamID {
+		if _, err := store.XAdd("events", "not-an-id", [][]byte{[]byte("field"), []byte("value")}); !errors.Is(err, ErrInvalidStreamID) {
 			t.Fatalf("XAdd() invalid ID error = %v, want ErrInvalidStreamID", err)
 		}
 		if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); err != nil {
 			t.Fatalf("XAdd() initial error = %v", err)
 		}
-		if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); err != ErrStreamIDTooSmall {
+		if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); !errors.Is(err, ErrStreamIDTooSmall) {
 			t.Fatalf("XAdd() non monotonic error = %v, want ErrStreamIDTooSmall", err)
 		}
 	})
@@ -1270,7 +1271,7 @@ func TestStoreStreamBehavior(t *testing.T) {
 		store := NewStore()
 		store.Set("events", []byte("plain"), 0)
 
-		if _, err := store.XRead("events", "0-0"); err != ErrWrongType {
+		if _, err := store.XRead("events", "0-0"); !errors.Is(err, ErrWrongType) {
 			t.Fatalf("XRead() error = %v, want ErrWrongType", err)
 		}
 	})
@@ -1466,7 +1467,7 @@ func TestStoreStreamBehavior(t *testing.T) {
 		}
 
 		_, err := store.XRead("events", "bad-id")
-		if err != ErrInvalidStreamID {
+		if !errors.Is(err, ErrInvalidStreamID) {
 			t.Fatalf("XRead() error = %v, want ErrInvalidStreamID", err)
 		}
 	})

@@ -56,7 +56,7 @@ type Executor struct {
 	monitorRegistry     *server.MonitorRegistry
 	slowlogRegistry     *server.SlowlogRegistry
 	slowlogThreshold    time.Duration
-	serverStatsProvider func() server.ServerStats
+	serverStatsProvider func() server.Stats
 	aofRewrite          func(context.Context) error
 }
 
@@ -114,7 +114,7 @@ func (e *Executor) SetMonitorRegistry(registry *server.MonitorRegistry) {
 }
 
 // SetServerStatsProvider injects a snapshot provider used by INFO.
-func (e *Executor) SetServerStatsProvider(provider func() server.ServerStats) {
+func (e *Executor) SetServerStatsProvider(provider func() server.Stats) {
 	e.serverStatsProvider = provider
 }
 
@@ -690,10 +690,10 @@ func validateSetRequest(request *Request) error {
 		return wrongNumberOfArgumentsError("SET")
 	}
 	if _, err := storage.ParseExpiryMillis(request.Args[2:]); err != nil {
-		switch err {
-		case storage.ErrSyntax:
+		switch {
+		case errors.Is(err, storage.ErrSyntax):
 			return ErrSyntaxError()
-		case storage.ErrInvalidExpireTime:
+		case errors.Is(err, storage.ErrInvalidExpireTime):
 			return ErrInvalidExpireTimeError()
 		default:
 			return err

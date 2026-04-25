@@ -11,8 +11,8 @@ import (
 
 const monitorWriteTimeout = 100 * time.Millisecond
 
-// ServerStats is a snapshot of server-level state used by INFO.
-type ServerStats struct {
+// Stats is a snapshot of server-level state used by INFO.
+type Stats struct {
 	ConnectedClients    int
 	MonitoringClients   int
 	CommandsProcessed   int64

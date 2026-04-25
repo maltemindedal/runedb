@@ -264,7 +264,7 @@ func TestServerBGRewriteAOFCompactsAndReloads(t *testing.T) {
 	waitForServerStop(t, restartErrCh)
 }
 
-func testAOFConfig(aofPath string) config.Config {
+func defaultTestConfig() config.Config {
 	cfg := config.Default()
 	cfg.Host = "127.0.0.1"
 	cfg.Port = 0
@@ -272,6 +272,11 @@ func testAOFConfig(aofPath string) config.Config {
 	cfg.EvictionInterval = 5 * time.Millisecond
 	cfg.EvictionSampleSize = 10
 	cfg.DumpPath = ""
+	return cfg
+}
+
+func testAOFConfig(aofPath string) config.Config {
+	cfg := defaultTestConfig()
 	cfg.AOFPath = aofPath
 	cfg.AppendFsync = "always"
 	return cfg

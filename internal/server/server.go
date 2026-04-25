@@ -54,7 +54,7 @@ type monitorRegistrySetter interface {
 }
 
 type serverStatsProviderSetter interface {
-	SetServerStatsProvider(func() ServerStats)
+	SetServerStatsProvider(func() Stats)
 }
 
 type temporaryError interface {
@@ -348,9 +348,9 @@ func (s *Server) ReplicaCount() int {
 }
 
 // ServerStats returns a snapshot of server-level observability data.
-func (s *Server) ServerStats() ServerStats {
+func (s *Server) ServerStats() Stats {
 	if s == nil {
-		return ServerStats{}
+		return Stats{}
 	}
 
 	role := "master"
@@ -368,7 +368,7 @@ func (s *Server) ServerStats() ServerStats {
 		})
 	}
 
-	return ServerStats{
+	return Stats{
 		ConnectedClients:    s.registry.Count(),
 		MonitoringClients:   s.monitorRegistry.Count(),
 		CommandsProcessed:   s.commandsProcessed.Load(),

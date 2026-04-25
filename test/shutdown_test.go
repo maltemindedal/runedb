@@ -1,41 +1,18 @@
 package test
 
 import (
-	"context"
+	"errors"
 	"net"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
 	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
 )
 
 func TestServerShutdownClosesMultipleClients(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
-
-	logger := runedblogger.New(cfg.LogLevel)
-	store := storage.NewStore()
-	executor := command.NewExecutor(store, logger)
-	srv := server.New(cfg, logger, store, executor)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.ListenAndServe(ctx)
-	}()
-
-	addr := waitForAddr(t, srv)
+	cfg := defaultTestConfig()
+	addr, cancel, errCh := startTestServer(t, cfg)
 	clients := make([]net.Conn, 0, 5)
 	parsers := make([]*protocol.Parser, 0, 5)
 	for i := 0; i < 5; i++ {
@@ -58,14 +35,7 @@ func TestServerShutdownClosesMultipleClients(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("ListenAndServe() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not stop within timeout")
-	}
+	waitForServerStop(t, errCh)
 
 	for i, conn := range clients {
 		if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
@@ -77,33 +47,16 @@ func TestServerShutdownClosesMultipleClients(t *testing.T) {
 		if err == nil {
 			t.Fatalf("client %d read error = nil, want closed-connection error", i)
 		}
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			t.Fatalf("client %d read timed out, want closed-connection error", i)
 		}
 	}
 }
 
 func TestServerShutdownUnblocksBLPop(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
-
-	logger := runedblogger.New(cfg.LogLevel)
-	store := storage.NewStore()
-	executor := command.NewExecutor(store, logger)
-	srv := server.New(cfg, logger, store, executor)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.ListenAndServe(ctx)
-	}()
-
-	addr := waitForAddr(t, srv)
+	cfg := defaultTestConfig()
+	addr, cancel, errCh := startTestServer(t, cfg)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		cancel()
@@ -117,14 +70,7 @@ func TestServerShutdownUnblocksBLPop(t *testing.T) {
 	}
 
 	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("ListenAndServe() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not stop within timeout")
-	}
+	waitForServerStop(t, errCh)
 
 	if err := conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
@@ -135,7 +81,8 @@ func TestServerShutdownUnblocksBLPop(t *testing.T) {
 	if err == nil {
 		t.Fatal("conn.Read() error = nil, want closed-connection error")
 	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		t.Fatal("conn.Read() timed out, want closed-connection error")
 	}
 }
@@ -143,26 +90,10 @@ func TestServerShutdownUnblocksBLPop(t *testing.T) {
 func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	dumpPath := filepath.Join(t.TempDir(), "dump.rdb")
 
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
+	cfg := defaultTestConfig()
 	cfg.DumpPath = dumpPath
 
-	logger := runedblogger.New(cfg.LogLevel)
-	store := storage.NewStore()
-	executor := command.NewExecutor(store, logger)
-	srv := server.New(cfg, logger, store, executor)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.ListenAndServe(ctx)
-	}()
-
-	addr := waitForAddr(t, srv)
+	addr, cancel, errCh := startTestServer(t, cfg)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		cancel()
@@ -174,36 +105,13 @@ func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
 
 	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("ListenAndServe() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not stop within timeout")
-	}
+	waitForServerStop(t, errCh)
 
-	restartCfg := config.Default()
-	restartCfg.Host = "127.0.0.1"
-	restartCfg.Port = 0
-	restartCfg.LogLevel = "error"
-	restartCfg.EvictionInterval = 5 * time.Millisecond
-	restartCfg.EvictionSampleSize = 10
+	restartCfg := defaultTestConfig()
 	restartCfg.RDBPath = dumpPath
 	restartCfg.DumpPath = dumpPath
 
-	restartLogger := runedblogger.New(restartCfg.LogLevel)
-	restartStore := storage.NewStore()
-	restartExecutor := command.NewExecutor(restartStore, restartLogger)
-	restartServer := server.New(restartCfg, restartLogger, restartStore, restartExecutor)
-
-	restartCtx, restartCancel := context.WithCancel(context.Background())
-	restartErrCh := make(chan error, 1)
-	go func() {
-		restartErrCh <- restartServer.ListenAndServe(restartCtx)
-	}()
-
-	restartAddr := waitForAddr(t, restartServer)
+	restartAddr, restartCancel, restartErrCh := startTestServer(t, restartCfg)
 	restartConn, err := net.Dial("tcp", restartAddr)
 	if err != nil {
 		restartCancel()
@@ -215,12 +123,5 @@ func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
 
 	restartCancel()
-	select {
-	case err := <-restartErrCh:
-		if err != nil {
-			t.Fatalf("restart ListenAndServe() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("restart server did not stop within timeout")
-	}
+	waitForServerStop(t, restartErrCh)
 }

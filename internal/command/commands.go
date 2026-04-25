@@ -477,10 +477,10 @@ func (e *Executor) handleSet(ctx context.Context, request *Request) (protocol.Va
 
 	expiresAt, err := storage.ParseExpiryMillis(request.Args[2:])
 	if err != nil {
-		switch err {
-		case storage.ErrSyntax:
+		switch {
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
-		case storage.ErrInvalidExpireTime:
+		case errors.Is(err, storage.ErrInvalidExpireTime):
 			return nil, ErrInvalidExpireTimeError()
 		default:
 			return nil, err
@@ -508,7 +508,7 @@ func (e *Executor) handleGet(_ context.Context, request *Request) (protocol.Valu
 	key := string(request.Args[0])
 	value, ok, err := e.store.Get(key)
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -558,12 +558,12 @@ func (e *Executor) handleIncr(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	value, evicted, err := e.store.IncrementWithEviction(key)
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrValueNotInteger:
+		case errors.Is(err, storage.ErrValueNotInteger):
 			return nil, ErrValueNotIntegerError()
-		case storage.ErrMemoryLimitExceeded:
+		case errors.Is(err, storage.ErrMemoryLimitExceeded):
 			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
@@ -583,7 +583,7 @@ func (e *Executor) handleLPush(ctx context.Context, request *Request) (protocol.
 	key := string(request.Args[0])
 	length, evicted, err := e.store.LeftPushWithEviction(key, request.Args[1:])
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
@@ -605,7 +605,7 @@ func (e *Executor) handleRPush(ctx context.Context, request *Request) (protocol.
 	key := string(request.Args[0])
 	length, evicted, err := e.store.RightPushWithEviction(key, request.Args[1:])
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
@@ -636,7 +636,7 @@ func (e *Executor) handleLRange(_ context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	values, err := e.store.ListRange(key, start, stop)
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -657,7 +657,7 @@ func (e *Executor) handleBLPop(ctx context.Context, request *Request) (protocol.
 		value, ok, err := e.store.LeftPop(key)
 		if err != nil {
 			e.store.UnsubscribeListPush(key, waiter)
-			if err == storage.ErrWrongType {
+			if errors.Is(err, storage.ErrWrongType) {
 				return nil, ErrWrongTypeError()
 			}
 			return nil, err
@@ -702,12 +702,12 @@ func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	added, evicted, err := e.store.ZAddWithEviction(key, entries)
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
-		case storage.ErrMemoryLimitExceeded:
+		case errors.Is(err, storage.ErrMemoryLimitExceeded):
 			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
@@ -744,7 +744,7 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	entries, err := e.store.ZRange(key, start, stop)
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -761,16 +761,16 @@ func (e *Executor) handleXAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	id, evicted, err := e.store.XAddWithEviction(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
-		case storage.ErrInvalidStreamID:
+		case errors.Is(err, storage.ErrInvalidStreamID):
 			return nil, ErrInvalidStreamIDError()
-		case storage.ErrStreamIDTooSmall:
+		case errors.Is(err, storage.ErrStreamIDTooSmall):
 			return nil, ErrStreamIDTooSmallError()
-		case storage.ErrMemoryLimitExceeded:
+		case errors.Is(err, storage.ErrMemoryLimitExceeded):
 			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
@@ -796,10 +796,10 @@ func (e *Executor) handleXRead(_ context.Context, request *Request) (protocol.Va
 	key := string(request.Args[1])
 	entries, err := e.store.XRead(key, string(request.Args[2]))
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrInvalidStreamID:
+		case errors.Is(err, storage.ErrInvalidStreamID):
 			return nil, ErrInvalidStreamIDError()
 		default:
 			return nil, err

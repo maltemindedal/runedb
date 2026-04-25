@@ -24,8 +24,6 @@ var (
 	ErrStreamIDTooSmall = errors.New("stream ID is equal or smaller than the target stream top item")
 	// ErrValueNotInteger reports that a stored string cannot be parsed as a 64-bit integer.
 	ErrValueNotInteger = errors.New("value is not an integer or out of range")
-	// ErrValueNotFloat reports that a command argument is not a valid float.
-	ErrValueNotFloat = errors.New("value is not a valid float")
 	// ErrWrongType reports that a command targeted the wrong logical value type.
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
 	// ErrMemoryLimitExceeded reports that a write would exceed the configured maxmemory limit.
@@ -494,7 +492,7 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	}
 
 	var (
-		set       *sortedSet
+		set       *SortedSet
 		expiresAt int64
 	)
 	if ok {
@@ -584,7 +582,7 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 	oldSize := s.approximateValueObjectSize(key, value)
 
 	var (
-		stream    *streamValue
+		stream    *StreamValue
 		expiresAt int64
 	)
 	if ok {

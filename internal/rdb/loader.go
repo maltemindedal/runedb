@@ -231,7 +231,7 @@ func (l *loader) readValueMarker(marker byte) error {
 }
 
 func validatedExpiryMillis(expiresAtMillis uint64) (int64, error) {
-	if expiresAtMillis > uint64(^uint64(0)>>1) {
+	if expiresAtMillis > ^uint64(0)>>1 {
 		return 0, fmt.Errorf("rdb: expiry milliseconds overflow: %d", expiresAtMillis)
 	}
 

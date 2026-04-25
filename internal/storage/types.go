@@ -98,8 +98,8 @@ type SnapshotStats struct {
 type ValueObject struct {
 	String         []byte
 	List           [][]byte
-	ZSet           *sortedSet
-	Stream         *streamValue
+	ZSet           *SortedSet
+	Stream         *StreamValue
 	Hash           map[string][]byte
 	Set            map[string]struct{}
 	ExpiresAt      int64
@@ -148,7 +148,7 @@ func (v *ValueObject) ListValue() ([][]byte, error) {
 }
 
 // ZSetValue returns the sorted-set payload for a sorted-set value.
-func (v *ValueObject) ZSetValue() (*sortedSet, error) {
+func (v *ValueObject) ZSetValue() (*SortedSet, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState
 	}
@@ -163,7 +163,7 @@ func (v *ValueObject) ZSetValue() (*sortedSet, error) {
 }
 
 // StreamValue returns the stream payload for a stream value.
-func (v *ValueObject) StreamValue() (*streamValue, error) {
+func (v *ValueObject) StreamValue() (*StreamValue, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState
 	}
@@ -198,7 +198,7 @@ func newListValue(items [][]byte, expiresAt int64) *ValueObject {
 	}
 }
 
-func newZSetValue(set *sortedSet, expiresAt int64) *ValueObject {
+func newZSetValue(set *SortedSet, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		ZSet:           set,
 		ExpiresAt:      expiresAt,
@@ -207,7 +207,7 @@ func newZSetValue(set *sortedSet, expiresAt int64) *ValueObject {
 	}
 }
 
-func newStreamValue(stream *streamValue, expiresAt int64) *ValueObject {
+func newStreamValue(stream *StreamValue, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		Stream:         stream,
 		ExpiresAt:      expiresAt,

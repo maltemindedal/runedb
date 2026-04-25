@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -35,7 +36,7 @@ func (e *Executor) popList(request *Request, name string, left bool) (protocol.V
 			value, ok, err = e.store.RightPop(key)
 		}
 		if err != nil {
-			if err == storage.ErrWrongType {
+			if errors.Is(err, storage.ErrWrongType) {
 				return nil, ErrWrongTypeError()
 			}
 			return nil, err
@@ -66,10 +67,10 @@ func (e *Executor) popList(request *Request, name string, left bool) (protocol.V
 		values, ok, err = e.store.RightPopN(key, count)
 	}
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
-		if err == storage.ErrSyntax {
+		if errors.Is(err, storage.ErrSyntax) {
 			return nil, ErrSyntaxError()
 		}
 		return nil, err
@@ -100,12 +101,12 @@ func (e *Executor) handleHSet(ctx context.Context, request *Request) (protocol.V
 
 	added, evicted, err := e.store.HSetWithEviction(key, pairs)
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
-		case storage.ErrMemoryLimitExceeded:
+		case errors.Is(err, storage.ErrMemoryLimitExceeded):
 			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
@@ -124,7 +125,7 @@ func (e *Executor) handleHGet(_ context.Context, request *Request) (protocol.Val
 
 	value, ok, err := e.store.HGet(string(request.Args[0]), string(request.Args[1]))
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -149,10 +150,10 @@ func (e *Executor) handleHDel(_ context.Context, request *Request) (protocol.Val
 
 	removed, err := e.store.HDel(key, fields)
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
 		default:
 			return nil, err
@@ -172,7 +173,7 @@ func (e *Executor) handleHGetAll(_ context.Context, request *Request) (protocol.
 
 	entries, err := e.store.HGetAll(string(request.Args[0]))
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -195,12 +196,12 @@ func (e *Executor) handleSAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	added, evicted, err := e.store.SAddWithEviction(key, request.Args[1:])
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
-		case storage.ErrMemoryLimitExceeded:
+		case errors.Is(err, storage.ErrMemoryLimitExceeded):
 			return nil, ErrOutOfMemoryError()
 		default:
 			return nil, err
@@ -219,7 +220,7 @@ func (e *Executor) handleSIsMember(_ context.Context, request *Request) (protoco
 
 	exists, err := e.store.SIsMember(string(request.Args[0]), request.Args[1])
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err
@@ -239,10 +240,10 @@ func (e *Executor) handleSRem(_ context.Context, request *Request) (protocol.Val
 	key := string(request.Args[0])
 	removed, err := e.store.SRem(key, request.Args[1:])
 	if err != nil {
-		switch err {
-		case storage.ErrWrongType:
+		switch {
+		case errors.Is(err, storage.ErrWrongType):
 			return nil, ErrWrongTypeError()
-		case storage.ErrSyntax:
+		case errors.Is(err, storage.ErrSyntax):
 			return nil, ErrSyntaxError()
 		default:
 			return nil, err
@@ -262,7 +263,7 @@ func (e *Executor) handleSMembers(_ context.Context, request *Request) (protocol
 
 	members, err := e.store.SMembers(string(request.Args[0]))
 	if err != nil {
-		if err == storage.ErrWrongType {
+		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
 		}
 		return nil, err

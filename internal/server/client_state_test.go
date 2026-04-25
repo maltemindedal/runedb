@@ -19,7 +19,7 @@ import (
 
 type stubExecutor struct{}
 
-func (stubExecutor) Execute(context.Context, protocol.Value) (protocol.Value, error) {
+func (stubExecutor) Execute() (protocol.Value, error) {
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 
@@ -31,7 +31,7 @@ type stubWatchExecutor struct {
 	registry *WatchRegistry
 }
 
-func (s stubWatchExecutor) Execute(context.Context, protocol.Value) (protocol.Value, error) {
+func (s stubWatchExecutor) Execute() (protocol.Value, error) {
 	return protocol.SimpleString{Value: "OK"}, nil
 }
 

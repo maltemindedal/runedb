@@ -33,13 +33,3 @@ func Bytes(value Value) ([]byte, error) {
 		return nil, fmt.Errorf("protocol: value type %T cannot be coerced to bytes", value)
 	}
 }
-
-// String coerces a RESP value into a string suitable for command names or arguments.
-func String(value Value) (string, error) {
-	data, err := Bytes(value)
-	if err != nil {
-		return "", err
-	}
-
-	return string(data), nil
-}

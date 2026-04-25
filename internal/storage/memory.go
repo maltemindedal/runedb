@@ -13,7 +13,7 @@ const (
 	approxSetEntryOverhead    int64 = 16
 	approxZSetEntryOverhead   int64 = 24
 	approxStreamEntryOverhead int64 = 32
-	maxInt64Value             int64 = int64(^uint64(0) >> 1)
+	maxInt64Value                   = int64(^uint64(0) >> 1)
 )
 
 // ConfigureMaxMemory enables approximate keyspace accounting and probabilistic
@@ -174,7 +174,7 @@ func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []stri
 
 	shard, current := s.prepareExistingValueLocked(key, now)
 	var (
-		set       *sortedSet
+		set       *SortedSet
 		expiresAt int64
 	)
 	if current != nil {
@@ -225,7 +225,7 @@ func (s *Store) XAddWithEviction(key, rawID string, values [][]byte) (string, []
 
 	shard, current := s.prepareExistingValueLocked(key, now)
 	var (
-		stream    *streamValue
+		stream    *StreamValue
 		expiresAt int64
 	)
 	if current != nil {

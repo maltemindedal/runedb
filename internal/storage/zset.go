@@ -9,7 +9,7 @@ const (
 	zsetP        = 0.25
 )
 
-type sortedSet struct {
+type SortedSet struct {
 	index map[string]float64
 	order *zsetSkipList
 }
@@ -33,14 +33,14 @@ type zsetLevel struct {
 	span    int
 }
 
-func newSortedSet() *sortedSet {
-	return &sortedSet{
+func newSortedSet() *SortedSet {
+	return &SortedSet{
 		index: make(map[string]float64),
 		order: newZSetSkipList(),
 	}
 }
 
-func cloneSortedSet(src *sortedSet) *sortedSet {
+func cloneSortedSet(src *SortedSet) *SortedSet {
 	if src == nil {
 		return nil
 	}
@@ -58,11 +58,11 @@ func newZSetSkipList() *zsetSkipList {
 	return &zsetSkipList{header: header, level: 1}
 }
 
-func (s *sortedSet) len() int {
+func (s *SortedSet) len() int {
 	return len(s.index)
 }
 
-func (s *sortedSet) add(member string, score float64) bool {
+func (s *SortedSet) add(member string, score float64) bool {
 	current, exists := s.index[member]
 	if exists {
 		if current == score {
@@ -76,7 +76,7 @@ func (s *sortedSet) add(member string, score float64) bool {
 	return !exists
 }
 
-func (s *sortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
+func (s *SortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	if start < 0 || stop < start || start >= s.order.length {
 		return nil
 	}

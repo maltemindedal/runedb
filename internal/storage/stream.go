@@ -17,22 +17,22 @@ type streamRecord struct {
 	values [][]byte
 }
 
-type streamValue struct {
+type StreamValue struct {
 	entries    []streamRecord
 	lastID     streamID
 	hasEntries bool
 }
 
-func newStream() *streamValue {
-	return &streamValue{}
+func newStream() *StreamValue {
+	return &StreamValue{}
 }
 
-func cloneStreamValue(src *streamValue) *streamValue {
+func cloneStreamValue(src *StreamValue) *StreamValue {
 	if src == nil {
 		return nil
 	}
 
-	cloned := &streamValue{
+	cloned := &StreamValue{
 		entries:    make([]streamRecord, 0, len(src.entries)),
 		lastID:     src.lastID,
 		hasEntries: src.hasEntries,
@@ -72,7 +72,7 @@ func ValidateXReadID(raw string) error {
 	return err
 }
 
-func (s *streamValue) add(rawID string, values [][]byte, nowMillis int64) (string, error) {
+func (s *StreamValue) add(rawID string, values [][]byte, nowMillis int64) (string, error) {
 	var (
 		id  streamID
 		err error
@@ -98,7 +98,7 @@ func (s *streamValue) add(rawID string, values [][]byte, nowMillis int64) (strin
 	return idText, nil
 }
 
-func (s *streamValue) snapshotAfter(rawID string) ([]streamRecord, error) {
+func (s *StreamValue) snapshotAfter(rawID string) ([]streamRecord, error) {
 	if len(s.entries) == 0 {
 		return nil, nil
 	}
@@ -133,7 +133,7 @@ func cloneStreamEntries(records []streamRecord) []StreamEntry {
 	return entries
 }
 
-func (s *streamValue) nextAutoID(nowMillis int64) streamID {
+func (s *StreamValue) nextAutoID(nowMillis int64) streamID {
 	if !s.hasEntries {
 		return streamID{milliseconds: nowMillis, sequence: 0}
 	}
