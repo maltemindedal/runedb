@@ -15,7 +15,7 @@ Legend: `[x]` done, `[~]` partially done, `[ ]` not done.
 - **Phase 4:** Done (`RDB` startup loading is implemented for DB 0 string keys, and replication handshake/propagation/`WAIT` support is implemented)
 - **Phase 5:** Done
 - **Phase 6:** Done
-- **Phase 7:** Planned
+- **Phase 7:** Done
 - **Phase 8:** Done
 - **Phase 9:** Done
 - **Phase 10:** Done
@@ -234,7 +234,7 @@ Extend the current value model so additional Redis-compatible data types can sha
 - [x] Back sets with `map[string]struct{}` for $O(1)$ membership checks.
 - [x] Implement `SADD`, `SISMEMBER`, `SREM`, and `SMEMBERS`.
 
-### Phase 7: Sharded Concurrency & Scaling — **In Progress**
+### Phase 7: Sharded Concurrency & Scaling — **Done**
 
 Reduce the single-lock bottleneck by making key ownership explicit and shard-local.
 
@@ -349,7 +349,7 @@ Protect the server from unbounded memory growth under sustained write pressure.
 - [x] Sample a small random set of keys instead of maintaining a strict global LRU list.
 - [x] Evict the stalest candidate and repeat until memory usage falls below the limit.
 
-### Phase 12: Observability & Administration ("Day 2" Operations)
+### Phase 12: Observability & Administration ("Day 2" Operations) — **Done**
 
 A production-ready database requires tooling to monitor its internal state under load.
 
@@ -384,7 +384,7 @@ Eliminate the 1-goroutine-per-connection bottleneck to drastically reduce idle m
 
 - [x] **High concurrency performance:** Avoid blocking the main accept loop. Lock contention is minimized, and `GET` uses `RLock()` / `RUnlock()` paths.
 - [x] **Graceful shutdown:** Signal-driven shutdown, listener stop, client cleanup, handler waiting, and shutdown-time flushing of the supported RDB snapshot scope to `dump.rdb` are implemented.
-- [x] **Observability:** `log/slog` structured logging is in place for connection / parser / response issues and now includes replication-specific lifecycle events such as replica registration/removal, FULLRESYNC snapshot application, ACK handling, `WAIT`, and propagation outcomes.
+- [x] **Observability:** `log/slog` structured logging is in place for connection / parser / response issues and now includes replication-specific lifecycle events such as replica registration/removal, FULLRESYNC snapshot application, ACK handling, `WAIT`, and propagation outcomes. Runtime inspection is available through `INFO`, `SLOWLOG`, and `MONITOR`.
 
 ## 5. Out of Scope (For V1)
 

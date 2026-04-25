@@ -1,6 +1,6 @@
 # RuneDB Architecture
 
-This repository is structured as a phase-by-phase implementation of a Redis-compatible TCP server in Go. The codebase now covers the raw TCP server, RESP parsing/encoding, sharded in-memory storage, transactions, pub/sub, replication, RDB snapshots, and append-only-file durability while still keeping clear package seams for later phases.
+This repository is structured as a phase-by-phase implementation of a Redis-compatible TCP server in Go. The codebase now covers the raw TCP server, RESP parsing/encoding, sharded in-memory storage, transactions, pub/sub, replication, RDB snapshots, append-only-file durability, memory-pressure eviction, and basic operational observability while still keeping clear package seams for later phases.
 
 ## Package layout
 
@@ -14,7 +14,7 @@ Contains the `main` package and the production binary entrypoint. It is responsi
 
 ### `internal/config`
 
-Holds startup configuration such as host, port, log level, and TTL eviction settings.
+Holds startup configuration such as host, port, log level, TTL eviction settings, persistence paths, replication/auth settings, `maxmemory`, and slowlog threshold.
 
 ### `internal/logger`
 
@@ -48,17 +48,19 @@ Owns the in-memory key/value store.
 
 Current responsibilities:
 
-- protect the global map with `sync.RWMutex`
-- support string values for Phase 1
+- route keys to a fixed shard set and protect each shard with its own `sync.RWMutex`
+- support strings, hashes, lists, sets, sorted sets, and streams through a unified value model
 - store TTLs in Unix milliseconds
 - perform passive eviction on reads
 - perform active eviction in a background loop
+- track approximate keyspace memory when `maxmemory` is enabled
+- evict sampled least-recently-used candidates under memory pressure
 
 ### `internal/command`
 
 Translates RESP arrays into executable requests and dispatches them to handlers.
 
-Current command surface includes strings, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication handshakes, `WAIT`, and `BGREWRITEAOF`.
+Current command surface includes strings, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication handshakes, `WAIT`, `BGREWRITEAOF`, `INFO`, `SLOWLOG`, and `MONITOR`.
 
 ### `internal/server`
 
@@ -73,6 +75,8 @@ Current responsibilities:
 - maintain an active connection registry for shutdown
 - load startup persistence (RDB and/or AOF) before accepting TCP connections
 - append durable command frames and fan out replication writes after successful execution
+- maintain monitor and slowlog registries for operational visibility
+- expose server stats used by `INFO`
 - stop cleanly when the process receives `SIGINT` or `SIGTERM`
 
 ### `test`
@@ -81,9 +85,9 @@ Contains integration tests that verify the server end to end over a real TCP con
 
 ## Design notes
 
-### Why a single store lock?
+### Why shard-local store locks?
 
-The scaffold starts with one `sync.RWMutex` around the entire keyspace because correctness matters more than cleverness at this stage. It satisfies the PRD and keeps the implementation easy to reason about. If contention becomes a bottleneck later, the store can be sharded or refactored with finer-grained locks.
+The store now uses a fixed shard set with one `sync.RWMutex` per shard. Single-key commands only lock the owning shard, while multi-key commands group keys by shard and lock shard IDs in deterministic order to avoid deadlocks.
 
 ### Why RESP3 placeholders now?
 
