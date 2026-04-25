@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
 )
@@ -34,6 +36,7 @@ type ClientState struct {
 	subscribedChannels map[string]struct{}
 	monitorRegistry    *MonitorRegistry
 	responseWriter     *bufio.Writer
+	responseConn       net.Conn
 	writerClosed       bool
 
 	Authenticated     bool
@@ -119,6 +122,15 @@ func (s *ClientState) BindResponseWriter(writer *bufio.Writer) {
 	s.writerClosed = writer == nil
 }
 
+// BindResponseConn records the underlying connection used by the response
+// writer when one is available.
+func (s *ClientState) BindResponseConn(conn net.Conn) {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	s.responseConn = conn
+}
+
 // HasActiveResponseWriter reports whether the client can currently receive
 // command replies or async push messages.
 func (s *ClientState) HasActiveResponseWriter() bool {
@@ -142,6 +154,7 @@ func (s *ClientState) Disconnect() {
 	s.responseMu.Lock()
 	s.writerClosed = true
 	s.responseWriter = nil
+	s.responseConn = nil
 	s.responseMu.Unlock()
 
 	s.ResetTransaction()
@@ -216,6 +229,35 @@ func (s *ClientState) WriteEncoded(payload []byte) error {
 	}
 
 	return s.responseWriter.Flush()
+}
+
+// WriteEncodedWithDeadline writes a pre-encoded RESP payload with a temporary
+// write deadline when the underlying connection is known.
+func (s *ClientState) WriteEncodedWithDeadline(payload []byte, timeout time.Duration) error {
+	s.responseMu.Lock()
+	defer s.responseMu.Unlock()
+
+	if s.writerClosed || s.responseWriter == nil {
+		return fmt.Errorf("client response writer unavailable")
+	}
+	deadlineSet := false
+	if s.responseConn != nil && timeout > 0 {
+		if err := s.responseConn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		deadlineSet = true
+	}
+	_, writeErr := s.responseWriter.Write(payload)
+	if writeErr == nil {
+		writeErr = s.responseWriter.Flush()
+	}
+	if deadlineSet {
+		if clearErr := s.responseConn.SetWriteDeadline(time.Time{}); writeErr == nil {
+			writeErr = clearErr
+		}
+	}
+
+	return writeErr
 }
 
 // SetReplicaListeningPort records the port announced during REPLCONF listening-port.

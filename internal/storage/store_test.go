@@ -608,6 +608,97 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	t.Fatalf("Len() = %d, want 0 after active eviction", store.Len())
 }
 
+func TestStoreKeyStatsTracksMutations(t *testing.T) {
+	store := NewStore()
+	store.Set("name", []byte("RuneDB"), 0)
+	if _, err := store.RightPush("jobs", [][]byte{[]byte("build")}); err != nil {
+		t.Fatalf("RightPush() error = %v", err)
+	}
+	if _, err := store.HSet("profile", []HashFieldValue{{Field: "lang", Value: []byte("go")}}); err != nil {
+		t.Fatalf("HSet() error = %v", err)
+	}
+	if _, err := store.SAdd("tags", [][]byte{[]byte("fast")}); err != nil {
+		t.Fatalf("SAdd() error = %v", err)
+	}
+	if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("alpha"), Score: 1}}); err != nil {
+		t.Fatalf("ZAdd() error = %v", err)
+	}
+	if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("field"), []byte("value")}); err != nil {
+		t.Fatalf("XAdd() error = %v", err)
+	}
+
+	assertKeyStats(t, store, 6, map[ValueKind]int{
+		ValueKindString: 1,
+		ValueKindList:   1,
+		ValueKindHash:   1,
+		ValueKindSet:    1,
+		ValueKindZSet:   1,
+		ValueKindStream: 1,
+	})
+
+	store.Set("name", []byte("database"), 0)
+	store.Delete("jobs")
+	if _, err := store.HDel("profile", []string{"lang"}); err != nil {
+		t.Fatalf("HDel() error = %v", err)
+	}
+	if _, err := store.SRem("tags", [][]byte{[]byte("fast")}); err != nil {
+		t.Fatalf("SRem() error = %v", err)
+	}
+
+	assertKeyStats(t, store, 3, map[ValueKind]int{
+		ValueKindString: 1,
+		ValueKindZSet:   1,
+		ValueKindStream: 1,
+	})
+
+	store.Set("soon-gone", []byte("ttl"), time.Now().Add(-time.Millisecond).UnixMilli())
+	if _, ok, err := store.Get("soon-gone"); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	} else if ok {
+		t.Fatal("Get() ok = true for expired key, want false")
+	}
+
+	assertKeyStats(t, store, 3, map[ValueKind]int{
+		ValueKindString: 1,
+		ValueKindZSet:   1,
+		ValueKindStream: 1,
+	})
+}
+
+func TestStoreKeyStatsRecalculatesAfterReplaceWith(t *testing.T) {
+	store := NewStore()
+	store.Set("old", []byte("value"), 0)
+
+	replacement := NewStore()
+	if _, err := replacement.RightPush("jobs", [][]byte{[]byte("build")}); err != nil {
+		t.Fatalf("RightPush() error = %v", err)
+	}
+	if _, err := replacement.SAdd("tags", [][]byte{[]byte("fast")}); err != nil {
+		t.Fatalf("SAdd() error = %v", err)
+	}
+
+	store.ReplaceWith(replacement)
+
+	assertKeyStats(t, store, 2, map[ValueKind]int{
+		ValueKindList: 1,
+		ValueKindSet:  1,
+	})
+}
+
+func assertKeyStats(t *testing.T, store *Store, total int, byKind map[ValueKind]int) {
+	t.Helper()
+
+	stats := store.KeyStats()
+	if stats.TotalKeys != total {
+		t.Fatalf("KeyStats().TotalKeys = %d, want %d", stats.TotalKeys, total)
+	}
+	for _, kind := range keyStatsKinds {
+		if stats.ByKind[kind] != byKind[kind] {
+			t.Fatalf("KeyStats().ByKind[%s] = %d, want %d (all stats: %+v)", kind, stats.ByKind[kind], byKind[kind], stats.ByKind)
+		}
+	}
+}
+
 func TestStoreSnapshotStrings(t *testing.T) {
 	t.Run("returns defensive copies for supported string keys", func(t *testing.T) {
 		store := NewStore()

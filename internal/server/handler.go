@@ -19,6 +19,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 
 	if state := s.getClientState(clientID); state != nil {
 		state.BindResponseWriter(writer)
+		state.BindResponseConn(conn)
 		if conn.RemoteAddr() != nil {
 			state.SetRemoteAddr(conn.RemoteAddr().String())
 		}

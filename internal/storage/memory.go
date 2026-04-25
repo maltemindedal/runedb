@@ -97,7 +97,7 @@ func (s *Store) SetWithEviction(key string, value []byte, expiresAt int64) ([]st
 		return nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return evicted, nil
 }
@@ -121,7 +121,7 @@ func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 			return 0, nil, err
 		}
 
-		shard.data[key] = newValue
+		s.setKeyLocked(shard, key, newValue)
 		s.usedMemory.Add(newSize)
 		return 1, evicted, nil
 	}
@@ -146,7 +146,7 @@ func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 		return 0, nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return parsed, evicted, nil
 }
@@ -205,7 +205,7 @@ func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []stri
 		return 0, nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
@@ -254,7 +254,7 @@ func (s *Store) XAddWithEviction(key, rawID string, values [][]byte) (string, []
 		return "", nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return id, evicted, nil
 }
@@ -303,7 +303,7 @@ func (s *Store) HSetWithEviction(key string, pairs []HashFieldValue) (int64, []s
 		return 0, nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
@@ -353,7 +353,7 @@ func (s *Store) SAddWithEviction(key string, members [][]byte) (int64, []string,
 		return 0, nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
@@ -406,7 +406,7 @@ func (s *Store) pushListWithEviction(key string, values [][]byte, left bool) (in
 		return 0, nil, err
 	}
 
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	s.usedMemory.Add(newSize - oldSize)
 	s.waiters.notifyOne(key)
 	return int64(len(list)), evicted, nil
@@ -470,7 +470,7 @@ func (s *Store) recalculateUsedMemoryLocked(now int64) int64 {
 		shard := &s.shards[i]
 		for key, value := range shard.data {
 			if isExpired(value, now) {
-				delete(shard.data, key)
+				s.removeKeyLocked(shard, key)
 				continue
 			}
 			used += s.approximateValueObjectSize(key, value)
@@ -615,7 +615,7 @@ func (s *Store) deleteKeyWithSizeLocked(shard *Shard, key string, size int64) bo
 	if s.maxMemoryEnabled() {
 		s.usedMemory.Add(-size)
 	}
-	delete(shard.data, key)
+	s.removeKeyLocked(shard, key)
 	return true
 }
 

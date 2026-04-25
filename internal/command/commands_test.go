@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -777,6 +778,41 @@ func TestExecutorSlowlog(t *testing.T) {
 		// RESET itself is recorded at a zero threshold after clearing older entries.
 		if got := registry.Len(); got != 1 {
 			t.Fatalf("slowlog Len() = %d after RESET at zero threshold, want 1", got)
+		}
+	})
+
+	t.Run("does not record commands rejected before dispatch", func(t *testing.T) {
+		executor := newTestExecutor()
+		executor.SetRequirePass("secret")
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+		ctx := withUnauthenticatedClientStateForExecutor(context.Background(), executor, 77)
+
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); !errors.Is(err, ErrNoAuth) {
+			t.Fatalf("SET unauthenticated error = %v, want ErrNoAuth", err)
+		}
+		if got := registry.Len(); got != 0 {
+			t.Fatalf("slowlog Len() = %d after rejected SET, want 0", got)
+		}
+	})
+
+	t.Run("redacts sensitive command arguments", func(t *testing.T) {
+		executor := newTestExecutor()
+		executor.SetRequirePass("secret")
+		registry := server.NewSlowlogRegistry()
+		executor.SetSlowlogConfig(registry, 0)
+		ctx := withUnauthenticatedClientStateForExecutor(context.Background(), executor, 78)
+
+		if _, err := executor.Execute(ctx, requestValue("AUTH", "secret")); err != nil {
+			t.Fatalf("AUTH error = %v", err)
+		}
+		entries := registry.Entries(1)
+		if len(entries) != 1 {
+			t.Fatalf("len(slowlog entries) = %d, want 1", len(entries))
+		}
+		want := []string{"AUTH", "[redacted]"}
+		if !reflect.DeepEqual(entries[0].Command, want) {
+			t.Fatalf("slowlog command = %#v, want %#v", entries[0].Command, want)
 		}
 	})
 }

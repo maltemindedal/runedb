@@ -40,6 +40,7 @@ type Store struct {
 	loggerMu                 sync.RWMutex
 	logger                   *slog.Logger
 	usedMemory               atomic.Int64
+	keyKindCounts            [keyStatsKindCount]atomic.Int64
 	maxMemory                atomic.Int64
 	memoryEvictionSampleSize int
 }
@@ -75,7 +76,7 @@ func (s *Store) Set(key string, value []byte, expiresAt int64) {
 
 	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newStringValue(value, expiresAt)
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	if s.maxMemoryEnabled() {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
@@ -222,7 +223,7 @@ func (s *Store) Increment(key string) (int64, error) {
 
 	if !ok {
 		newValue := newStringValue([]byte("1"), 0)
-		shard.data[key] = newValue
+		s.setKeyLocked(shard, key, newValue)
 		if s.maxMemoryEnabled() {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
 		}
@@ -515,7 +516,7 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	}
 
 	newValue := newZSetValue(set, expiresAt)
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	if accounting {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
@@ -603,7 +604,7 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 	}
 
 	newValue := newStreamValue(stream, expiresAt)
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	if s.maxMemoryEnabled() {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
@@ -756,6 +757,7 @@ func (s *Store) ReplaceWith(other *Store) {
 	for i := range s.shards {
 		s.shards[i].data = replacement[i].data
 	}
+	s.recalculateKeyStatsLocked()
 	if s.maxMemoryEnabled() {
 		s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
 	}
@@ -958,7 +960,7 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 	}
 
 	newValue := newListValue(list, expiresAt)
-	shard.data[key] = newValue
+	s.setKeyLocked(shard, key, newValue)
 	if s.maxMemoryEnabled() {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)

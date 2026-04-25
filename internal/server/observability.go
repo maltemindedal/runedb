@@ -9,6 +9,8 @@ import (
 	"github.com/maltemindedal/runedb/internal/protocol"
 )
 
+const monitorWriteTimeout = 100 * time.Millisecond
+
 // ServerStats is a snapshot of server-level state used by INFO.
 type ServerStats struct {
 	ConnectedClients    int
@@ -93,7 +95,7 @@ func (s *Server) broadcastMonitorEvent(command observedCommand) {
 		if subscriber == nil {
 			continue
 		}
-		if err := subscriber.WriteEncoded(payload); err != nil {
+		if err := subscriber.WriteEncodedWithDeadline(payload, monitorWriteTimeout); err != nil {
 			s.logger.Warn("failed to deliver monitor event", "subscriber_id", subscriber.ID, "error", err)
 			subscriber.Disconnect()
 		}

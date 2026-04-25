@@ -102,8 +102,24 @@ func requestTokens(request *Request) []string {
 
 	tokens := make([]string, 0, len(request.Args)+1)
 	tokens = append(tokens, request.Name)
+	if isSensitiveSlowlogCommand(request.Name) {
+		for range request.Args {
+			tokens = append(tokens, "[redacted]")
+		}
+		return tokens
+	}
+
 	for _, arg := range request.Args {
 		tokens = append(tokens, string(arg))
 	}
 	return tokens
+}
+
+func isSensitiveSlowlogCommand(name string) bool {
+	switch name {
+	case "AUTH":
+		return true
+	default:
+		return false
+	}
 }

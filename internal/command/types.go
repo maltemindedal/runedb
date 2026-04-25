@@ -143,10 +143,6 @@ func (e *Executor) ExecuteDetailed(ctx context.Context, value protocol.Value) (s
 
 func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request, allowQueue bool) (server.ExecuteResult, error) {
 	ctx, effects := withExecutionEffects(ctx)
-	startedAt := time.Now()
-	defer func() {
-		e.recordSlowCommand(ctx, request, startedAt, time.Since(startedAt))
-	}()
 
 	if err := e.validateSubscriptionContext(ctx, request); err != nil {
 		return server.ExecuteResult{}, err
@@ -168,11 +164,19 @@ func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request,
 	if !ok {
 		return server.ExecuteResult{}, ErrUnknownCommand(request.Name)
 	}
+	if spec.validate != nil {
+		if err := spec.validate(request); err != nil {
+			return server.ExecuteResult{}, err
+		}
+	}
+
+	startedAt := time.Now()
 	if spec.detailed != nil {
 		result, err := spec.detailed(ctx, request)
 		if err != nil {
 			return server.ExecuteResult{}, err
 		}
+		e.recordSlowCommand(ctx, request, startedAt, time.Since(startedAt))
 		result.Propagation = append(result.Propagation, effects.propagation...)
 		result.Durability = append(result.Durability, effects.durability...)
 		return result, nil
@@ -185,6 +189,7 @@ func (e *Executor) executeRequestDetailed(ctx context.Context, request *Request,
 	if err != nil {
 		return server.ExecuteResult{}, err
 	}
+	e.recordSlowCommand(ctx, request, startedAt, time.Since(startedAt))
 
 	propagation, durability := executionFrames(ctx, request, spec)
 	result := server.SingleResponse(response)
