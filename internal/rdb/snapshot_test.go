@@ -114,21 +114,7 @@ func TestSaveSnapshotReplacesExistingFile(t *testing.T) {
 }
 
 func TestReplaceFileRetriesAfterExistConflict(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), "temp.rdb")
-	targetPath := filepath.Join(t.TempDir(), "dump.rdb")
-	if err := os.WriteFile(tempPath, []byte("new"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", tempPath, err)
-	}
-	if err := os.WriteFile(targetPath, []byte("old"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", targetPath, err)
-	}
-
-	originalRename := renameFile
-	originalRemove := removeFile
-	t.Cleanup(func() {
-		renameFile = originalRename
-		removeFile = originalRemove
-	})
+	tempPath, targetPath, originalRename, originalRemove := replaceFileTestFixture(t)
 
 	renameCalls := 0
 	removeCalls := 0
@@ -153,31 +139,11 @@ func TestReplaceFileRetriesAfterExistConflict(t *testing.T) {
 	if removeCalls != 1 {
 		t.Fatalf("remove calls = %d, want 1", removeCalls)
 	}
-	got, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
-	}
-	if string(got) != "new" {
-		t.Fatalf("target contents = %q, want %q", string(got), "new")
-	}
+	assertFileContents(t, targetPath, "new")
 }
 
 func TestReplaceFileRetriesAfterWrappedRenameExistConflict(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), "temp.rdb")
-	targetPath := filepath.Join(t.TempDir(), "dump.rdb")
-	if err := os.WriteFile(tempPath, []byte("new"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", tempPath, err)
-	}
-	if err := os.WriteFile(targetPath, []byte("old"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", targetPath, err)
-	}
-
-	originalRename := renameFile
-	originalRemove := removeFile
-	t.Cleanup(func() {
-		renameFile = originalRename
-		removeFile = originalRemove
-	})
+	tempPath, targetPath, originalRename, originalRemove := replaceFileTestFixture(t)
 
 	renameCalls := 0
 	removeCalls := 0
@@ -202,31 +168,11 @@ func TestReplaceFileRetriesAfterWrappedRenameExistConflict(t *testing.T) {
 	if removeCalls != 1 {
 		t.Fatalf("remove calls = %d, want 1", removeCalls)
 	}
-	got, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
-	}
-	if string(got) != "new" {
-		t.Fatalf("target contents = %q, want %q", string(got), "new")
-	}
+	assertFileContents(t, targetPath, "new")
 }
 
 func TestReplaceFilePreservesExistingFileOnUnexpectedRenameFailure(t *testing.T) {
-	tempPath := filepath.Join(t.TempDir(), "temp.rdb")
-	targetPath := filepath.Join(t.TempDir(), "dump.rdb")
-	if err := os.WriteFile(tempPath, []byte("new"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", tempPath, err)
-	}
-	if err := os.WriteFile(targetPath, []byte("old"), 0o600); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", targetPath, err)
-	}
-
-	originalRename := renameFile
-	originalRemove := removeFile
-	t.Cleanup(func() {
-		renameFile = originalRename
-		removeFile = originalRemove
-	})
+	tempPath, targetPath, _, originalRemove := replaceFileTestFixture(t)
 
 	boom := errors.New("rename boom")
 	removeCalled := false
@@ -245,11 +191,40 @@ func TestReplaceFilePreservesExistingFileOnUnexpectedRenameFailure(t *testing.T)
 	if removeCalled {
 		t.Fatal("replaceFile() removed existing target on unexpected rename failure")
 	}
-	got, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", targetPath, err)
+	assertFileContents(t, targetPath, "old")
+}
+
+func replaceFileTestFixture(t *testing.T) (string, string, func(string, string) error, func(string) error) {
+	t.Helper()
+
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "temp.rdb")
+	targetPath := filepath.Join(dir, "dump.rdb")
+	if err := os.WriteFile(tempPath, []byte("new"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", tempPath, err)
 	}
-	if string(got) != "old" {
-		t.Fatalf("target contents = %q, want %q", string(got), "old")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", targetPath, err)
+	}
+
+	originalRename := renameFile
+	originalRemove := removeFile
+	t.Cleanup(func() {
+		renameFile = originalRename
+		removeFile = originalRemove
+	})
+
+	return tempPath, targetPath, originalRename, originalRemove
+}
+
+func assertFileContents(t *testing.T, path string, want string) {
+	t.Helper()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	if string(got) != want {
+		t.Fatalf("target contents = %q, want %q", string(got), want)
 	}
 }

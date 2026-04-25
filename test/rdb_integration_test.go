@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
 	runedblogger "github.com/maltemindedal/runedb/internal/logger"
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/rdb"
@@ -26,13 +25,7 @@ func TestServerLoadsRDBBeforeServingCommands(t *testing.T) {
 		testExpiringMillisEntry(uint64(time.Now().Add(-time.Second).UnixMilli()), []byte("stale"), []byte("gone")),
 	))
 
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 	cfg.RDBPath = rdbPath
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -81,11 +74,7 @@ func TestServerFailsFastOnCorruptRDB(t *testing.T) {
 		t.Fatalf("WriteFile(%q) error = %v", rdbPath, err)
 	}
 
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 	cfg.RDBPath = rdbPath
 
 	logger := runedblogger.New(cfg.LogLevel)

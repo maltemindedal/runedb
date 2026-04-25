@@ -558,20 +558,10 @@ func (e *Executor) handleIncr(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	value, evicted, err := e.store.IncrementWithEviction(key)
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrWrongType):
-			return nil, ErrWrongTypeError()
-		case errors.Is(err, storage.ErrValueNotInteger):
-			return nil, ErrValueNotIntegerError()
-		case errors.Is(err, storage.ErrMemoryLimitExceeded):
-			return nil, ErrOutOfMemoryError()
-		default:
-			return nil, err
-		}
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: value}, nil
 }
 
@@ -583,17 +573,10 @@ func (e *Executor) handleLPush(ctx context.Context, request *Request) (protocol.
 	key := string(request.Args[0])
 	length, evicted, err := e.store.LeftPushWithEviction(key, request.Args[1:])
 	if err != nil {
-		if errors.Is(err, storage.ErrWrongType) {
-			return nil, ErrWrongTypeError()
-		}
-		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
-			return nil, ErrOutOfMemoryError()
-		}
-		return nil, err
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -605,17 +588,10 @@ func (e *Executor) handleRPush(ctx context.Context, request *Request) (protocol.
 	key := string(request.Args[0])
 	length, evicted, err := e.store.RightPushWithEviction(key, request.Args[1:])
 	if err != nil {
-		if errors.Is(err, storage.ErrWrongType) {
-			return nil, ErrWrongTypeError()
-		}
-		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
-			return nil, ErrOutOfMemoryError()
-		}
-		return nil, err
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: length}, nil
 }
 
@@ -624,11 +600,7 @@ func (e *Executor) handleLRange(_ context.Context, request *Request) (protocol.V
 		return nil, wrongNumberOfArgumentsError("LRANGE")
 	}
 
-	start, err := parseIntegerArgument(request.Args[1])
-	if err != nil {
-		return nil, err
-	}
-	stop, err := parseIntegerArgument(request.Args[2])
+	start, stop, err := parseRangeBounds(request.Args[1:3])
 	if err != nil {
 		return nil, err
 	}
@@ -702,20 +674,10 @@ func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	added, evicted, err := e.store.ZAddWithEviction(key, entries)
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrWrongType):
-			return nil, ErrWrongTypeError()
-		case errors.Is(err, storage.ErrSyntax):
-			return nil, ErrSyntaxError()
-		case errors.Is(err, storage.ErrMemoryLimitExceeded):
-			return nil, ErrOutOfMemoryError()
-		default:
-			return nil, err
-		}
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -732,11 +694,7 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 		withScores = true
 	}
 
-	start, err := parseIntegerArgument(request.Args[1])
-	if err != nil {
-		return nil, err
-	}
-	stop, err := parseIntegerArgument(request.Args[2])
+	start, stop, err := parseRangeBounds(request.Args[1:3])
 	if err != nil {
 		return nil, err
 	}
@@ -761,24 +719,10 @@ func (e *Executor) handleXAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	id, evicted, err := e.store.XAddWithEviction(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrWrongType):
-			return nil, ErrWrongTypeError()
-		case errors.Is(err, storage.ErrSyntax):
-			return nil, ErrSyntaxError()
-		case errors.Is(err, storage.ErrInvalidStreamID):
-			return nil, ErrInvalidStreamIDError()
-		case errors.Is(err, storage.ErrStreamIDTooSmall):
-			return nil, ErrStreamIDTooSmallError()
-		case errors.Is(err, storage.ErrMemoryLimitExceeded):
-			return nil, ErrOutOfMemoryError()
-		default:
-			return nil, err
-		}
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.TextBulkString{Value: id}, nil
 }
 
@@ -853,6 +797,43 @@ func streamReadResponse(key []byte, entries []storage.StreamEntry) protocol.Arra
 			protocol.Array{Elements: streamEntries},
 		}},
 	}}
+}
+
+func parseRangeBounds(args [][]byte) (int64, int64, error) {
+	start, err := parseIntegerArgument(args[0])
+	if err != nil {
+		return 0, 0, err
+	}
+	stop, err := parseIntegerArgument(args[1])
+	if err != nil {
+		return 0, 0, err
+	}
+
+	return start, stop, nil
+}
+
+func storageCommandError(err error) error {
+	switch {
+	case errors.Is(err, storage.ErrWrongType):
+		return ErrWrongTypeError()
+	case errors.Is(err, storage.ErrValueNotInteger):
+		return ErrValueNotIntegerError()
+	case errors.Is(err, storage.ErrSyntax):
+		return ErrSyntaxError()
+	case errors.Is(err, storage.ErrInvalidStreamID):
+		return ErrInvalidStreamIDError()
+	case errors.Is(err, storage.ErrStreamIDTooSmall):
+		return ErrStreamIDTooSmallError()
+	case errors.Is(err, storage.ErrMemoryLimitExceeded):
+		return ErrOutOfMemoryError()
+	default:
+		return err
+	}
+}
+
+func (e *Executor) recordWriteEffects(ctx context.Context, key string, evicted []string) {
+	e.touchWatchKeys(key)
+	e.recordEvictedKeys(ctx, evicted)
 }
 
 func pubSubAckResponse(kind string, channel protocol.Value, count int) protocol.Array {

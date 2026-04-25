@@ -62,52 +62,18 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) int {
 		return 0
 	}
 
-	shardCount := len(s.shards)
-	counts := make([]int, shardCount)
-	for _, key := range keys {
-		counts[s.shardIndex(key)]++
-	}
-
-	offsets := make([]int, shardCount)
-	total := 0
-	for shardID, count := range counts {
-		offsets[shardID] = total
-		total += count
-	}
-
-	groupedKeys := make([]string, len(keys))
-	next := make([]int, shardCount)
-	copy(next, offsets)
-	for _, key := range keys {
-		shardID := s.shardIndex(key)
-		groupedKeys[next[shardID]] = key
-		next[shardID]++
-	}
-
-	for shardID, count := range counts {
-		if count == 0 {
-			continue
-		}
-		s.shards[shardID].mu.Lock()
-	}
-	defer func() {
-		for shardID := shardCount - 1; shardID >= 0; shardID-- {
-			if counts[shardID] == 0 {
-				continue
-			}
-			s.shards[shardID].mu.Unlock()
-		}
-	}()
+	groups := s.groupKeysByShard(keys)
+	groups.lock(s)
+	defer groups.unlock(s)
 
 	removed := 0
-	for shardID, count := range counts {
+	for shardID, count := range groups.counts {
 		if count == 0 {
 			continue
 		}
 
 		shard := &s.shards[shardID]
-		start := offsets[shardID]
-		for _, key := range groupedKeys[start : start+count] {
+		for _, key := range groups.keysForShard(shardID) {
 			value, ok := shard.data[key]
 			if ok && isExpired(value, now) {
 				s.deleteKeyLocked(shard, key)

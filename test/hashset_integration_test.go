@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
 	runedblogger "github.com/maltemindedal/runedb/internal/logger"
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/server"
@@ -16,13 +15,7 @@ import (
 )
 
 func TestServerHandlesHashSetAndListPopCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -42,7 +35,7 @@ func TestServerHandlesHashSetAndListPopCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	// LPOP / RPOP (single + count form)

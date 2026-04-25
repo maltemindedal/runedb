@@ -130,13 +130,13 @@ func (p *Parser) parseArray() (Value, error) {
 		return nil, fmt.Errorf("protocol: invalid array length %d", count)
 	}
 
-	elements := make([]Value, 0, count)
+	elements := make([]Value, count)
 	for i := 0; i < count; i++ {
 		element, err := p.Parse()
 		if err != nil {
 			return nil, fmt.Errorf("protocol: parse array element %d: %w", i, err)
 		}
-		elements = append(elements, element)
+		elements[i] = element
 	}
 
 	return Array{Elements: elements}, nil

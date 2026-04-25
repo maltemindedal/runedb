@@ -1218,60 +1218,50 @@ func storageParseStreamIDForTest(raw string) (struct{ milliseconds, sequence int
 }
 
 func TestExecutorBLPop(t *testing.T) {
-	t.Run("unblocks on regular push", func(t *testing.T) {
-		executor := newTestExecutor()
+	tests := []struct {
+		name      string
+		configure func(*Executor)
+	}{
+		{name: "unblocks on regular push"},
+		{
+			name: "unblocks when maxmemory is enabled",
+			configure: func(executor *Executor) {
+				executor.store.ConfigureMaxMemory(1<<20, 16)
+			},
+		},
+	}
 
-		pushErrCh := make(chan error, 1)
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
-			pushErrCh <- err
-		}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := newTestExecutor()
+			if tt.configure != nil {
+				tt.configure(executor)
+			}
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
+			pushErrCh := make(chan error, 1)
+			go func() {
+				time.Sleep(20 * time.Millisecond)
+				_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
+				pushErrCh <- err
+			}()
 
-		value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
-		if err != nil {
-			t.Fatalf("Execute() error = %v", err)
-		}
-		if pushErr := <-pushErrCh; pushErr != nil {
-			t.Fatalf("RPUSH error = %v", pushErr)
-		}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
 
-		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: []byte("jobs")},
-			protocol.BulkString{Data: []byte("build")},
-		}})
-	})
+			value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
+			if err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if pushErr := <-pushErrCh; pushErr != nil {
+				t.Fatalf("RPUSH error = %v", pushErr)
+			}
 
-	t.Run("unblocks when maxmemory is enabled", func(t *testing.T) {
-		executor := newTestExecutor()
-		executor.store.ConfigureMaxMemory(1<<20, 16)
-
-		pushErrCh := make(chan error, 1)
-		go func() {
-			time.Sleep(20 * time.Millisecond)
-			_, err := executor.Execute(context.Background(), requestValue("RPUSH", "jobs", "build"))
-			pushErrCh <- err
-		}()
-
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-
-		value, err := executor.Execute(ctx, requestValue("BLPOP", "jobs"))
-		if err != nil {
-			t.Fatalf("Execute() error = %v", err)
-		}
-		if pushErr := <-pushErrCh; pushErr != nil {
-			t.Fatalf("RPUSH error = %v", pushErr)
-		}
-
-		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
-			protocol.BulkString{Data: []byte("jobs")},
-			protocol.BulkString{Data: []byte("build")},
-		}})
-	})
+			assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+				protocol.BulkString{Data: []byte("jobs")},
+				protocol.BulkString{Data: []byte("build")},
+			}})
+		})
+	}
 }
 
 func TestExecutorTransactions(t *testing.T) {

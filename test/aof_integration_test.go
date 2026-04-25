@@ -55,7 +55,7 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) watcher error = %v", addr, err)
 	}
-	defer func() { _ = watcherConn.Close() }()
+	defer closeTestResource(t, watcherConn)
 	watcherParser := protocol.NewParser(watcherConn)
 
 	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "tx-watch")
@@ -78,7 +78,7 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) restart error = %v", restartAddr, err)
 	}
-	defer func() { _ = restartConn.Close() }()
+	defer closeTestResource(t, restartConn)
 	restartParser := protocol.NewParser(restartConn)
 
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
@@ -139,7 +139,7 @@ func TestServerPrefersAOFOverRDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("aof")}, "GET", "name")
@@ -157,7 +157,7 @@ func TestServerDoesNotPersistPublishToAOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) subscriber error = %v", addr, err)
 	}
-	defer func() { _ = subscriberConn.Close() }()
+	defer closeTestResource(t, subscriberConn)
 	subscriberParser := protocol.NewParser(subscriberConn)
 	if err := protocol.WriteValue(subscriberConn, request("SUBSCRIBE", "updates")); err != nil {
 		t.Fatalf("WriteValue(SUBSCRIBE) error = %v", err)
@@ -170,7 +170,7 @@ func TestServerDoesNotPersistPublishToAOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
 	}
-	defer func() { _ = publisherConn.Close() }()
+	defer closeTestResource(t, publisherConn)
 	publisherParser := protocol.NewParser(publisherConn)
 	assertCommandResponse(t, publisherConn, publisherParser, protocol.Integer{Value: 1}, "PUBLISH", "updates", "hello")
 	if _, err := subscriberParser.Parse(); err != nil {
@@ -256,7 +256,7 @@ func TestServerBGRewriteAOFCompactsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) restart error = %v", restartAddr, err)
 	}
-	defer func() { _ = restartConn.Close() }()
+	defer closeTestResource(t, restartConn)
 	restartParser := protocol.NewParser(restartConn)
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("value19")}, "GET", "name")
 
@@ -264,48 +264,9 @@ func TestServerBGRewriteAOFCompactsAndReloads(t *testing.T) {
 	waitForServerStop(t, restartErrCh)
 }
 
-func defaultTestConfig() config.Config {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
-	return cfg
-}
-
 func testAOFConfig(aofPath string) config.Config {
 	cfg := defaultTestConfig()
 	cfg.AOFPath = aofPath
 	cfg.AppendFsync = "always"
 	return cfg
-}
-
-func startTestServer(t *testing.T, cfg config.Config) (string, context.CancelFunc, <-chan error) {
-	t.Helper()
-	logger := runedblogger.New(cfg.LogLevel)
-	store := storage.NewStore()
-	executor := command.NewExecutor(store, logger)
-	srv := server.New(cfg, logger, store, executor)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- srv.ListenAndServe(ctx)
-	}()
-
-	return waitForAddr(t, srv), cancel, errCh
-}
-
-func waitForServerStop(t *testing.T, errCh <-chan error) {
-	t.Helper()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatalf("ListenAndServe() error = %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("server did not stop within timeout")
-	}
 }

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
 	runedblogger "github.com/maltemindedal/runedb/internal/logger"
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/server"
@@ -16,13 +15,7 @@ import (
 )
 
 func TestServerHandlesPhaseOneCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -77,13 +70,7 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 }
 
 func TestServerRequiresAuthWhenConfigured(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 	cfg.RequirePass = "secret"
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -104,14 +91,14 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) authed client error = %v", addr, err)
 	}
-	defer func() { _ = authedConn.Close() }()
+	defer closeTestResource(t, authedConn)
 	authedParser := protocol.NewParser(authedConn)
 
 	blockedConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) blocked client error = %v", addr, err)
 	}
-	defer func() { _ = blockedConn.Close() }()
+	defer closeTestResource(t, blockedConn)
 	blockedParser := protocol.NewParser(blockedConn)
 
 	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "PONG"}, "PING")
@@ -143,13 +130,7 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 }
 
 func TestServerHandlesListCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -169,7 +150,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 2}, "LPUSH", "letters", "a", "b")
@@ -185,7 +166,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) blocked client error = %v", addr, err)
 	}
-	defer func() { _ = blockedConn.Close() }()
+	defer closeTestResource(t, blockedConn)
 	blockedParser := protocol.NewParser(blockedConn)
 
 	if err := protocol.WriteValue(blockedConn, request("BLPOP", "jobs")); err != nil {
@@ -238,13 +219,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 }
 
 func TestServerHandlesSortedSetCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -264,7 +239,7 @@ func TestServerHandlesSortedSetCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 3}, "ZADD", "leaders", "2", "beta", "1", "alpha", "2", "aardvark")
@@ -307,13 +282,7 @@ func TestServerHandlesSortedSetCommands(t *testing.T) {
 }
 
 func TestServerHandlesStreamCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -333,7 +302,7 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("1-0")}, "XADD", "events", "1-0", "type", "start")
@@ -388,13 +357,7 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 }
 
 func TestServerHandlesTransactionCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -414,14 +377,14 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	otherConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) second client error = %v", addr, err)
 	}
-	defer func() { _ = otherConn.Close() }()
+	defer closeTestResource(t, otherConn)
 	otherParser := protocol.NewParser(otherConn)
 
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "MULTI")
@@ -460,13 +423,7 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 }
 
 func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -486,14 +443,14 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) watcher error = %v", addr, err)
 	}
-	defer func() { _ = watcherConn.Close() }()
+	defer closeTestResource(t, watcherConn)
 	watcherParser := protocol.NewParser(watcherConn)
 
 	writerConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) writer error = %v", addr, err)
 	}
-	defer func() { _ = writerConn.Close() }()
+	defer closeTestResource(t, writerConn)
 	writerParser := protocol.NewParser(writerConn)
 
 	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "balance")
@@ -525,13 +482,7 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 }
 
 func TestServerHandlesPubSubCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -551,14 +502,14 @@ func TestServerHandlesPubSubCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) subscriber error = %v", addr, err)
 	}
-	defer func() { _ = subscriberConn.Close() }()
+	defer closeTestResource(t, subscriberConn)
 	subscriberParser := protocol.NewParser(subscriberConn)
 
 	publisherConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
 	}
-	defer func() { _ = publisherConn.Close() }()
+	defer closeTestResource(t, publisherConn)
 	publisherParser := protocol.NewParser(publisherConn)
 
 	if err := protocol.WriteValue(subscriberConn, request("SUBSCRIBE", "updates")); err != nil {
@@ -616,13 +567,7 @@ func TestServerHandlesPubSubCommands(t *testing.T) {
 }
 
 func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -642,21 +587,21 @@ func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) subscriber one error = %v", addr, err)
 	}
-	defer func() { _ = subscriberOneConn.Close() }()
+	defer closeTestResource(t, subscriberOneConn)
 	subscriberOneParser := protocol.NewParser(subscriberOneConn)
 
 	subscriberTwoConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) subscriber two error = %v", addr, err)
 	}
-	defer func() { _ = subscriberTwoConn.Close() }()
+	defer closeTestResource(t, subscriberTwoConn)
 	subscriberTwoParser := protocol.NewParser(subscriberTwoConn)
 
 	publisherConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
 	}
-	defer func() { _ = publisherConn.Close() }()
+	defer closeTestResource(t, publisherConn)
 	publisherParser := protocol.NewParser(publisherConn)
 
 	assertCommandResponse(t, subscriberOneConn, subscriberOneParser, protocol.Array{Elements: []protocol.Value{
@@ -704,13 +649,7 @@ func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
 }
 
 func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -730,7 +669,7 @@ func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{
@@ -757,13 +696,7 @@ func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
 }
 
 func TestServerPubSubDisconnectCleanup(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -798,7 +731,7 @@ func TestServerPubSubDisconnectCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) publisher error = %v", addr, err)
 	}
-	defer func() { _ = publisherConn.Close() }()
+	defer closeTestResource(t, publisherConn)
 	publisherParser := protocol.NewParser(publisherConn)
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -837,13 +770,7 @@ func TestServerPubSubDisconnectCleanup(t *testing.T) {
 }
 
 func TestServerMonitorStreamsCommands(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -863,7 +790,7 @@ func TestServerMonitorStreamsCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) monitor error = %v", addr, err)
 	}
-	defer func() { _ = monitorConn.Close() }()
+	defer closeTestResource(t, monitorConn)
 	monitorParser := protocol.NewParser(monitorConn)
 	assertCommandResponse(t, monitorConn, monitorParser, protocol.SimpleString{Value: "OK"}, "MONITOR")
 
@@ -871,7 +798,7 @@ func TestServerMonitorStreamsCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) client error = %v", addr, err)
 	}
-	defer func() { _ = clientConn.Close() }()
+	defer closeTestResource(t, clientConn)
 	clientParser := protocol.NewParser(clientConn)
 
 	assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "OK"}, "SET", "observed", "value")
@@ -901,13 +828,7 @@ func TestServerMonitorStreamsCommands(t *testing.T) {
 }
 
 func TestServerRejectsEmptyPubSubChannelNames(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 
 	logger := runedblogger.New(cfg.LogLevel)
 	store := storage.NewStore()
@@ -927,7 +848,7 @@ func TestServerRejectsEmptyPubSubChannelNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR syntax error"}, "SUBSCRIBE", "")

@@ -196,17 +196,12 @@ func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []stri
 		}
 	}
 
-	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newZSetValue(set, expiresAt)
-	newSize := s.approximateValueObjectSize(key, newValue)
-
-	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	s.setKeyLocked(shard, key, newValue)
-	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
 
@@ -245,17 +240,12 @@ func (s *Store) XAddWithEviction(key, rawID string, values [][]byte) (string, []
 		return "", nil, err
 	}
 
-	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newStreamValue(stream, expiresAt)
-	newSize := s.approximateValueObjectSize(key, newValue)
-
-	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return "", nil, err
 	}
 
-	s.setKeyLocked(shard, key, newValue)
-	s.usedMemory.Add(newSize - oldSize)
 	return id, evicted, nil
 }
 
@@ -294,17 +284,12 @@ func (s *Store) HSetWithEviction(key string, pairs []HashFieldValue) (int64, []s
 		fields[pair.Field] = cloneBytes(pair.Value)
 	}
 
-	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newHashValue(fields, expiresAt)
-	newSize := s.approximateValueObjectSize(key, newValue)
-
-	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	s.setKeyLocked(shard, key, newValue)
-	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
 
@@ -344,17 +329,12 @@ func (s *Store) SAddWithEviction(key string, members [][]byte) (int64, []string,
 		added++
 	}
 
-	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newSetValue(set, expiresAt)
-	newSize := s.approximateValueObjectSize(key, newValue)
-
-	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	s.setKeyLocked(shard, key, newValue)
-	s.usedMemory.Add(newSize - oldSize)
 	return added, evicted, nil
 }
 
@@ -397,17 +377,12 @@ func (s *Store) pushListWithEviction(key string, values [][]byte, left bool) (in
 		list = append(list, additions...)
 	}
 
-	oldSize := s.approximateValueObjectSize(key, current)
 	newValue := newListValue(list, expiresAt)
-	newSize := s.approximateValueObjectSize(key, newValue)
-
-	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	s.setKeyLocked(shard, key, newValue)
-	s.usedMemory.Add(newSize - oldSize)
 	s.waiters.notifyOne(key)
 	return int64(len(list)), evicted, nil
 }
@@ -462,6 +437,20 @@ func (s *Store) approximateValueObjectSize(key string, value *ValueObject) int64
 	}
 
 	return size
+}
+
+func (s *Store) commitValueWithEvictionLocked(shard *Shard, key string, oldValue *ValueObject, newValue *ValueObject) ([]string, error) {
+	oldSize := s.approximateValueObjectSize(key, oldValue)
+	newSize := s.approximateValueObjectSize(key, newValue)
+
+	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	if err != nil {
+		return nil, err
+	}
+
+	s.setKeyLocked(shard, key, newValue)
+	s.usedMemory.Add(newSize - oldSize)
+	return evicted, nil
 }
 
 func (s *Store) recalculateUsedMemoryLocked(now int64) int64 {

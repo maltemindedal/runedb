@@ -101,20 +101,10 @@ func (e *Executor) handleHSet(ctx context.Context, request *Request) (protocol.V
 
 	added, evicted, err := e.store.HSetWithEviction(key, pairs)
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrWrongType):
-			return nil, ErrWrongTypeError()
-		case errors.Is(err, storage.ErrSyntax):
-			return nil, ErrSyntaxError()
-		case errors.Is(err, storage.ErrMemoryLimitExceeded):
-			return nil, ErrOutOfMemoryError()
-		default:
-			return nil, err
-		}
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 
@@ -196,20 +186,10 @@ func (e *Executor) handleSAdd(ctx context.Context, request *Request) (protocol.V
 	key := string(request.Args[0])
 	added, evicted, err := e.store.SAddWithEviction(key, request.Args[1:])
 	if err != nil {
-		switch {
-		case errors.Is(err, storage.ErrWrongType):
-			return nil, ErrWrongTypeError()
-		case errors.Is(err, storage.ErrSyntax):
-			return nil, ErrSyntaxError()
-		case errors.Is(err, storage.ErrMemoryLimitExceeded):
-			return nil, ErrOutOfMemoryError()
-		default:
-			return nil, err
-		}
+		return nil, storageCommandError(err)
 	}
 
-	e.touchWatchKeys(key)
-	e.recordEvictedKeys(ctx, evicted)
+	e.recordWriteEffects(ctx, key, evicted)
 	return protocol.Integer{Value: added}, nil
 }
 

@@ -143,52 +143,18 @@ func (s *Store) DeleteMany(keys []string) []string {
 		return nil
 	}
 
-	shardCount := len(s.shards)
-	counts := make([]int, shardCount)
-	for _, key := range keys {
-		counts[s.shardIndex(key)]++
-	}
-
-	offsets := make([]int, shardCount)
-	total := 0
-	for shardID, count := range counts {
-		offsets[shardID] = total
-		total += count
-	}
-
-	groupedKeys := make([]string, len(keys))
-	next := make([]int, shardCount)
-	copy(next, offsets)
-	for _, key := range keys {
-		shardID := s.shardIndex(key)
-		groupedKeys[next[shardID]] = key
-		next[shardID]++
-	}
-
-	for shardID, count := range counts {
-		if count == 0 {
-			continue
-		}
-		s.shards[shardID].mu.Lock()
-	}
-	defer func() {
-		for shardID := shardCount - 1; shardID >= 0; shardID-- {
-			if counts[shardID] == 0 {
-				continue
-			}
-			s.shards[shardID].mu.Unlock()
-		}
-	}()
+	groups := s.groupKeysByShard(keys)
+	groups.lock(s)
+	defer groups.unlock(s)
 
 	now := time.Now().UnixMilli()
 	removed := make([]string, 0, len(keys))
-	for shardID, count := range counts {
+	for shardID, count := range groups.counts {
 		if count == 0 {
 			continue
 		}
 		shard := &s.shards[shardID]
-		start := offsets[shardID]
-		for _, key := range groupedKeys[start : start+count] {
+		for _, key := range groups.keysForShard(shardID) {
 			value, ok := shard.data[key]
 			if !ok {
 				continue
@@ -639,13 +605,13 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 	}
 	value.touch(now)
 
-	records, err := stream.snapshotAfter(rawID)
+	entries, err := stream.entriesAfter(rawID)
 	shard.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
 
-	return cloneStreamEntries(records), nil
+	return entries, nil
 }
 
 // SubscribeListPush registers a waiter that is notified when a push occurs for key.
@@ -875,6 +841,62 @@ func (s *Store) snapshotKeys(limit int) []string {
 	}
 
 	return keys
+}
+
+type shardKeyGroups struct {
+	counts  []int
+	offsets []int
+	keys    []string
+}
+
+func (s *Store) groupKeysByShard(keys []string) shardKeyGroups {
+	shardCount := len(s.shards)
+	counts := make([]int, shardCount)
+	for _, key := range keys {
+		counts[s.shardIndex(key)]++
+	}
+
+	offsets := make([]int, shardCount)
+	total := 0
+	for shardID, count := range counts {
+		offsets[shardID] = total
+		total += count
+	}
+
+	groupedKeys := make([]string, len(keys))
+	next := make([]int, shardCount)
+	copy(next, offsets)
+	for _, key := range keys {
+		shardID := s.shardIndex(key)
+		groupedKeys[next[shardID]] = key
+		next[shardID]++
+	}
+
+	return shardKeyGroups{counts: counts, offsets: offsets, keys: groupedKeys}
+}
+
+func (g shardKeyGroups) lock(s *Store) {
+	for shardID, count := range g.counts {
+		if count == 0 {
+			continue
+		}
+		s.shards[shardID].mu.Lock()
+	}
+}
+
+func (g shardKeyGroups) unlock(s *Store) {
+	for shardID := len(g.counts) - 1; shardID >= 0; shardID-- {
+		if g.counts[shardID] == 0 {
+			continue
+		}
+		s.shards[shardID].mu.Unlock()
+	}
+}
+
+func (g shardKeyGroups) keysForShard(shardID int) []string {
+	count := g.counts[shardID]
+	start := g.offsets[shardID]
+	return g.keys[start : start+count]
 }
 
 func cloneBytes(src []byte) []byte {

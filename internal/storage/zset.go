@@ -46,8 +46,8 @@ func cloneSortedSet(src *SortedSet) *SortedSet {
 	}
 
 	cloned := newSortedSet()
-	for _, entry := range src.rangeByRank(0, src.len()-1) {
-		cloned.add(entry.Member, entry.Score)
+	for node := src.order.header.levels[0].forward; node != nil; node = node.levels[0].forward {
+		cloned.add(node.member, node.score)
 	}
 
 	return cloned
@@ -86,9 +86,9 @@ func (s *SortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 		return nil
 	}
 
-	items := make([]ZSetRangeEntry, 0, stop-start+1)
-	for remaining := stop - start + 1; remaining > 0 && node != nil; remaining-- {
-		items = append(items, ZSetRangeEntry{Member: node.member, Score: node.score})
+	items := make([]ZSetRangeEntry, stop-start+1)
+	for i := range items {
+		items[i] = ZSetRangeEntry{Member: node.member, Score: node.score}
 		node = node.levels[0].forward
 	}
 

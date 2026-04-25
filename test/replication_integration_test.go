@@ -23,13 +23,7 @@ import (
 )
 
 func TestServerHandlesMasterReplicaHandshake(t *testing.T) {
-	cfg := config.Default()
-	cfg.Host = "127.0.0.1"
-	cfg.Port = 0
-	cfg.LogLevel = "error"
-	cfg.EvictionInterval = 5 * time.Millisecond
-	cfg.EvictionSampleSize = 10
-	cfg.DumpPath = ""
+	cfg := defaultTestConfig()
 	cfg.RequirePass = "secret"
 
 	logger := runedblogger.New(cfg.LogLevel)
@@ -50,7 +44,7 @@ func TestServerHandlesMasterReplicaHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 
 	parser := protocol.NewParser(conn)
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "PONG"}, "PING")
@@ -119,7 +113,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Listen() fake master error = %v", err)
 		}
-		defer func() { _ = masterListener.Close() }()
+		defer closeTestResource(t, masterListener)
 
 		listeningPortCh := make(chan string, 1)
 		handshakeDone := make(chan struct{})
@@ -132,7 +126,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 				masterErrCh <- err
 				return
 			}
-			defer func() { _ = conn.Close() }()
+			defer closeTestResource(t, conn)
 
 			parser := protocol.NewParser(conn)
 			writer := conn
@@ -183,13 +177,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 			masterErrCh <- nil
 		}()
 
-		cfg := config.Default()
-		cfg.Host = "127.0.0.1"
-		cfg.Port = 0
-		cfg.LogLevel = "error"
-		cfg.EvictionInterval = 5 * time.Millisecond
-		cfg.EvictionSampleSize = 10
-		cfg.DumpPath = ""
+		cfg := defaultTestConfig()
 		cfg.ReplicaOf = masterListener.Addr().String()
 
 		logger := runedblogger.New(cfg.LogLevel)
@@ -230,7 +218,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial(%q) client error = %v", replicaAddr, err)
 		}
-		defer func() { _ = clientConn.Close() }()
+		defer closeTestResource(t, clientConn)
 		clientParser := protocol.NewParser(clientConn)
 		assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "PONG"}, "PING")
 
@@ -261,7 +249,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Listen() fake master error = %v", err)
 		}
-		defer func() { _ = masterListener.Close() }()
+		defer closeTestResource(t, masterListener)
 
 		listeningPortCh := make(chan string, 1)
 		handshakeDone := make(chan struct{})
@@ -274,7 +262,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 				masterErrCh <- err
 				return
 			}
-			defer func() { _ = conn.Close() }()
+			defer closeTestResource(t, conn)
 
 			parser := protocol.NewParser(conn)
 			writer := conn
@@ -382,7 +370,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial(%q) client error = %v", replicaAddr, err)
 		}
-		defer func() { _ = clientConn.Close() }()
+		defer closeTestResource(t, clientConn)
 		clientParser := protocol.NewParser(clientConn)
 		assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "PONG"}, "PING")
 
@@ -413,7 +401,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Listen() fake master error = %v", err)
 		}
-		defer func() { _ = masterListener.Close() }()
+		defer closeTestResource(t, masterListener)
 
 		handshakeFailed := make(chan struct{})
 		masterErrCh := make(chan error, 1)
@@ -424,7 +412,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 				masterErrCh <- err
 				return
 			}
-			defer func() { _ = conn.Close() }()
+			defer closeTestResource(t, conn)
 
 			parser := protocol.NewParser(conn)
 			writer := conn
@@ -501,7 +489,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial(%q) client error = %v", replicaAddr, err)
 		}
-		defer func() { _ = clientConn.Close() }()
+		defer closeTestResource(t, clientConn)
 		clientParser := protocol.NewParser(clientConn)
 		assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "PONG"}, "PING")
 
@@ -539,7 +527,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Listen() fake master error = %v", err)
 		}
-		defer func() { _ = masterListener.Close() }()
+		defer closeTestResource(t, masterListener)
 
 		handshakeFailed := make(chan struct{})
 		masterErrCh := make(chan error, 1)
@@ -550,7 +538,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 				masterErrCh <- err
 				return
 			}
-			defer func() { _ = conn.Close() }()
+			defer closeTestResource(t, conn)
 
 			parser := protocol.NewParser(conn)
 			writer := conn
@@ -619,7 +607,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial(%q) client error = %v", replicaAddr, err)
 		}
-		defer func() { _ = clientConn.Close() }()
+		defer closeTestResource(t, clientConn)
 		clientParser := protocol.NewParser(clientConn)
 		assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "PONG"}, "PING")
 
@@ -658,7 +646,7 @@ func TestServerReplicaFullResyncReplacesExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen() fake master error = %v", err)
 	}
-	defer func() { _ = masterListener.Close() }()
+	defer closeTestResource(t, masterListener)
 
 	handshakeDone := make(chan struct{})
 	masterStop := make(chan struct{})
@@ -674,7 +662,7 @@ func TestServerReplicaFullResyncReplacesExistingData(t *testing.T) {
 			masterErrCh <- err
 			return
 		}
-		defer func() { _ = conn.Close() }()
+		defer closeTestResource(t, conn)
 
 		parser := protocol.NewParser(conn)
 		writer := conn
@@ -764,7 +752,7 @@ func TestServerReplicaFullResyncReplacesExistingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) client error = %v", replicaAddr, err)
 	}
-	defer func() { _ = clientConn.Close() }()
+	defer closeTestResource(t, clientConn)
 	clientParser := protocol.NewParser(clientConn)
 
 	assertCommandResponse(t, clientConn, clientParser, protocol.BulkString{Null: true}, "GET", "stale")
@@ -927,14 +915,14 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) master error = %v", masterAddr, err)
 	}
-	defer func() { _ = masterConn.Close() }()
+	defer closeTestResource(t, masterConn)
 	masterParser := protocol.NewParser(masterConn)
 
 	replicaConn, err := net.Dial("tcp", replicaAddr)
 	if err != nil {
 		t.Fatalf("Dial(%q) replica error = %v", replicaAddr, err)
 	}
-	defer func() { _ = replicaConn.Close() }()
+	defer closeTestResource(t, replicaConn)
 	replicaParser := protocol.NewParser(replicaConn)
 
 	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
@@ -974,7 +962,7 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) watcher error = %v", masterAddr, err)
 	}
-	defer func() { _ = watcherConn.Close() }()
+	defer closeTestResource(t, watcherConn)
 	watcherParser := protocol.NewParser(watcherConn)
 
 	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "tx-watch")
@@ -1068,21 +1056,21 @@ func TestPublishPropagatesToReplicaSubscribers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) publisher error = %v", masterAddr, err)
 	}
-	defer func() { _ = publisherConn.Close() }()
+	defer closeTestResource(t, publisherConn)
 	publisherParser := protocol.NewParser(publisherConn)
 
 	masterSubscriberConn, err := net.Dial("tcp", masterAddr)
 	if err != nil {
 		t.Fatalf("Dial(%q) master subscriber error = %v", masterAddr, err)
 	}
-	defer func() { _ = masterSubscriberConn.Close() }()
+	defer closeTestResource(t, masterSubscriberConn)
 	masterSubscriberParser := protocol.NewParser(masterSubscriberConn)
 
 	replicaSubscriberConn, err := net.Dial("tcp", replicaAddr)
 	if err != nil {
 		t.Fatalf("Dial(%q) replica subscriber error = %v", replicaAddr, err)
 	}
-	defer func() { _ = replicaSubscriberConn.Close() }()
+	defer closeTestResource(t, replicaSubscriberConn)
 	replicaSubscriberParser := protocol.NewParser(replicaSubscriberConn)
 
 	assertCommandResponse(t, masterSubscriberConn, masterSubscriberParser, protocol.Array{Elements: []protocol.Value{
@@ -1221,7 +1209,7 @@ func TestWaitReturnsReplicaAcknowledgements(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) master error = %v", masterAddr, err)
 	}
-	defer func() { _ = masterConn.Close() }()
+	defer closeTestResource(t, masterConn)
 	masterParser := protocol.NewParser(masterConn)
 
 	assertCommandResponse(t, masterConn, masterParser, protocol.Integer{Value: 1}, "WAIT", "1", "1000")
@@ -1316,14 +1304,14 @@ func TestReplicationStructuredLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) master error = %v", masterAddr, err)
 	}
-	defer func() { _ = masterConn.Close() }()
+	defer closeTestResource(t, masterConn)
 	masterParser := protocol.NewParser(masterConn)
 
 	replicaConn, err := net.Dial("tcp", replicaAddr)
 	if err != nil {
 		t.Fatalf("Dial(%q) replica error = %v", replicaAddr, err)
 	}
-	defer func() { _ = replicaConn.Close() }()
+	defer closeTestResource(t, replicaConn)
 	replicaParser := protocol.NewParser(replicaConn)
 
 	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
@@ -1392,7 +1380,7 @@ func TestWaitTimesOutWithoutReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) error = %v", addr, err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeTestResource(t, conn)
 	parser := protocol.NewParser(conn)
 
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "solo", "1")
@@ -1472,14 +1460,14 @@ func TestWaitUsesPerClientReplicationOffset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial(%q) writer error = %v", masterAddr, err)
 	}
-	defer func() { _ = writerConn.Close() }()
+	defer closeTestResource(t, writerConn)
 	writerParser := protocol.NewParser(writerConn)
 
 	waiterConn, err := net.Dial("tcp", masterAddr)
 	if err != nil {
 		t.Fatalf("Dial(%q) waiter error = %v", masterAddr, err)
 	}
-	defer func() { _ = waiterConn.Close() }()
+	defer closeTestResource(t, waiterConn)
 	waiterParser := protocol.NewParser(waiterConn)
 
 	assertCommandResponse(t, writerConn, writerParser, protocol.SimpleString{Value: "OK"}, "SET", "shared", "value")
