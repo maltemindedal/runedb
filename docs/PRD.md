@@ -348,6 +348,37 @@ Protect the server from unbounded memory growth under sustained write pressure.
 - [x] Sample a small random set of keys instead of maintaining a strict global LRU list.
 - [x] Evict the stalest candidate and repeat until memory usage falls below the limit.
 
+### Phase 12: Observability & Administration ("Day 2" Operations)
+
+A production-ready database requires tooling to monitor its internal state under load.
+
+- [ ] **The `INFO` Command:** Implement sections for `INFO memory` (heap stats, fragmentation), `INFO replication` (master/replica offsets, lag), and `INFO clients` (connected counts).
+- [ ] **The `SLOWLOG`:** Track queries that exceed a configurable execution time (`slowlog-log-slower-than`). Implement a bounded, thread-safe queue to store slow query metadata (timestamp, execution time, command array) without blocking the hot path.
+- [ ] **The `MONITOR` Command:** Implement a debugging command that streams every command processed by the server back to the calling client, utilizing the Pub/Sub fan-out architecture for internal server events.
+
+### Phase 13: Advanced Memory Efficiency (Internal Encodings)
+
+Reduce the heavy pointer overhead of standard Go maps and slices by implementing dynamic internal encodings.
+
+- [ ] **Ziplists / Listpacks:** For Hashes and Sorted Sets under a certain size (e.g., `< 512` elements), store them as a single contiguous byte array (`[]byte`) rather than a `map` or Skip List to improve CPU cache locality and reduce GC pressure.
+- [ ] **Intsets:** If a Set contains only integers, store it as a sorted `[]int16`, `[]int32`, or `[]int64` rather than a `map[string]struct{}`.
+- [ ] **Encoding Transitions:** Implement the logic to transparently "upgrade" a Ziplist to a standard Hash map the moment a string exceeds a certain length or the element count crosses the configured threshold.
+
+### Phase 14: Specialized Data Structures
+
+Expand the RESP parser and unified value model to support high-leverage data types.
+
+- [ ] **Bitmaps (`SETBIT`, `GETBIT`, `BITCOUNT`):** Expose string operations at the bit level for high-performance, low-memory analytics (e.g., tracking daily active users).
+- [ ] **HyperLogLog (`PFADD`, `PFCOUNT`):** Implement the probabilistic data structure for estimating the cardinality of a set using a strict memory limit (e.g., 12KB max).
+- [ ] **Geospatial (`GEOADD`, `GEODIST`, `GEORADIUS`):** Build on top of the existing Sorted Sets implementation by encoding Longitude/Latitude pairs into 52-bit Geohashes to allow fast radius-based proximity queries.
+
+### Phase 15: I/O Multiplexing (The C10K Challenge)
+
+Eliminate the 1-goroutine-per-connection bottleneck to drastically reduce idle memory footprints.
+
+- [ ] **Event-Driven Networking:** Replace the `go handleConnection(conn)` model with a custom event loop using OS-level I/O multiplexing (`epoll` on Linux, `kqueue` on macOS) via Go's `golang.org/x/sys/unix` package.
+- [ ] **Connection State Machine:** Implement a non-blocking state machine that reads from sockets only when the OS notifies the event loop that they are readable.
+
 ## 4. Non-Functional Requirements (Production Readiness)
 
 - [x] **High concurrency performance:** Avoid blocking the main accept loop. Lock contention is minimized, and `GET` uses `RLock()` / `RUnlock()` paths.
