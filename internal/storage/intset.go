@@ -111,7 +111,7 @@ func (s *IntSet) members() [][]byte {
 	}
 	members := make([][]byte, 0, len(s.values))
 	for _, value := range s.values {
-		members = append(members, []byte(strconv.FormatInt(value, 10)))
+		members = append(members, strconv.AppendInt(make([]byte, 0, 20), value, 10))
 	}
 	return members
 }

@@ -97,8 +97,9 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
+	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
-	if ok && isExpired(value, time.Now().UnixMilli()) {
+	if ok && isExpired(value, now) {
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
@@ -116,7 +117,7 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 		return 0, err
 	}
 
-	value.touch(time.Now().UnixMilli())
+	value.touch(now)
 	setLen, err := value.setLen()
 	if err != nil {
 		return 0, err
