@@ -467,6 +467,7 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
+		value.touch(now)
 		newValue = value
 	} else {
 		newValue = newZSetValueForEntries(entries, 0)

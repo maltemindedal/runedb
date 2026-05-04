@@ -244,20 +244,23 @@ func (v *ValueObject) cloneZSetValue(expiresAt int64) (*ValueObject, error) {
 }
 
 func newHashValueForPairs(pairs []HashFieldValue, expiresAt int64) *ValueObject {
-	if len(pairs) <= compactHashMaxEntries {
-		return newCompactHashValue(newCompactHash(pairs), expiresAt)
+	compact := newCompactHash(pairs)
+	if compact.len() <= compactHashMaxEntries {
+		return newCompactHashValue(compact, expiresAt)
 	}
 
-	fields := make(map[string][]byte, len(pairs))
-	for _, pair := range pairs {
-		fields[pair.Field] = cloneBytes(pair.Value)
+	entries := compact.all()
+	fields := make(map[string][]byte, len(entries))
+	for _, entry := range entries {
+		fields[entry.Field] = cloneBytes(entry.Value)
 	}
 	return newHashValue(fields, expiresAt)
 }
 
 func newZSetValueForEntries(entries []ZSetEntry, expiresAt int64) *ValueObject {
-	if len(entries) <= compactZSetMaxEntries {
-		return newCompactZSetValue(newCompactZSet(entries), expiresAt)
+	compact := newCompactZSet(entries)
+	if compact.len() <= compactZSetMaxEntries {
+		return newCompactZSetValue(compact, expiresAt)
 	}
 
 	set := newSortedSet()

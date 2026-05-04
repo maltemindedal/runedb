@@ -161,13 +161,24 @@ func (v *ValueObject) ListValue() ([][]byte, error) {
 	return v.List, nil
 }
 
-// ZSetValue returns the sorted-set payload for a sorted-set value.
+// ZSetValue returns the general sorted-set payload for a sorted-set value.
+// Compact sorted sets are materialized as detached general sorted sets.
 func (v *ValueObject) ZSetValue() (*SortedSet, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState
 	}
 	if v.Kind != ValueKindZSet {
 		return nil, ErrWrongType
+	}
+	if v.ZSetEncoding == ValueEncodingCompact {
+		if v.CompactZSet == nil {
+			return nil, errInvalidValueObjectState
+		}
+		set := newSortedSet()
+		for _, entry := range v.CompactZSet.rangeByRank(0, v.CompactZSet.len()-1) {
+			set.add(entry.Member, entry.Score)
+		}
+		return set, nil
 	}
 	if v.ZSet == nil {
 		return nil, errInvalidValueObjectState
@@ -240,13 +251,24 @@ func newStreamValue(stream *StreamValue, expiresAt int64) *ValueObject {
 	}
 }
 
-// HashValue returns the hash payload for a hash value.
+// HashValue returns the general hash payload for a hash value. Compact hashes
+// are materialized as detached general hash maps.
 func (v *ValueObject) HashValue() (map[string][]byte, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState
 	}
 	if v.Kind != ValueKindHash {
 		return nil, ErrWrongType
+	}
+	if v.HashEncoding == ValueEncodingCompact {
+		if v.CompactHash == nil {
+			return nil, errInvalidValueObjectState
+		}
+		fields := make(map[string][]byte, v.CompactHash.len())
+		for _, entry := range v.CompactHash.all() {
+			fields[entry.Field] = cloneBytes(entry.Value)
+		}
+		return fields, nil
 	}
 	if v.Hash == nil {
 		return nil, errInvalidValueObjectState

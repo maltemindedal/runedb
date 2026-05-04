@@ -1176,6 +1176,22 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("Sorted set creation chooses compact encoding by distinct members", func(t *testing.T) {
+		store := NewStore()
+		entries := make([]ZSetEntry, compactZSetMaxEntries+1)
+		for i := range entries {
+			entries[i] = ZSetEntry{Member: []byte("same"), Score: float64(i)}
+		}
+
+		if _, err := store.ZAdd("leaders", entries); err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+		stored := store.valueObjectForTest("leaders")
+		if stored == nil || stored.ZSetEncoding != ValueEncodingCompact {
+			t.Fatalf("stored zset = %#v, want compact zset for one distinct member", stored)
+		}
+	})
 }
 
 func keysInDistinctShards(t *testing.T, store *Store, count int) []string {

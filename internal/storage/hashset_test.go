@@ -287,6 +287,22 @@ func TestStoreHash(t *testing.T) {
 			t.Fatalf("SnapshotAll() hash = %#v, want a/one", snapshot[0].Hash)
 		}
 	})
+
+	t.Run("Hash creation chooses compact encoding by distinct fields", func(t *testing.T) {
+		store := NewStore()
+		pairs := make([]HashFieldValue, compactHashMaxEntries+1)
+		for i := range pairs {
+			pairs[i] = HashFieldValue{Field: "same", Value: []byte("value")}
+		}
+
+		if _, err := store.HSet("h", pairs); err != nil {
+			t.Fatalf("HSet() error = %v", err)
+		}
+		stored := store.valueObjectForTest("h")
+		if stored == nil || stored.HashEncoding != ValueEncodingCompact {
+			t.Fatalf("stored hash = %#v, want compact hash for one distinct field", stored)
+		}
+	})
 }
 
 func TestStoreSet(t *testing.T) {
