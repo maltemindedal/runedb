@@ -25,36 +25,25 @@ func (s *Store) SAdd(key string, members [][]byte) (int64, error) {
 		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
-	var set map[string]struct{}
+	var added int64
 	if ok {
 		var err error
-		set, err = value.SetValue()
+		added, err = value.setAdd(members)
 		if err != nil {
 			return 0, err
 		}
-	} else {
-		set = make(map[string]struct{}, len(members))
-	}
-
-	added := int64(0)
-	for _, member := range members {
-		// Compiler elides the string allocation for map[string(b)] in read
-		// context, so duplicate members avoid the heap allocation entirely.
-		if _, exists := set[string(member)]; exists {
-			continue
-		}
-		set[string(member)] = struct{}{}
-		added++
-	}
-
-	if ok {
 		value.touch(now)
 		if accounting {
 			newSize := s.approximateValueObjectSize(key, value)
 			s.usedMemory.Add(newSize - oldSize)
 		}
 	} else {
-		newValue := newSetValue(set, 0)
+		newValue := newSetValueForMembers(members, 0)
+		newLen, err := newValue.setLen()
+		if err != nil {
+			return 0, err
+		}
+		added = int64(newLen)
 		s.setKeyLocked(shard, key, newValue)
 		if accounting {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
@@ -86,13 +75,12 @@ func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 		shard.mu.Unlock()
 		return false, nil
 	}
-	set, err := value.SetValue()
+	exists, err := value.setContains(member)
 	if err != nil {
 		shard.mu.RUnlock()
 		return false, err
 	}
 	value.touch(now)
-	_, exists := set[string(member)]
 	shard.mu.RUnlock()
 
 	return exists, nil
@@ -109,17 +97,14 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
+	now := time.Now().UnixMilli()
 	value, ok := shard.data[key]
-	if ok && isExpired(value, time.Now().UnixMilli()) {
+	if ok && isExpired(value, now) {
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
 	if !ok {
 		return 0, nil
-	}
-	set, err := value.SetValue()
-	if err != nil {
-		return 0, err
 	}
 	accounting := s.maxMemoryEnabled()
 	var oldSize int64
@@ -127,19 +112,17 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
-	removed := int64(0)
-	for _, member := range members {
-		// Both map[string(b)] and delete(m, string(b)) are compiler-optimized
-		// to avoid allocating a []byte->string copy.
-		if _, exists := set[string(member)]; !exists {
-			continue
-		}
-		delete(set, string(member))
-		removed++
+	removed, err := value.setRemove(members)
+	if err != nil {
+		return 0, err
 	}
 
-	value.touch(time.Now().UnixMilli())
-	if len(set) == 0 {
+	value.touch(now)
+	setLen, err := value.setLen()
+	if err != nil {
+		return 0, err
+	}
+	if setLen == 0 {
 		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return removed, nil
 	}
@@ -174,17 +157,12 @@ func (s *Store) SMembers(key string) ([][]byte, error) {
 		shard.mu.Unlock()
 		return [][]byte{}, nil
 	}
-	set, err := value.SetValue()
+	members, err := value.setMembers()
 	if err != nil {
 		shard.mu.RUnlock()
 		return nil, err
 	}
 	value.touch(now)
-
-	members := make([][]byte, 0, len(set))
-	for member := range set {
-		members = append(members, []byte(member))
-	}
 	shard.mu.RUnlock()
 
 	return members, nil

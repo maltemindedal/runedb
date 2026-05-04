@@ -402,4 +402,97 @@ func TestStoreSet(t *testing.T) {
 			t.Fatalf("SMembers() error = %v, want ErrWrongType", err)
 		}
 	})
+
+	t.Run("Integer-only set uses intset encoding across commands and snapshots", func(t *testing.T) {
+		store := NewStore()
+		added, err := store.SAdd("s", [][]byte{[]byte("2"), []byte("1"), []byte("2"), []byte("-5")})
+		if err != nil {
+			t.Fatalf("SAdd() error = %v", err)
+		}
+		if added != 3 {
+			t.Fatalf("SAdd() added = %d, want 3", added)
+		}
+		stored := store.valueObjectForTest("s")
+		if stored == nil || stored.Kind != ValueKindSet || stored.SetEncoding != ValueEncodingCompact || stored.IntSet == nil {
+			t.Fatalf("stored set = %#v, want compact intset", stored)
+		}
+
+		exists, err := store.SIsMember("s", []byte("1"))
+		if err != nil || !exists {
+			t.Fatalf("SIsMember(1) = (%v, %v), want (true, nil)", exists, err)
+		}
+		exists, err = store.SIsMember("s", []byte("3"))
+		if err != nil || exists {
+			t.Fatalf("SIsMember(3) = (%v, %v), want (false, nil)", exists, err)
+		}
+
+		removed, err := store.SRem("s", [][]byte{[]byte("2"), []byte("missing")})
+		if err != nil || removed != 1 {
+			t.Fatalf("SRem() = (%d, %v), want (1, nil)", removed, err)
+		}
+		members, err := store.SMembers("s")
+		if err != nil {
+			t.Fatalf("SMembers() error = %v", err)
+		}
+		got := sortedStrings(members)
+		want := []string{"-5", "1"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("SMembers() = %v, want %v", got, want)
+		}
+
+		snapshot, stats := store.SnapshotAll()
+		if stats.TotalKeys != 1 || stats.ExportedKeys != 1 {
+			t.Fatalf("SnapshotAll() stats = %+v, want total/exported 1", stats)
+		}
+		if len(snapshot) != 1 || snapshot[0].Kind != ValueKindSet {
+			t.Fatalf("SnapshotAll() = %#v, want one logical set", snapshot)
+		}
+		got = sortedStrings(snapshot[0].Set)
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Fatalf("SnapshotAll().Set = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("Non-integer and mixed sets use general encoding", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.SAdd("strings", [][]byte{[]byte("a"), []byte("b")}); err != nil {
+			t.Fatalf("SAdd(strings) error = %v", err)
+		}
+		if _, err := store.SAdd("mixed", [][]byte{[]byte("1"), []byte("b")}); err != nil {
+			t.Fatalf("SAdd(mixed) error = %v", err)
+		}
+		if _, err := store.SAdd("noncanonical", [][]byte{[]byte("01")}); err != nil {
+			t.Fatalf("SAdd(noncanonical) error = %v", err)
+		}
+
+		for _, key := range []string{"strings", "mixed", "noncanonical"} {
+			stored := store.valueObjectForTest(key)
+			if stored == nil || stored.SetEncoding != ValueEncodingGeneral || stored.Set == nil {
+				t.Fatalf("stored set %q = %#v, want general set", key, stored)
+			}
+		}
+	})
+
+	t.Run("SRem deletes empty intset", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.SAdd("s", [][]byte{[]byte("1")}); err != nil {
+			t.Fatalf("SAdd() error = %v", err)
+		}
+		removed, err := store.SRem("s", [][]byte{[]byte("1")})
+		if err != nil || removed != 1 {
+			t.Fatalf("SRem() = (%d, %v), want (1, nil)", removed, err)
+		}
+		if got := store.Len(); got != 0 {
+			t.Fatalf("Len() = %d, want 0", got)
+		}
+	})
+}
+
+func sortedStrings(values [][]byte) []string {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		items = append(items, string(value))
+	}
+	sort.Strings(items)
+	return items
 }

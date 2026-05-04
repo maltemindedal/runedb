@@ -243,6 +243,178 @@ func (v *ValueObject) cloneZSetValue(expiresAt int64) (*ValueObject, error) {
 	return newZSetValue(cloneSortedSet(v.ZSet), expiresAt), nil
 }
 
+func (v *ValueObject) setLen() (int, error) {
+	if v == nil {
+		return 0, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return 0, ErrWrongType
+	}
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return 0, errInvalidValueObjectState
+		}
+		return v.IntSet.len(), nil
+	}
+	if v.Set == nil {
+		return 0, errInvalidValueObjectState
+	}
+	return len(v.Set), nil
+}
+
+func (v *ValueObject) setAdd(members [][]byte) (int64, error) {
+	if v == nil {
+		return 0, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return 0, ErrWrongType
+	}
+
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return 0, errInvalidValueObjectState
+		}
+		added, ok := v.IntSet.addMany(members)
+		if !ok {
+			set := v.IntSet.generalSet()
+			v.IntSet = nil
+			v.Set = set
+			v.SetEncoding = ValueEncodingGeneral
+			return mustAddSetMembers(set, members), nil
+		}
+		return added, nil
+	}
+
+	if v.Set == nil {
+		return 0, errInvalidValueObjectState
+	}
+	return mustAddSetMembers(v.Set, members), nil
+}
+
+func (v *ValueObject) setContains(member []byte) (bool, error) {
+	if v == nil {
+		return false, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return false, ErrWrongType
+	}
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return false, errInvalidValueObjectState
+		}
+		return v.IntSet.contains(member), nil
+	}
+	if v.Set == nil {
+		return false, errInvalidValueObjectState
+	}
+	_, exists := v.Set[string(member)]
+	return exists, nil
+}
+
+func (v *ValueObject) setRemove(members [][]byte) (int64, error) {
+	if v == nil {
+		return 0, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return 0, ErrWrongType
+	}
+
+	removed := int64(0)
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return 0, errInvalidValueObjectState
+		}
+		for _, member := range members {
+			if v.IntSet.remove(member) {
+				removed++
+			}
+		}
+		return removed, nil
+	}
+
+	if v.Set == nil {
+		return 0, errInvalidValueObjectState
+	}
+	for _, member := range members {
+		if _, exists := v.Set[string(member)]; !exists {
+			continue
+		}
+		delete(v.Set, string(member))
+		removed++
+	}
+	return removed, nil
+}
+
+func (v *ValueObject) setMembers() ([][]byte, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return nil, ErrWrongType
+	}
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return nil, errInvalidValueObjectState
+		}
+		return v.IntSet.members(), nil
+	}
+	if v.Set == nil {
+		return nil, errInvalidValueObjectState
+	}
+
+	members := make([][]byte, 0, len(v.Set))
+	for member := range v.Set {
+		members = append(members, []byte(member))
+	}
+	return members, nil
+}
+
+func (v *ValueObject) cloneSetValue(expiresAt int64) (*ValueObject, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindSet {
+		return nil, ErrWrongType
+	}
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return nil, errInvalidValueObjectState
+		}
+		return newIntSetValue(cloneIntSet(v.IntSet), expiresAt), nil
+	}
+	if v.Set == nil {
+		return nil, errInvalidValueObjectState
+	}
+
+	members := make(map[string]struct{}, len(v.Set))
+	for member := range v.Set {
+		members[member] = struct{}{}
+	}
+	return newSetValue(members, expiresAt), nil
+}
+
+func newSetValueForMembers(members [][]byte, expiresAt int64) *ValueObject {
+	if set, ok := newIntSet(members); ok {
+		return newIntSetValue(set, expiresAt)
+	}
+
+	set := make(map[string]struct{}, len(members))
+	mustAddSetMembers(set, members)
+	return newSetValue(set, expiresAt)
+}
+
+func mustAddSetMembers(set map[string]struct{}, members [][]byte) int64 {
+	added := int64(0)
+	for _, member := range members {
+		if _, exists := set[string(member)]; exists {
+			continue
+		}
+		set[string(member)] = struct{}{}
+		added++
+	}
+	return added
+}
+
 func newHashValueForPairs(pairs []HashFieldValue, expiresAt int64) *ValueObject {
 	compact := newCompactHash(pairs)
 	if compact.len() <= compactHashMaxEntries {

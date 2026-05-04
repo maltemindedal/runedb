@@ -787,6 +787,20 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 					entry.Hash = append(entry.Hash, HashFieldValue{Field: hashEntry.Field, Value: clonedValue})
 				}
 			case ValueKindSet:
+				if value.SetEncoding == ValueEncodingCompact {
+					setMembers, err := value.setMembers()
+					if err != nil {
+						continue
+					}
+					entry.Set = make([][]byte, len(setMembers))
+					for j, member := range setMembers {
+						valueArena, entry.Set[j] = appendClonedBytesArena(valueArena, member)
+					}
+					break
+				}
+				if value.Set == nil {
+					continue
+				}
 				entry.Set = make([][]byte, 0, len(value.Set))
 				for member := range value.Set {
 					var clonedMember []byte

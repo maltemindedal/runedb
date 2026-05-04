@@ -305,29 +305,28 @@ func (s *Store) SAddWithEviction(key string, members [][]byte) (int64, []string,
 	defer s.writeUnlockAllShards()
 
 	shard, current := s.prepareExistingValueLocked(key, now)
-	set := make(map[string]struct{}, len(members))
-	expiresAt := int64(0)
+	var (
+		newValue *ValueObject
+		added    int64
+		err      error
+	)
 	if current != nil {
-		existing, err := current.SetValue()
+		newValue, err = current.cloneSetValue(current.ExpiresAt)
 		if err != nil {
 			return 0, nil, err
 		}
-		for member := range existing {
-			set[member] = struct{}{}
+		added, err = newValue.setAdd(members)
+		if err != nil {
+			return 0, nil, err
 		}
-		expiresAt = current.ExpiresAt
-	}
-
-	added := int64(0)
-	for _, member := range members {
-		if _, ok := set[string(member)]; ok {
-			continue
+	} else {
+		newValue = newSetValueForMembers(members, 0)
+		newLen, err := newValue.setLen()
+		if err != nil {
+			return 0, nil, err
 		}
-		set[string(member)] = struct{}{}
-		added++
+		added = int64(newLen)
 	}
-
-	newValue := newSetValue(set, expiresAt)
 	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
@@ -416,7 +415,14 @@ func (s *Store) approximateValueObjectSize(key string, value *ValueObject) int64
 			size += int64(len(field) + len(raw))
 		}
 	case ValueKindSet:
-		size += approxCollectionOverhead + int64(len(value.Set))*approxSetEntryOverhead
+		size += approxCollectionOverhead
+		if value.SetEncoding == ValueEncodingCompact {
+			if value.IntSet != nil {
+				size += int64(value.IntSet.len()) * 8
+			}
+			break
+		}
+		size += int64(len(value.Set)) * approxSetEntryOverhead
 		for member := range value.Set {
 			size += int64(len(member))
 		}
