@@ -11,6 +11,16 @@ var errInvalidValueObjectState = errors.New("storage: invalid value object state
 // ValueKind identifies the logical data shape of a stored value.
 type ValueKind string
 
+// ValueEncoding identifies the internal physical representation of a stored value.
+type ValueEncoding uint8
+
+const (
+	// ValueEncodingGeneral stores a value in its general-purpose representation.
+	ValueEncodingGeneral ValueEncoding = iota
+	// ValueEncodingCompact stores a small collection in a contiguous compact representation.
+	ValueEncodingCompact
+)
+
 const (
 	// ValueKindString is the Phase 1 string storage type used by SET/GET.
 	ValueKindString ValueKind = "string"
@@ -99,8 +109,12 @@ type ValueObject struct {
 	String         []byte
 	List           [][]byte
 	ZSet           *SortedSet
+	CompactZSet    *CompactZSet
+	ZSetEncoding   ValueEncoding
 	Stream         *StreamValue
 	Hash           map[string][]byte
+	CompactHash    *CompactHash
+	HashEncoding   ValueEncoding
 	Set            map[string]struct{}
 	ExpiresAt      int64
 	LastAccessedAt int64
@@ -207,6 +221,16 @@ func newZSetValue(set *SortedSet, expiresAt int64) *ValueObject {
 	}
 }
 
+func newCompactZSetValue(set *CompactZSet, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		CompactZSet:    set,
+		ZSetEncoding:   ValueEncodingCompact,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindZSet,
+	}
+}
+
 func newStreamValue(stream *StreamValue, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		Stream:         stream,
@@ -249,6 +273,16 @@ func (v *ValueObject) SetValue() (map[string]struct{}, error) {
 func newHashValue(fields map[string][]byte, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		Hash:           fields,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindHash,
+	}
+}
+
+func newCompactHashValue(hash *CompactHash, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		CompactHash:    hash,
+		HashEncoding:   ValueEncodingCompact,
 		ExpiresAt:      expiresAt,
 		LastAccessedAt: time.Now().UnixMilli(),
 		Kind:           ValueKindHash,

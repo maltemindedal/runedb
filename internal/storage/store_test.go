@@ -1129,6 +1129,53 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 			t.Fatalf("ZRange() = %#v, want fresh member", values)
 		}
 	})
+
+	t.Run("Small sorted set uses compact encoding across commands and snapshots", func(t *testing.T) {
+		store := NewStore()
+		added, err := store.ZAdd("leaders", []ZSetEntry{
+			{Member: []byte("beta"), Score: 2},
+			{Member: []byte("alpha"), Score: 1},
+			{Member: []byte("aardvark"), Score: 2},
+		})
+		if err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+		if added != 3 {
+			t.Fatalf("ZAdd() added = %d, want 3", added)
+		}
+		stored := store.valueObjectForTest("leaders")
+		if stored == nil || stored.Kind != ValueKindZSet || stored.ZSetEncoding != ValueEncodingCompact || stored.CompactZSet == nil {
+			t.Fatalf("stored zset = %#v, want compact zset", stored)
+		}
+
+		added, err = store.ZAdd("leaders", []ZSetEntry{{Member: []byte("beta"), Score: 0.5}})
+		if err != nil || added != 0 {
+			t.Fatalf("ZAdd() update = (%d, %v), want (0, nil)", added, err)
+		}
+		values, err := store.ZRange("leaders", 0, -1)
+		if err != nil {
+			t.Fatalf("ZRange() error = %v", err)
+		}
+		want := []string{"beta", "alpha", "aardvark"}
+		for i, value := range values {
+			if value.Member != want[i] {
+				t.Fatalf("ZRange()[%d].Member = %q, want %q", i, value.Member, want[i])
+			}
+		}
+
+		snapshot, stats := store.SnapshotAll()
+		if stats.TotalKeys != 1 || stats.ExportedKeys != 1 {
+			t.Fatalf("SnapshotAll() stats = %+v, want total/exported 1", stats)
+		}
+		if len(snapshot) != 1 || snapshot[0].Kind != ValueKindZSet || len(snapshot[0].ZSet) != 3 {
+			t.Fatalf("SnapshotAll() = %#v, want one logical sorted set", snapshot)
+		}
+		for i, entry := range snapshot[0].ZSet {
+			if entry.Member != want[i] {
+				t.Fatalf("SnapshotAll().ZSet[%d].Member = %q, want %q", i, entry.Member, want[i])
+			}
+		}
+	})
 }
 
 func keysInDistinctShards(t *testing.T, store *Store, count int) []string {
