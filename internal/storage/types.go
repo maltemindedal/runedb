@@ -116,6 +116,8 @@ type ValueObject struct {
 	CompactHash    *CompactHash
 	HashEncoding   ValueEncoding
 	Set            map[string]struct{}
+	IntSet         *IntSet
+	SetEncoding    ValueEncoding
 	ExpiresAt      int64
 	LastAccessedAt int64
 	Kind           ValueKind
@@ -277,13 +279,20 @@ func (v *ValueObject) HashValue() (map[string][]byte, error) {
 	return v.Hash, nil
 }
 
-// SetValue returns the set payload for a set value.
+// SetValue returns the general set payload for a set value. Integer sets are
+// materialized as detached general set maps.
 func (v *ValueObject) SetValue() (map[string]struct{}, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState
 	}
 	if v.Kind != ValueKindSet {
 		return nil, ErrWrongType
+	}
+	if v.SetEncoding == ValueEncodingCompact {
+		if v.IntSet == nil {
+			return nil, errInvalidValueObjectState
+		}
+		return v.IntSet.generalSet(), nil
 	}
 	if v.Set == nil {
 		return nil, errInvalidValueObjectState
@@ -314,6 +323,16 @@ func newCompactHashValue(hash *CompactHash, expiresAt int64) *ValueObject {
 func newSetValue(members map[string]struct{}, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		Set:            members,
+		ExpiresAt:      expiresAt,
+		LastAccessedAt: time.Now().UnixMilli(),
+		Kind:           ValueKindSet,
+	}
+}
+
+func newIntSetValue(members *IntSet, expiresAt int64) *ValueObject {
+	return &ValueObject{
+		IntSet:         members,
+		SetEncoding:    ValueEncodingCompact,
 		ExpiresAt:      expiresAt,
 		LastAccessedAt: time.Now().UnixMilli(),
 		Kind:           ValueKindSet,

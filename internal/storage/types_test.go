@@ -60,6 +60,20 @@ func TestValueObjectAccessorsMaterializeCompactValues(t *testing.T) {
 	if len(entries) != 1 || entries[0].Member != "m" || entries[0].Score != 1 {
 		t.Fatalf("ZSetValue().rangeByRank() = %#v, want m/1", entries)
 	}
+
+	setValue := newIntSetValue(&IntSet{values: []int64{1}}, 0)
+	set, err := setValue.SetValue()
+	if err != nil {
+		t.Fatalf("SetValue() error = %v", err)
+	}
+	if _, ok := set["1"]; !ok {
+		t.Fatalf("SetValue()[1] missing")
+	}
+	set["2"] = struct{}{}
+	contains, err := setValue.setContains([]byte("2"))
+	if err != nil || contains {
+		t.Fatalf("compact set after materialized mutation = (%v, %v), want (false, nil)", contains, err)
+	}
 }
 
 func TestStoreRejectsInvalidTaggedUnionState(t *testing.T) {

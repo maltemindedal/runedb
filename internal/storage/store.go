@@ -787,11 +787,13 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 					entry.Hash = append(entry.Hash, HashFieldValue{Field: hashEntry.Field, Value: clonedValue})
 				}
 			case ValueKindSet:
-				entry.Set = make([][]byte, 0, len(value.Set))
-				for member := range value.Set {
-					var clonedMember []byte
-					valueArena, clonedMember = appendClonedStringBytesArena(valueArena, member)
-					entry.Set = append(entry.Set, clonedMember)
+				setMembers, err := value.setMembers()
+				if err != nil {
+					continue
+				}
+				entry.Set = make([][]byte, len(setMembers))
+				for j, member := range setMembers {
+					valueArena, entry.Set[j] = appendClonedBytesArena(valueArena, member)
 				}
 			}
 
@@ -927,13 +929,6 @@ func appendClonedBytesArena(arena []byte, src []byte) ([]byte, []byte) {
 		return arena, nil
 	}
 
-	start := len(arena)
-	arena = append(arena, src...)
-	cloned := arena[start:len(arena):len(arena)]
-	return arena, cloned
-}
-
-func appendClonedStringBytesArena(arena []byte, src string) ([]byte, []byte) {
 	start := len(arena)
 	arena = append(arena, src...)
 	cloned := arena[start:len(arena):len(arena)]
