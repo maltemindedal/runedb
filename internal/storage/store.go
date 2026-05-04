@@ -458,28 +458,26 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	}
 
 	var (
-		set       *SortedSet
-		expiresAt int64
+		newValue *ValueObject
+		added    int64
+		err      error
 	)
 	if ok {
-		var err error
-		set, err = value.ZSetValue()
+		added, err = value.zsetAdd(entries)
 		if err != nil {
 			return 0, err
 		}
-		expiresAt = value.ExpiresAt
+		value.touch(now)
+		newValue = value
 	} else {
-		set = newSortedSet()
-	}
-
-	added := int64(0)
-	for _, entry := range entries {
-		if set.add(string(entry.Member), entry.Score) {
-			added++
+		newValue = newZSetValueForEntries(entries, 0)
+		newLen, err := newValue.zsetLen()
+		if err != nil {
+			return 0, err
 		}
+		added = int64(newLen)
 	}
 
-	newValue := newZSetValue(set, expiresAt)
 	s.setKeyLocked(shard, key, newValue)
 	if accounting {
 		newSize := s.approximateValueObjectSize(key, newValue)
@@ -510,20 +508,24 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 		shard.mu.Unlock()
 		return []ZSetRangeEntry{}, nil
 	}
-	set, err := value.ZSetValue()
+	setLen, err := value.zsetLen()
 	if err != nil {
 		shard.mu.RUnlock()
 		return nil, err
 	}
 	value.touch(now)
 
-	from, to, ok := normalizeListRange(set.len(), start, stop)
+	from, to, ok := normalizeListRange(setLen, start, stop)
 	if !ok {
 		shard.mu.RUnlock()
 		return []ZSetRangeEntry{}, nil
 	}
 
-	entries := set.rangeByRank(from, to)
+	entries, err := value.zsetRangeByRank(from, to)
+	if err != nil {
+		shard.mu.RUnlock()
+		return nil, err
+	}
 	shard.mu.RUnlock()
 
 	return entries, nil
@@ -752,8 +754,15 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 					valueArena, entry.List[j] = appendClonedBytesArena(valueArena, item)
 				}
 			case ValueKindZSet:
-				if value.ZSet != nil {
-					entry.ZSet = value.ZSet.rangeByRank(0, value.ZSet.len()-1)
+				setLen, err := value.zsetLen()
+				if err != nil {
+					continue
+				}
+				if setLen > 0 {
+					entry.ZSet, err = value.zsetRangeByRank(0, setLen-1)
+					if err != nil {
+						continue
+					}
 				}
 			case ValueKindStream:
 				if value.Stream != nil {
@@ -767,11 +776,15 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 					}
 				}
 			case ValueKindHash:
-				entry.Hash = make([]HashFieldValue, 0, len(value.Hash))
-				for field, raw := range value.Hash {
+				hashEntries, err := value.hashEntries()
+				if err != nil {
+					continue
+				}
+				entry.Hash = make([]HashFieldValue, 0, len(hashEntries))
+				for _, hashEntry := range hashEntries {
 					var clonedValue []byte
-					valueArena, clonedValue = appendClonedBytesArena(valueArena, raw)
-					entry.Hash = append(entry.Hash, HashFieldValue{Field: field, Value: clonedValue})
+					valueArena, clonedValue = appendClonedBytesArena(valueArena, hashEntry.Value)
+					entry.Hash = append(entry.Hash, HashFieldValue{Field: hashEntry.Field, Value: clonedValue})
 				}
 			case ValueKindSet:
 				entry.Set = make([][]byte, 0, len(value.Set))

@@ -238,6 +238,71 @@ func TestStoreHash(t *testing.T) {
 			t.Fatalf("HGet() after expiry = (%v, %v)", ok, err)
 		}
 	})
+
+	t.Run("Small hash uses compact encoding across commands and snapshots", func(t *testing.T) {
+		store := NewStore()
+		added, err := store.HSet("h", []HashFieldValue{
+			{Field: "a", Value: []byte("1")},
+			{Field: "b", Value: []byte("2")},
+		})
+		if err != nil {
+			t.Fatalf("HSet() error = %v", err)
+		}
+		if added != 2 {
+			t.Fatalf("HSet() added = %d, want 2", added)
+		}
+		stored := store.valueObjectForTest("h")
+		if stored == nil || stored.Kind != ValueKindHash || stored.HashEncoding != ValueEncodingCompact || stored.CompactHash == nil {
+			t.Fatalf("stored hash = %#v, want compact hash", stored)
+		}
+
+		added, err = store.HSet("h", []HashFieldValue{{Field: "a", Value: []byte("one")}})
+		if err != nil || added != 0 {
+			t.Fatalf("HSet() update = (%d, %v), want (0, nil)", added, err)
+		}
+		got, ok, err := store.HGet("h", "a")
+		if err != nil || !ok || string(got) != "one" {
+			t.Fatalf("HGet() = (%q, %v, %v), want (one, true, nil)", string(got), ok, err)
+		}
+		removed, err := store.HDel("h", []string{"b"})
+		if err != nil || removed != 1 {
+			t.Fatalf("HDel() = (%d, %v), want (1, nil)", removed, err)
+		}
+		entries, err := store.HGetAll("h")
+		if err != nil {
+			t.Fatalf("HGetAll() error = %v", err)
+		}
+		if len(entries) != 1 || entries[0].Field != "a" || string(entries[0].Value) != "one" {
+			t.Fatalf("HGetAll() = %#v, want a/one", entries)
+		}
+
+		snapshot, stats := store.SnapshotAll()
+		if stats.TotalKeys != 1 || stats.ExportedKeys != 1 {
+			t.Fatalf("SnapshotAll() stats = %+v, want total/exported 1", stats)
+		}
+		if len(snapshot) != 1 || snapshot[0].Kind != ValueKindHash || len(snapshot[0].Hash) != 1 {
+			t.Fatalf("SnapshotAll() = %#v, want one logical hash", snapshot)
+		}
+		if snapshot[0].Hash[0].Field != "a" || string(snapshot[0].Hash[0].Value) != "one" {
+			t.Fatalf("SnapshotAll() hash = %#v, want a/one", snapshot[0].Hash)
+		}
+	})
+
+	t.Run("Hash creation chooses compact encoding by distinct fields", func(t *testing.T) {
+		store := NewStore()
+		pairs := make([]HashFieldValue, compactHashMaxEntries+1)
+		for i := range pairs {
+			pairs[i] = HashFieldValue{Field: "same", Value: []byte("value")}
+		}
+
+		if _, err := store.HSet("h", pairs); err != nil {
+			t.Fatalf("HSet() error = %v", err)
+		}
+		stored := store.valueObjectForTest("h")
+		if stored == nil || stored.HashEncoding != ValueEncodingCompact {
+			t.Fatalf("stored hash = %#v, want compact hash for one distinct field", stored)
+		}
+	})
 }
 
 func TestStoreSet(t *testing.T) {

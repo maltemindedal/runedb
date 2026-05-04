@@ -25,33 +25,25 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
 		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
-	var fields map[string][]byte
+	var added int64
 	if ok {
 		var err error
-		fields, err = value.HashValue()
+		added, err = value.hashSet(pairs)
 		if err != nil {
 			return 0, err
 		}
-	} else {
-		fields = make(map[string][]byte, len(pairs))
-	}
-
-	added := int64(0)
-	for _, pair := range pairs {
-		if _, exists := fields[pair.Field]; !exists {
-			added++
-		}
-		fields[pair.Field] = cloneBytes(pair.Value)
-	}
-
-	if ok {
 		value.touch(now)
 		if accounting {
 			newSize := s.approximateValueObjectSize(key, value)
 			s.usedMemory.Add(newSize - oldSize)
 		}
 	} else {
-		newValue := newHashValue(fields, 0)
+		newValue := newHashValueForPairs(pairs, 0)
+		newLen, err := newValue.hashLen()
+		if err != nil {
+			return 0, err
+		}
+		added = int64(newLen)
 		s.setKeyLocked(shard, key, newValue)
 		if accounting {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
@@ -83,20 +75,20 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 		shard.mu.Unlock()
 		return nil, false, nil
 	}
-	fields, err := value.HashValue()
+	raw, exists, err := value.hashGet(field)
 	if err != nil {
 		shard.mu.RUnlock()
 		return nil, false, err
 	}
 	value.touch(now)
-	raw, exists := fields[field]
 	if !exists {
 		shard.mu.RUnlock()
 		return nil, false, nil
 	}
+	cloned := cloneBytes(raw)
 	shard.mu.RUnlock()
 
-	return cloneBytes(raw), true, nil
+	return cloned, true, nil
 }
 
 // HDel removes the named fields from the hash stored at key and returns the
@@ -118,26 +110,23 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 	if !ok {
 		return 0, nil
 	}
-	hash, err := value.HashValue()
-	if err != nil {
-		return 0, err
-	}
 	accounting := s.maxMemoryEnabled()
 	var oldSize int64
 	if accounting {
 		oldSize = s.approximateValueObjectSize(key, value)
 	}
 
-	removed := int64(0)
-	for _, field := range fields {
-		if _, exists := hash[field]; exists {
-			delete(hash, field)
-			removed++
-		}
+	removed, err := value.hashDel(fields)
+	if err != nil {
+		return 0, err
 	}
 
 	value.touch(time.Now().UnixMilli())
-	if len(hash) == 0 {
+	hashLen, err := value.hashLen()
+	if err != nil {
+		return 0, err
+	}
+	if hashLen == 0 {
 		s.deleteKeyWithSizeLocked(shard, key, oldSize)
 		return removed, nil
 	}
@@ -172,22 +161,16 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 		shard.mu.Unlock()
 		return []HashFieldValue{}, nil
 	}
-	hash, err := value.HashValue()
+	entries, err := value.hashEntries()
 	if err != nil {
 		shard.mu.RUnlock()
 		return nil, err
 	}
 	value.touch(now)
-
-	entries := make([]HashFieldValue, 0, len(hash))
-	for field, raw := range hash {
-		entries = append(entries, HashFieldValue{Field: field, Value: raw})
-	}
-	shard.mu.RUnlock()
-
 	for i := range entries {
 		entries[i].Value = cloneBytes(entries[i].Value)
 	}
+	shard.mu.RUnlock()
 
 	return entries, nil
 }

@@ -36,6 +36,32 @@ func TestValueObjectAccessorsRejectInvalidTaggedUnionState(t *testing.T) {
 	}
 }
 
+func TestValueObjectAccessorsMaterializeCompactValues(t *testing.T) {
+	hashValue := newCompactHashValue(newCompactHash([]HashFieldValue{{Field: "f", Value: []byte("v")}}), 0)
+	hash, err := hashValue.HashValue()
+	if err != nil {
+		t.Fatalf("HashValue() error = %v", err)
+	}
+	if string(hash["f"]) != "v" {
+		t.Fatalf("HashValue()[f] = %q, want v", string(hash["f"]))
+	}
+	hash["f"][0] = 'V'
+	got, ok, err := hashValue.hashGet("f")
+	if err != nil || !ok || string(got) != "v" {
+		t.Fatalf("compact hash after materialized mutation = (%q, %v, %v), want (v, true, nil)", string(got), ok, err)
+	}
+
+	zsetValue := newCompactZSetValue(newCompactZSet([]ZSetEntry{{Member: []byte("m"), Score: 1}}), 0)
+	zset, err := zsetValue.ZSetValue()
+	if err != nil {
+		t.Fatalf("ZSetValue() error = %v", err)
+	}
+	entries := zset.rangeByRank(0, 0)
+	if len(entries) != 1 || entries[0].Member != "m" || entries[0].Score != 1 {
+		t.Fatalf("ZSetValue().rangeByRank() = %#v, want m/1", entries)
+	}
+}
+
 func TestStoreRejectsInvalidTaggedUnionState(t *testing.T) {
 	store := NewStore()
 	store.setValueObjectForTest("leaders", &ValueObject{Kind: ValueKindZSet})

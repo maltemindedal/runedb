@@ -34,3 +34,11 @@ func (s *Store) lastAccessedAtForTest(key string) int64 {
 
 	return value.lastAccessed()
 }
+
+func (s *Store) valueObjectForTest(key string) *ValueObject {
+	shard := s.shardForKey(key)
+	shard.mu.RLock()
+	defer shard.mu.RUnlock()
+
+	return shard.data[key]
+}

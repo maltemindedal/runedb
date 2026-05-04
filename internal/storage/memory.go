@@ -174,29 +174,27 @@ func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []stri
 
 	shard, current := s.prepareExistingValueLocked(key, now)
 	var (
-		set       *SortedSet
-		expiresAt int64
+		newValue *ValueObject
+		added    int64
+		err      error
 	)
 	if current != nil {
-		var err error
-		set, err = current.ZSetValue()
+		newValue, err = current.cloneZSetValue(current.ExpiresAt)
 		if err != nil {
 			return 0, nil, err
 		}
-		expiresAt = current.ExpiresAt
-		set = cloneSortedSet(set)
-	} else {
-		set = newSortedSet()
-	}
-
-	added := int64(0)
-	for _, entry := range entries {
-		if set.add(string(entry.Member), entry.Score) {
-			added++
+		added, err = newValue.zsetAdd(entries)
+		if err != nil {
+			return 0, nil, err
 		}
+	} else {
+		newValue = newZSetValueForEntries(entries, 0)
+		newLen, err := newValue.zsetLen()
+		if err != nil {
+			return 0, nil, err
+		}
+		added = int64(newLen)
 	}
-
-	newValue := newZSetValue(set, expiresAt)
 	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
@@ -263,28 +261,28 @@ func (s *Store) HSetWithEviction(key string, pairs []HashFieldValue) (int64, []s
 	defer s.writeUnlockAllShards()
 
 	shard, current := s.prepareExistingValueLocked(key, now)
-	fields := make(map[string][]byte, len(pairs))
-	expiresAt := int64(0)
+	var (
+		newValue *ValueObject
+		added    int64
+		err      error
+	)
 	if current != nil {
-		existing, err := current.HashValue()
+		newValue, err = current.cloneHashValue(current.ExpiresAt)
 		if err != nil {
 			return 0, nil, err
 		}
-		for field, raw := range existing {
-			fields[field] = cloneBytes(raw)
+		added, err = newValue.hashSet(pairs)
+		if err != nil {
+			return 0, nil, err
 		}
-		expiresAt = current.ExpiresAt
-	}
-
-	added := int64(0)
-	for _, pair := range pairs {
-		if _, ok := fields[pair.Field]; !ok {
-			added++
+	} else {
+		newValue = newHashValueForPairs(pairs, 0)
+		newLen, err := newValue.hashLen()
+		if err != nil {
+			return 0, nil, err
 		}
-		fields[pair.Field] = cloneBytes(pair.Value)
+		added = int64(newLen)
 	}
-
-	newValue := newHashValue(fields, expiresAt)
 	evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
 	if err != nil {
 		return 0, nil, err
@@ -406,7 +404,14 @@ func (s *Store) approximateValueObjectSize(key string, value *ValueObject) int64
 			size += int64(len(item))
 		}
 	case ValueKindHash:
-		size += approxCollectionOverhead + int64(len(value.Hash))*approxHashEntryOverhead
+		size += approxCollectionOverhead
+		if value.HashEncoding == ValueEncodingCompact {
+			if value.CompactHash != nil {
+				size += int64(len(value.CompactHash.entries))*approxHashEntryOverhead + int64(len(value.CompactHash.arena))
+			}
+			break
+		}
+		size += int64(len(value.Hash)) * approxHashEntryOverhead
 		for field, raw := range value.Hash {
 			size += int64(len(field) + len(raw))
 		}
@@ -417,6 +422,12 @@ func (s *Store) approximateValueObjectSize(key string, value *ValueObject) int64
 		}
 	case ValueKindZSet:
 		size += approxCollectionOverhead
+		if value.ZSetEncoding == ValueEncodingCompact {
+			if value.CompactZSet != nil {
+				size += int64(len(value.CompactZSet.entries))*approxZSetEntryOverhead + int64(len(value.CompactZSet.arena))
+			}
+			break
+		}
 		if value.ZSet != nil {
 			size += int64(len(value.ZSet.index)) * approxZSetEntryOverhead
 			for member := range value.ZSet.index {
