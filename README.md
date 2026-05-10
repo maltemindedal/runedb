@@ -10,11 +10,12 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - append-only-file durability with startup replay, configurable `appendfsync`, and `BGREWRITEAOF`
 - optional RDB startup loading and graceful shutdown snapshots
 - active connection registry for cleaner shutdowns
-- Redis-compatible command coverage for strings, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication, and observability
+- Redis-compatible command coverage for strings, bitmaps, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication, and observability
 - password-gated connections via `--requirepass` and `AUTH <password>`
 - Redis-style execution error prefixes for command failures
 - connection-scoped client state for auth, transactions, pub/sub, and replication
 - `--maxmemory` memory-pressure eviction with approximate accounting and probabilistic LRU sampling
+- compact internal encodings for small hashes and sorted sets
 - `INFO`, `SLOWLOG`, and `MONITOR` support for operational visibility
 - multi-client shutdown coverage
 - parser and store contention benchmarks
@@ -46,6 +47,8 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 ### Storage
 
 - unified value model for strings, hashes, lists, sets, sorted sets, and streams
+- bitmap operations over string values
+- compact internal encodings for small hashes and sorted sets
 - fixed shard set with per-shard `sync.RWMutex` locking
 - passive TTL eviction on reads
 - active TTL eviction in a background loop
@@ -68,6 +71,9 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - `ECHO <message>`
 - `SET <key> <value> [EX seconds|PX milliseconds]`
 - `GET <key>`
+- `SETBIT <key> <offset> <0|1>`
+- `GETBIT <key> <offset>`
+- `BITCOUNT <key> [start end]`
 - `DEL <key> [key ...]`
 - `INCR <key>`
 - `HSET <key> <field> <value> [field value ...]`
@@ -118,12 +124,14 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - `cmd/runedb` — application entrypoint
 - `internal/config` — runtime config and flags
 - `internal/logger` — shared `log/slog` setup
+- `internal/aof` — append-only-file replay, writing, and rewrite support
 - `internal/protocol` — RESP parsing and encoding
+- `internal/rdb` — RDB loading and snapshot writing
 - `internal/storage` — key/value store and TTL eviction
 - `internal/command` — command decoding and execution
 - `internal/server` — TCP listener, handlers, and connection registry
 - `test` — end-to-end TCP integration tests
-- `docs` — PRD, architecture notes, and implementation checklist
+- `docs` — architecture notes and agent support documentation
 
 ## Running locally
 
@@ -132,8 +140,13 @@ From `d:\10_personal\runedb`:
 ### Start the server
 
 - `go run ./cmd/runedb --port 6379`
+- `go run ./cmd/runedb --host 127.0.0.1 --port 6379 --log-level debug`
+- `go run ./cmd/runedb --port 6379 --requirepass secret`
 - `go run ./cmd/runedb --port 6379 --aof appendonly.aof --appendfsync everysec`
+- `go run ./cmd/runedb --port 6379 --rdb dump.rdb --dump dump.rdb`
 - `go run ./cmd/runedb --port 6379 --maxmemory 104857600`
+- `go run ./cmd/runedb --port 6379 --eviction-interval 100ms --eviction-sample-size 20`
+- `go run ./cmd/runedb --port 6379 --slowlog-log-slower-than 10000`
 - `go run ./cmd/runedb --port 6380 --replicaof 127.0.0.1:6379 --masterauth secret`
 
 ### Validate the project
@@ -164,6 +177,9 @@ Then try:
 - `DEL name` → `(integer) 1`
 - `INCR counter` → `(integer) 1`
 - `INCR counter` → `(integer) 2`
+- `SETBIT flags 7 1` → `(integer) 0`
+- `GETBIT flags 7` → `(integer) 1`
+- `BITCOUNT flags` → `(integer) 1`
 - `SET temp 1 PX 100`
 - wait a moment, then `GET temp` → `(nil)`
 - `SET bad hello` → `OK`
@@ -176,6 +192,7 @@ Then try:
 - `SET` currently supports only `EX` and `PX`
 - unsupported `SET` modifiers still return syntax-style errors instead of being ignored
 - `GET` on a missing key returns a null bulk string
+- `SETBIT`, `GETBIT`, and `BITCOUNT` operate on string values and enforce Redis-compatible bitmap offsets up to `2^32 - 1`
 - `DEL` ignores missing keys and returns the number of keys removed
 - `INCR` initializes missing keys to `1` and works on base-10 signed 64-bit integer strings
 - type-specific commands return Redis-style `WRONGTYPE` errors when a key holds a different value kind
@@ -201,4 +218,4 @@ Then try:
 ## Related docs
 
 - `docs/ARCHITECTURE.md` — package responsibilities and design rationale
-- `docs/PRD.md` — project goals and later-phase roadmap
+- `CONTEXT.md` — domain glossary, capability summary, and current boundaries for agents and contributors

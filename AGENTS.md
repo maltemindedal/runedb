@@ -79,6 +79,8 @@ Triage uses the canonical label vocabulary: `needs-triage`, `needs-info`, `ready
 
 This repo uses a single-context domain-doc layout. See `docs/agents/domain.md`.
 
+Read `CONTEXT.md` before exploring the codebase for domain terms, current capabilities, and known boundaries. Keep new issue titles, tests, refactors, and architecture notes aligned with the glossary in that file.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
