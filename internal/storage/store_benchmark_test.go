@@ -29,6 +29,17 @@ func BenchmarkStore(b *testing.B) {
 		}
 	})
 
+	b.Run("SetBit same key", func(b *testing.B) {
+		store := NewStore()
+		b.ReportAllocs()
+
+		for i := 0; i < b.N; i++ {
+			if _, err := store.SetBit("bitmap", int64(i%64), 1); err != nil {
+				b.Fatalf("SetBit() error = %v", err)
+			}
+		}
+	})
+
 	b.Run("Get hit", func(b *testing.B) {
 		store := NewStore()
 		store.Set("hot", payload, 0)
