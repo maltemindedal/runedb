@@ -10,6 +10,10 @@ const MaxBitmapOffset = (1 << 32) - 1
 
 // GetBit returns the bit stored at offset for a string value.
 func (s *Store) GetBit(key string, offset int64) (int64, bool, error) {
+	if err := validateBitmapOffset(offset); err != nil {
+		return 0, false, err
+	}
+
 	now := time.Now().UnixMilli()
 	shard := s.shardForKey(key)
 
@@ -44,12 +48,20 @@ func (s *Store) GetBit(key string, offset int64) (int64, bool, error) {
 
 // SetBit sets the bit stored at offset for a string value and returns the previous bit.
 func (s *Store) SetBit(key string, offset int64, bit int64) (int64, error) {
+	if err := validateBitmapArguments(offset, bit); err != nil {
+		return 0, err
+	}
+
 	previous, _, err := s.setBit(key, offset, bit)
 	return previous, err
 }
 
 // SetBitWithEviction sets a bit and evicts keys first if maxmemory requires it.
 func (s *Store) SetBitWithEviction(key string, offset int64, bit int64) (int64, []string, error) {
+	if err := validateBitmapArguments(offset, bit); err != nil {
+		return 0, nil, err
+	}
+
 	if !s.maxMemoryEnabled() {
 		previous, err := s.SetBit(key, offset, bit)
 		return previous, nil, err
@@ -85,7 +97,11 @@ func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit 
 		value = nil
 	}
 
-	oldSize := s.approximateValueObjectSize(key, value)
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 	var data []byte
 	var expiresAt int64
 	if ok {
@@ -106,6 +122,23 @@ func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit 
 		return previous, nil, nil
 	}
 
+	if accounting {
+		newSize := s.approximateStringValueObjectSize(key, byteIndex+1, expiresAt)
+		evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+		if err != nil {
+			return 0, nil, err
+		}
+
+		extended := make([]byte, byteIndex+1)
+		copy(extended, data)
+		setBitInByte(&extended[byteIndex], mask, bit)
+		newValue := newOwnedStringValue(extended, expiresAt)
+		newValue.touch(now)
+		s.setKeyLocked(shard, key, newValue)
+		s.usedMemory.Add(newSize - oldSize)
+		return previous, evicted, nil
+	}
+
 	extended := make([]byte, byteIndex+1)
 	copy(extended, data)
 	data = extended
@@ -113,19 +146,25 @@ func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit 
 
 	newValue := newOwnedStringValue(data, expiresAt)
 	newValue.touch(now)
-	if s.maxMemoryEnabled() {
-		newSize := s.approximateValueObjectSize(key, newValue)
-		evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
-		if err != nil {
-			return 0, nil, err
-		}
-		s.setKeyLocked(shard, key, newValue)
-		s.usedMemory.Add(newSize - oldSize)
-		return previous, evicted, nil
-	}
-
 	s.setKeyLocked(shard, key, newValue)
 	return previous, nil, nil
+}
+
+func validateBitmapArguments(offset int64, bit int64) error {
+	if err := validateBitmapOffset(offset); err != nil {
+		return err
+	}
+	if bit != 0 && bit != 1 {
+		return ErrValueNotInteger
+	}
+	return nil
+}
+
+func validateBitmapOffset(offset int64) error {
+	if offset < 0 || offset > MaxBitmapOffset {
+		return ErrValueNotInteger
+	}
+	return nil
 }
 
 func setBitInByte(dst *byte, mask byte, bit int64) {

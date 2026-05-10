@@ -278,6 +278,41 @@ func TestStoreValueBehavior(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "Bitmap ops reject invalid direct arguments",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+
+				if _, _, err := store.GetBit("bitmap", -1); !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("GetBit() error = %v, want ErrValueNotInteger", err)
+				}
+				if _, err := store.SetBit("bitmap", -1, 1); !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("SetBit(negative offset) error = %v, want ErrValueNotInteger", err)
+				}
+				if _, err := store.SetBit("bitmap", 0, 2); !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("SetBit(invalid bit) error = %v, want ErrValueNotInteger", err)
+				}
+				if _, _, err := store.SetBitWithEviction("bitmap", MaxBitmapOffset+1, 1); !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("SetBitWithEviction() error = %v, want ErrValueNotInteger", err)
+				}
+			},
+		},
+		{
+			name: "SetBitWithEviction checks memory before sparse allocation",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				store.ConfigureMaxMemory(1, 16)
+
+				if _, _, err := store.SetBitWithEviction("bitmap", MaxBitmapOffset, 1); !errors.Is(err, ErrMemoryLimitExceeded) {
+					t.Fatalf("SetBitWithEviction() error = %v, want ErrMemoryLimitExceeded", err)
+				}
+				if _, ok, err := store.Get("bitmap"); err != nil {
+					t.Fatalf("Get() error = %v", err)
+				} else if ok {
+					t.Fatal("Get() ok = true, want false after rejected sparse SetBit")
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {

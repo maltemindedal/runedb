@@ -208,6 +208,8 @@ func newStringValue(data []byte, expiresAt int64) *ValueObject {
 	return newOwnedStringValue(cloneBytes(data), expiresAt)
 }
 
+// newOwnedStringValue stores an already-owned string representation without cloning.
+// Callers must only pass byte slices that are not aliased with caller-controlled memory.
 func newOwnedStringValue(data []byte, expiresAt int64) *ValueObject {
 	return &ValueObject{
 		String:         data,
