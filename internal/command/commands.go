@@ -522,6 +522,76 @@ func (e *Executor) handleGet(_ context.Context, request *Request) (protocol.Valu
 	return protocol.BulkString{Data: value}, nil
 }
 
+func (e *Executor) handleSetBit(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 3 {
+		return nil, wrongNumberOfArgumentsError("SETBIT")
+	}
+
+	offset, err := parseBitmapOffsetArgument(request.Args[1])
+	if err != nil {
+		return nil, err
+	}
+	bit, err := parseBitValueArgument(request.Args[2])
+	if err != nil {
+		return nil, err
+	}
+
+	key := string(request.Args[0])
+	previous, evicted, err := e.store.SetBitWithEviction(key, offset, bit)
+	if err != nil {
+		return nil, storageCommandError(err)
+	}
+
+	e.recordWriteEffects(ctx, key, evicted)
+	return protocol.Integer{Value: previous}, nil
+}
+
+func (e *Executor) handleGetBit(_ context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 2 {
+		return nil, wrongNumberOfArgumentsError("GETBIT")
+	}
+
+	offset, err := parseBitmapOffsetArgument(request.Args[1])
+	if err != nil {
+		return nil, err
+	}
+
+	bit, _, err := e.store.GetBit(string(request.Args[0]), offset)
+	if err != nil {
+		return nil, storageCommandError(err)
+	}
+
+	return protocol.Integer{Value: bit}, nil
+}
+
+func (e *Executor) handleBitCount(_ context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) != 1 && len(request.Args) != 3 {
+		return nil, wrongNumberOfArgumentsError("BITCOUNT")
+	}
+
+	var start *int64
+	var end *int64
+	if len(request.Args) == 3 {
+		parsedStart, err := parseIntegerArgument(request.Args[1])
+		if err != nil {
+			return nil, err
+		}
+		parsedEnd, err := parseIntegerArgument(request.Args[2])
+		if err != nil {
+			return nil, err
+		}
+		start = &parsedStart
+		end = &parsedEnd
+	}
+
+	count, _, err := e.store.BitCount(string(request.Args[0]), start, end)
+	if err != nil {
+		return nil, storageCommandError(err)
+	}
+
+	return protocol.Integer{Value: count}, nil
+}
+
 func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 1 {
 		return nil, wrongNumberOfArgumentsError("DEL")
@@ -890,6 +960,30 @@ func parseIntegerArgument(raw []byte) (int64, error) {
 	}
 
 	return value, nil
+}
+
+func parseBitmapOffsetArgument(raw []byte) (int64, error) {
+	offset, err := parseIntegerArgument(raw)
+	if err != nil {
+		return 0, err
+	}
+	if offset < 0 || offset > storage.MaxBitmapOffset {
+		return 0, ErrValueNotIntegerError()
+	}
+
+	return offset, nil
+}
+
+func parseBitValueArgument(raw []byte) (int64, error) {
+	bit, err := parseIntegerArgument(raw)
+	if err != nil {
+		return 0, err
+	}
+	if bit != 0 && bit != 1 {
+		return 0, ErrValueNotIntegerError()
+	}
+
+	return bit, nil
 }
 
 func parseFloatArgument(raw []byte) (float64, error) {

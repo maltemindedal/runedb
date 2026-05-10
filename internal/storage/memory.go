@@ -114,7 +114,7 @@ func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 
 	shard, current := s.prepareExistingValueLocked(key, now)
 	if current == nil {
-		newValue := newStringValue([]byte("1"), 0)
+		newValue := newOwnedStringValue([]byte("1"), 0)
 		newSize := s.approximateValueObjectSize(key, newValue)
 		evicted, err := s.ensureMemoryAvailableLocked(newSize, protectedKeys(key))
 		if err != nil {
@@ -137,7 +137,7 @@ func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 	parsed++
 
 	oldSize := s.approximateValueObjectSize(key, current)
-	newValue := newStringValue([]byte(strconv.FormatInt(parsed, 10)), current.ExpiresAt)
+	newValue := newOwnedStringValue([]byte(strconv.FormatInt(parsed, 10)), current.ExpiresAt)
 	newValue.touch(now)
 	newSize := s.approximateValueObjectSize(key, newValue)
 

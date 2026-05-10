@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -137,6 +138,143 @@ func TestStoreValueBehavior(t *testing.T) {
 
 				if _, _, err := store.Get("numbers"); !errors.Is(err, ErrWrongType) {
 					t.Fatalf("Get() error = %v, want ErrWrongType", err)
+				}
+			},
+		},
+		{
+			name: "SetBit expands sparse strings and GetBit reads unset bits",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+
+				previous, err := store.SetBit("bitmap", 16, 1)
+				if err != nil {
+					t.Fatalf("SetBit() error = %v", err)
+				}
+				if previous != 0 {
+					t.Fatalf("SetBit() previous = %d, want 0", previous)
+				}
+
+				got, ok, err := store.Get("bitmap")
+				if err != nil {
+					t.Fatalf("Get() error = %v", err)
+				}
+				if !ok {
+					t.Fatal("Get() ok = false, want true")
+				}
+				if want := []byte{0, 0, 0x80}; !bytes.Equal(got, want) {
+					t.Fatalf("Get() value = %v, want %v", got, want)
+				}
+
+				bit, _, err := store.GetBit("bitmap", 15)
+				if err != nil {
+					t.Fatalf("GetBit() error = %v", err)
+				}
+				if bit != 0 {
+					t.Fatalf("GetBit(15) = %d, want 0", bit)
+				}
+
+				bit, _, err = store.GetBit("bitmap", 16)
+				if err != nil {
+					t.Fatalf("GetBit() error = %v", err)
+				}
+				if bit != 1 {
+					t.Fatalf("GetBit(16) = %d, want 1", bit)
+				}
+			},
+		},
+		{
+			name: "SetBit returns previous bit when overwriting",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+
+				if previous, err := store.SetBit("bitmap", 7, 1); err != nil || previous != 0 {
+					t.Fatalf("first SetBit() previous = %d, error = %v, want 0 nil", previous, err)
+				}
+				if previous, err := store.SetBit("bitmap", 7, 0); err != nil || previous != 1 {
+					t.Fatalf("second SetBit() previous = %d, error = %v, want 1 nil", previous, err)
+				}
+			},
+		},
+		{
+			name: "GetBit and BitCount return zero for missing keys",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+
+				bit, ok, err := store.GetBit("missing", 12)
+				if err != nil {
+					t.Fatalf("GetBit() error = %v", err)
+				}
+				if ok || bit != 0 {
+					t.Fatalf("GetBit() = %d, %v, want 0 false", bit, ok)
+				}
+
+				count, ok, err := store.BitCount("missing", nil, nil)
+				if err != nil {
+					t.Fatalf("BitCount() error = %v", err)
+				}
+				if ok || count != 0 {
+					t.Fatalf("BitCount() = %d, %v, want 0 false", count, ok)
+				}
+			},
+		},
+		{
+			name: "BitCount supports inclusive and negative byte ranges",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				store.Set("bitmap", []byte{0xff, 0x00, 0x0f}, 0)
+
+				count, _, err := store.BitCount("bitmap", nil, nil)
+				if err != nil {
+					t.Fatalf("BitCount() error = %v", err)
+				}
+				if count != 12 {
+					t.Fatalf("BitCount() = %d, want 12", count)
+				}
+
+				start, end := int64(1), int64(2)
+				count, _, err = store.BitCount("bitmap", &start, &end)
+				if err != nil {
+					t.Fatalf("BitCount(range) error = %v", err)
+				}
+				if count != 4 {
+					t.Fatalf("BitCount(1,2) = %d, want 4", count)
+				}
+
+				start, end = -1, -1
+				count, _, err = store.BitCount("bitmap", &start, &end)
+				if err != nil {
+					t.Fatalf("BitCount(negative range) error = %v", err)
+				}
+				if count != 4 {
+					t.Fatalf("BitCount(-1,-1) = %d, want 4", count)
+				}
+
+				start, end = 5, 1
+				count, _, err = store.BitCount("bitmap", &start, &end)
+				if err != nil {
+					t.Fatalf("BitCount(empty range) error = %v", err)
+				}
+				if count != 0 {
+					t.Fatalf("BitCount(5,1) = %d, want 0", count)
+				}
+			},
+		},
+		{
+			name: "Bitmap ops reject wrong value type",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.LeftPush("numbers", [][]byte{[]byte("one")}); err != nil {
+					t.Fatalf("LeftPush() error = %v", err)
+				}
+
+				if _, _, err := store.GetBit("numbers", 0); !errors.Is(err, ErrWrongType) {
+					t.Fatalf("GetBit() error = %v, want ErrWrongType", err)
+				}
+				if _, err := store.SetBit("numbers", 0, 1); !errors.Is(err, ErrWrongType) {
+					t.Fatalf("SetBit() error = %v, want ErrWrongType", err)
+				}
+				if _, _, err := store.BitCount("numbers", nil, nil); !errors.Is(err, ErrWrongType) {
+					t.Fatalf("BitCount() error = %v, want ErrWrongType", err)
 				}
 			},
 		},

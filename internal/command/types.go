@@ -398,6 +398,20 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleGet,
 			validate: exactArgsValidator("GET", 1),
 		},
+		"SETBIT": {
+			handler:    e.handleSetBit,
+			validate:   validateSetBitRequest,
+			propagates: true,
+			durable:    true,
+		},
+		"GETBIT": {
+			handler:  e.handleGetBit,
+			validate: validateGetBitRequest,
+		},
+		"BITCOUNT": {
+			handler:  e.handleBitCount,
+			validate: validateBitCountRequest,
+		},
 		"DEL": {
 			handler:    e.handleDel,
 			validate:   minArgsValidator("DEL", 1),
@@ -696,6 +710,44 @@ func validateSetRequest(request *Request) error {
 		case errors.Is(err, storage.ErrInvalidExpireTime):
 			return ErrInvalidExpireTimeError()
 		default:
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSetBitRequest(request *Request) error {
+	if len(request.Args) != 3 {
+		return wrongNumberOfArgumentsError("SETBIT")
+	}
+	if _, err := parseBitmapOffsetArgument(request.Args[1]); err != nil {
+		return err
+	}
+	if _, err := parseBitValueArgument(request.Args[2]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGetBitRequest(request *Request) error {
+	if len(request.Args) != 2 {
+		return wrongNumberOfArgumentsError("GETBIT")
+	}
+	if _, err := parseBitmapOffsetArgument(request.Args[1]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateBitCountRequest(request *Request) error {
+	if len(request.Args) != 1 && len(request.Args) != 3 {
+		return wrongNumberOfArgumentsError("BITCOUNT")
+	}
+	if len(request.Args) == 3 {
+		if _, err := parseIntegerArgument(request.Args[1]); err != nil {
+			return err
+		}
+		if _, err := parseIntegerArgument(request.Args[2]); err != nil {
 			return err
 		}
 	}

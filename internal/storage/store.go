@@ -5,7 +5,6 @@ import (
 	"hash/maphash"
 	"log/slog"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,7 +185,7 @@ func (s *Store) Increment(key string) (int64, error) {
 	}
 
 	if !ok {
-		newValue := newStringValue([]byte("1"), 0)
+		newValue := newOwnedStringValue([]byte("1"), 0)
 		s.setKeyLocked(shard, key, newValue)
 		if s.maxMemoryEnabled() {
 			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
@@ -648,12 +647,11 @@ func (s *Store) SnapshotStrings() ([]StringSnapshotEntry, StringSnapshotStats) {
 	defer s.readUnlockAllShards()
 
 	stats := StringSnapshotStats{}
-	entries := make([]StringSnapshotEntry, 0)
+	entries := make([]StringSnapshotEntry, 0, s.totalKeyCountLocked())
 	valueArena := make([]byte, 0)
 	for i := range s.shards {
 		shard := &s.shards[i]
 		stats.TotalKeys += len(shard.data)
-		entries = slices.Grow(entries, len(shard.data))
 		for key, value := range shard.data {
 			if isExpired(value, now) {
 				stats.SkippedExpiredKeys++
@@ -732,12 +730,11 @@ func (s *Store) ReplaceWith(other *Store) {
 
 func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 	stats := SnapshotStats{}
-	entries := make([]SnapshotEntry, 0)
+	entries := make([]SnapshotEntry, 0, s.totalKeyCountLocked())
 	valueArena := make([]byte, 0)
 	for i := range s.shards {
 		shard := &s.shards[i]
 		stats.TotalKeys += len(shard.data)
-		entries = slices.Grow(entries, len(shard.data))
 		for key, value := range shard.data {
 			if isExpired(value, now) {
 				stats.SkippedExpiredKeys++
@@ -815,6 +812,14 @@ func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
 	}
 
 	return entries, stats
+}
+
+func (s *Store) totalKeyCountLocked() int {
+	total := 0
+	for i := range s.shards {
+		total += len(s.shards[i].data)
+	}
+	return total
 }
 
 func (s *Store) logDebug(msg string, args ...any) {

@@ -205,8 +205,12 @@ func (v *ValueObject) StreamValue() (*StreamValue, error) {
 }
 
 func newStringValue(data []byte, expiresAt int64) *ValueObject {
+	return newOwnedStringValue(cloneBytes(data), expiresAt)
+}
+
+func newOwnedStringValue(data []byte, expiresAt int64) *ValueObject {
 	return &ValueObject{
-		String:         cloneBytes(data),
+		String:         data,
 		ExpiresAt:      expiresAt,
 		LastAccessedAt: time.Now().UnixMilli(),
 		Kind:           ValueKindString,

@@ -113,6 +113,142 @@ func TestExecutorExecute(t *testing.T) {
 			},
 		},
 		{
+			name:    "GETBIT returns zero for missing keys",
+			request: requestValue("GETBIT", "missing", "12"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name: "SETBIT sets sparse bits and returns previous bit",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				value, err := executor.Execute(context.Background(), requestValue("SETBIT", "bitmap", "16", "1"))
+				if err != nil {
+					t.Fatalf("SETBIT error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+			request: requestValue("GET", "bitmap"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.BulkString{Data: []byte{0, 0, 0x80}})
+			},
+		},
+		{
+			name: "SETBIT returns overwritten bit",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("SETBIT", "bitmap", "7", "1")); err != nil {
+					t.Fatalf("SETBIT setup error = %v", err)
+				}
+			},
+			request: requestValue("SETBIT", "bitmap", "7", "0"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 1})
+			},
+		},
+		{
+			name: "GETBIT reads existing and unset bits",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("SETBIT", "bitmap", "0", "1")); err != nil {
+					t.Fatalf("SETBIT setup error = %v", err)
+				}
+			},
+			request: requestValue("GETBIT", "bitmap", "1"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name: "BITCOUNT counts full and ranged strings",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				executor.store.Set("bitmap", []byte{0xff, 0x00, 0x0f}, 0)
+			},
+			request: requestValue("BITCOUNT", "bitmap", "1", "2"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 4})
+			},
+		},
+		{
+			name:    "BITCOUNT returns zero for missing keys",
+			request: requestValue("BITCOUNT", "missing"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name:    "SETBIT rejects invalid bit value",
+			request: requestValue("SETBIT", "bitmap", "0", "2"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("Execute() error = %v, want ErrValueNotInteger", err)
+				}
+			},
+		},
+		{
+			name:    "GETBIT rejects negative offset",
+			request: requestValue("GETBIT", "bitmap", "-1"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("Execute() error = %v, want ErrValueNotInteger", err)
+				}
+			},
+		},
+		{
+			name:    "BITCOUNT rejects invalid range argument",
+			request: requestValue("BITCOUNT", "bitmap", "0", "bad"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrValueNotInteger) {
+					t.Fatalf("Execute() error = %v, want ErrValueNotInteger", err)
+				}
+			},
+		},
+		{
+			name: "Bitmap commands reject wrong value type",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("RPUSH", "queue", "job-1")); err != nil {
+					t.Fatalf("RPUSH error = %v", err)
+				}
+			},
+			request: requestValue("BITCOUNT", "queue"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrWrongType) {
+					t.Fatalf("Execute() error = %v, want ErrWrongType", err)
+				}
+			},
+		},
+		{
 			name: "DEL removes existing keys and returns count",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
@@ -483,6 +619,22 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 
 		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 1})
 		assertPropagationFrames(t, result.Propagation, requestValue("INCR", "counter"))
+	})
+
+	t.Run("SETBIT returns propagation frame", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SETBIT", "bitmap", "0", "1"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 0})
+		assertPropagationFrames(t, result.Propagation, requestValue("SETBIT", "bitmap", "0", "1"))
+		assertPropagationFrames(t, result.Durability, requestValue("SETBIT", "bitmap", "0", "1"))
 	})
 
 	t.Run("PUBLISH returns propagation frame", func(t *testing.T) {

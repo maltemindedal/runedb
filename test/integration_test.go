@@ -102,6 +102,9 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 2}, "INCR", "counter")
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "bad", "hello")
 	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "ERR value is not an integer or out of range"}, "INCR", "bad")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 0}, "SETBIT", "bits", "16", "1")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "GETBIT", "bits", "16")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "BITCOUNT", "bits")
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "temp", "1", "PX", "15")
 
 	time.Sleep(25 * time.Millisecond)
