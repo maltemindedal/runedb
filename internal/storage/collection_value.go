@@ -53,6 +53,10 @@ func (v *ValueObject) hashSet(pairs []HashFieldValue) (int64, error) {
 		if v.CompactHash == nil {
 			return 0, errInvalidValueObjectState
 		}
+		if !compactHashCanSet(v.CompactHash, pairs) {
+			v.upgradeCompactHash()
+			return v.hashSet(pairs)
+		}
 		for _, pair := range pairs {
 			if v.CompactHash.set(pair.Field, pair.Value) {
 				added++
@@ -64,13 +68,7 @@ func (v *ValueObject) hashSet(pairs []HashFieldValue) (int64, error) {
 	if v.Hash == nil {
 		return 0, errInvalidValueObjectState
 	}
-	for _, pair := range pairs {
-		if _, exists := v.Hash[pair.Field]; !exists {
-			added++
-		}
-		v.Hash[pair.Field] = cloneBytes(pair.Value)
-	}
-	return added, nil
+	return hashSetGeneral(v.Hash, pairs), nil
 }
 
 func (v *ValueObject) hashDel(fields []string) (int64, error) {
@@ -186,6 +184,10 @@ func (v *ValueObject) zsetAdd(entries []ZSetEntry) (int64, error) {
 		if v.CompactZSet == nil {
 			return 0, errInvalidValueObjectState
 		}
+		if !compactZSetCanAdd(v.CompactZSet, entries) {
+			v.upgradeCompactZSet()
+			return v.zsetAdd(entries)
+		}
 		for _, entry := range entries {
 			if v.CompactZSet.add(entry.Member, entry.Score) {
 				added++
@@ -197,12 +199,7 @@ func (v *ValueObject) zsetAdd(entries []ZSetEntry) (int64, error) {
 	if v.ZSet == nil {
 		return 0, errInvalidValueObjectState
 	}
-	for _, entry := range entries {
-		if v.ZSet.add(string(entry.Member), entry.Score) {
-			added++
-		}
-	}
-	return added, nil
+	return zsetAddGeneral(v.ZSet, entries), nil
 }
 
 func (v *ValueObject) zsetRangeByRank(start, stop int) ([]ZSetRangeEntry, error) {
@@ -415,29 +412,171 @@ func mustAddSetMembers(set map[string]struct{}, members [][]byte) int64 {
 	return added
 }
 
+func hashSetGeneral(hash map[string][]byte, pairs []HashFieldValue) int64 {
+	added := int64(0)
+	for _, pair := range pairs {
+		if _, exists := hash[pair.Field]; !exists {
+			added++
+		}
+		hash[pair.Field] = cloneBytes(pair.Value)
+	}
+	return added
+}
+
 func newHashValueForPairs(pairs []HashFieldValue, expiresAt int64) *ValueObject {
-	compact := newCompactHash(pairs)
-	if compact.len() <= compactHashMaxEntries {
-		return newCompactHashValue(compact, expiresAt)
+	fields, compactEligible := hashMapForPairs(pairs)
+	if compactEligible && len(fields) <= compactHashMaxEntries {
+		return newCompactHashValue(newCompactHashFromMap(fields), expiresAt)
 	}
 
-	entries := compact.all()
-	fields := make(map[string][]byte, len(entries))
-	for _, entry := range entries {
-		fields[entry.Field] = cloneBytes(entry.Value)
-	}
 	return newHashValue(fields, expiresAt)
 }
 
+func hashMapForPairs(pairs []HashFieldValue) (map[string][]byte, bool) {
+	fields := make(map[string][]byte, len(pairs))
+	compactEligible := true
+	for _, pair := range pairs {
+		if len(pair.Field) > compactHashMaxStringSize || len(pair.Value) > compactHashMaxStringSize {
+			compactEligible = false
+		}
+		fields[pair.Field] = cloneBytes(pair.Value)
+	}
+	return fields, compactEligible
+}
+
+func newCompactHashFromMap(fields map[string][]byte) *CompactHash {
+	hash := &CompactHash{entries: make([]compactHashEntry, 0, len(fields))}
+	for field, value := range fields {
+		hash.set(field, value)
+	}
+	return hash
+}
+
+func compactHashCanSet(hash *CompactHash, pairs []HashFieldValue) bool {
+	projectedLen := hash.len()
+	newFields := make(map[string]struct{}, len(pairs))
+	for _, pair := range pairs {
+		if len(pair.Field) > compactHashMaxStringSize || len(pair.Value) > compactHashMaxStringSize {
+			return false
+		}
+		if _, exists := hash.get(pair.Field); exists {
+			continue
+		}
+		if _, exists := newFields[pair.Field]; exists {
+			continue
+		}
+		newFields[pair.Field] = struct{}{}
+		projectedLen++
+		if projectedLen > compactHashMaxEntries {
+			return false
+		}
+	}
+	return true
+}
+
+func (v *ValueObject) upgradeCompactHash() {
+	v.Hash = compactHashGeneralMap(v.CompactHash)
+	v.CompactHash = nil
+	v.HashEncoding = ValueEncodingGeneral
+}
+
+func compactHashGeneralMap(hash *CompactHash) map[string][]byte {
+	fields := make(map[string][]byte, hash.len())
+	for _, entry := range hash.entries {
+		fields[hash.field(entry)] = cloneBytes(hash.value(entry))
+	}
+	return fields
+}
+
+func zsetAddGeneral(set *SortedSet, entries []ZSetEntry) int64 {
+	added := int64(0)
+	for _, entry := range entries {
+		if set.add(string(entry.Member), entry.Score) {
+			added++
+		}
+	}
+	return added
+}
+
 func newZSetValueForEntries(entries []ZSetEntry, expiresAt int64) *ValueObject {
-	compact := newCompactZSet(entries)
-	if compact.len() <= compactZSetMaxEntries {
-		return newCompactZSetValue(compact, expiresAt)
+	members, compactEligible := zsetMapForEntries(entries)
+	if compactEligible && len(members) <= compactZSetMaxEntries {
+		return newCompactZSetValue(newCompactZSetFromMap(members), expiresAt)
 	}
 
-	set := newSortedSet()
+	return newZSetValue(newSortedSetFromMap(members), expiresAt)
+}
+
+func zsetMapForEntries(entries []ZSetEntry) (map[string]float64, bool) {
+	members := make(map[string]float64, len(entries))
+	compactEligible := true
 	for _, entry := range entries {
-		set.add(string(entry.Member), entry.Score)
+		if len(entry.Member) > compactZSetMaxMemberLen {
+			compactEligible = false
+		}
+		members[string(entry.Member)] = entry.Score
 	}
-	return newZSetValue(set, expiresAt)
+	return members, compactEligible
+}
+
+func newCompactZSetFromMap(members map[string]float64) *CompactZSet {
+	set := &CompactZSet{entries: make([]compactZSetEntry, 0, len(members))}
+	for member, score := range members {
+		set.add([]byte(member), score)
+	}
+	return set
+}
+
+func newSortedSetFromMap(members map[string]float64) *SortedSet {
+	set := newSortedSet()
+	for member, score := range members {
+		set.add(member, score)
+	}
+	return set
+}
+
+func compactZSetCanAdd(set *CompactZSet, entries []ZSetEntry) bool {
+	projectedLen := set.len()
+	newMembers := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if len(entry.Member) > compactZSetMaxMemberLen {
+			return false
+		}
+		member := string(entry.Member)
+		if compactZSetContains(set, entry.Member) {
+			continue
+		}
+		if _, exists := newMembers[member]; exists {
+			continue
+		}
+		newMembers[member] = struct{}{}
+		projectedLen++
+		if projectedLen > compactZSetMaxEntries {
+			return false
+		}
+	}
+	return true
+}
+
+func compactZSetContains(set *CompactZSet, member []byte) bool {
+	for _, entry := range set.entries {
+		if set.memberEqual(entry, member) {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *ValueObject) upgradeCompactZSet() {
+	v.ZSet = compactZSetGeneralSet(v.CompactZSet)
+	v.CompactZSet = nil
+	v.ZSetEncoding = ValueEncodingGeneral
+}
+
+func compactZSetGeneralSet(compact *CompactZSet) *SortedSet {
+	set := newSortedSet()
+	for _, entry := range compact.entries {
+		set.add(compact.member(entry), entry.score)
+	}
+	return set
 }

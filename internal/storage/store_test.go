@@ -1192,6 +1192,66 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 			t.Fatalf("stored zset = %#v, want compact zset for one distinct member", stored)
 		}
 	})
+
+	t.Run("Compact sorted set upgrades when member count exceeds threshold", func(t *testing.T) {
+		store := NewStore()
+		for i := 0; i < compactZSetMaxEntries; i++ {
+			member := []byte(fmt.Sprintf("m%d", i))
+			if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: member, Score: float64(i)}}); err != nil {
+				t.Fatalf("ZAdd() seed error = %v", err)
+			}
+		}
+		expiresAt := time.Now().Add(time.Hour).UnixMilli()
+		if ok := store.expireKeyForTest("leaders", expiresAt); !ok {
+			t.Fatal("expireKeyForTest() ok = false, want true")
+		}
+
+		added, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("overflow"), Score: 99}})
+		if err != nil || added != 1 {
+			t.Fatalf("ZAdd() overflow = (%d, %v), want (1, nil)", added, err)
+		}
+		stored := store.valueObjectForTest("leaders")
+		if stored == nil || stored.Kind != ValueKindZSet || stored.ZSetEncoding != ValueEncodingGeneral || stored.ZSet == nil {
+			t.Fatalf("stored zset = %#v, want upgraded general zset", stored)
+		}
+		if stored.ExpiresAt != expiresAt {
+			t.Fatalf("upgraded zset ExpiresAt = %d, want %d", stored.ExpiresAt, expiresAt)
+		}
+		values, err := store.ZRange("leaders", 0, -1)
+		if err != nil {
+			t.Fatalf("ZRange() after upgrade error = %v", err)
+		}
+		if len(values) != compactZSetMaxEntries+1 || values[len(values)-1].Member != "overflow" {
+			t.Fatalf("ZRange() after upgrade = %#v, want preserved members plus overflow", values)
+		}
+	})
+
+	t.Run("Compact sorted set upgrades when member length exceeds threshold", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("short"), Score: 1}}); err != nil {
+			t.Fatalf("ZAdd() seed error = %v", err)
+		}
+		longMember := make([]byte, compactZSetMaxMemberLen+1)
+		for i := range longMember {
+			longMember[i] = 'x'
+		}
+
+		added, err := store.ZAdd("leaders", []ZSetEntry{{Member: longMember, Score: 2}})
+		if err != nil || added != 1 {
+			t.Fatalf("ZAdd() long member = (%d, %v), want (1, nil)", added, err)
+		}
+		stored := store.valueObjectForTest("leaders")
+		if stored == nil || stored.ZSetEncoding != ValueEncodingGeneral || stored.ZSet == nil {
+			t.Fatalf("stored zset = %#v, want upgraded general zset", stored)
+		}
+		values, err := store.ZRange("leaders", 0, -1)
+		if err != nil {
+			t.Fatalf("ZRange() after long member error = %v", err)
+		}
+		if len(values) != 2 || values[1].Member != string(longMember) {
+			t.Fatalf("ZRange() after long member = %#v, want long member preserved", values)
+		}
+	})
 }
 
 func keysInDistinctShards(t *testing.T, store *Store, count int) []string {

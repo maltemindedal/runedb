@@ -105,12 +105,20 @@ func (s *Server) writeClientResponses(ctx context.Context, writer *bufio.Writer,
 }
 
 func (s *Server) writeResponses(writer *bufio.Writer, values []protocol.Value) error {
-	for _, value := range values {
-		if err := protocol.WriteValue(writer, value); err != nil {
+	if len(values) == 1 {
+		if err := protocol.WriteValue(writer, values[0]); err != nil {
 			return err
 		}
+		return writer.Flush()
 	}
 
+	payload, err := protocol.EncodeValues(values)
+	if err != nil {
+		return err
+	}
+	if _, err := writer.Write(payload); err != nil {
+		return err
+	}
 	return writer.Flush()
 }
 

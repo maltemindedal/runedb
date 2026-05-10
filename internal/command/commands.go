@@ -18,6 +18,8 @@ import (
 	"github.com/maltemindedal/runedb/internal/storage"
 )
 
+const pubSubWriteTimeout = 100 * time.Millisecond
+
 var cachedReplConfGetAckPayload = sync.OnceValues(func() ([]byte, error) {
 	return protocol.Encode(propagationFrame(&Request{
 		Name: "REPLCONF",
@@ -867,7 +869,7 @@ func (e *Executor) deliverPubSubMessageToSubscriber(channel string, payload []by
 	if subscriber == nil {
 		return false
 	}
-	if err := subscriber.WriteEncoded(payload); err != nil {
+	if err := subscriber.WriteEncodedWithDeadline(payload, pubSubWriteTimeout); err != nil {
 		e.logger.Warn(
 			"failed to deliver pub/sub message",
 			"channel", channel,

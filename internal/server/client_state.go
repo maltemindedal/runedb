@@ -198,6 +198,15 @@ func (s *ClientState) IsAuthenticated() bool {
 // WriteResponses writes RESP values to the bound client writer without allowing
 // interleaving with other goroutines writing to the same connection.
 func (s *ClientState) WriteResponses(values []protocol.Value) error {
+	var payload []byte
+	if len(values) > 1 {
+		var err error
+		payload, err = protocol.EncodeValues(values)
+		if err != nil {
+			return err
+		}
+	}
+
 	s.responseMu.Lock()
 	defer s.responseMu.Unlock()
 
@@ -205,12 +214,16 @@ func (s *ClientState) WriteResponses(values []protocol.Value) error {
 		return fmt.Errorf("client response writer unavailable")
 	}
 
-	for _, value := range values {
-		if err := protocol.WriteValue(s.responseWriter, value); err != nil {
+	if len(values) == 1 {
+		if err := protocol.WriteValue(s.responseWriter, values[0]); err != nil {
 			return err
 		}
+		return s.responseWriter.Flush()
 	}
 
+	if _, err := s.responseWriter.Write(payload); err != nil {
+		return err
+	}
 	return s.responseWriter.Flush()
 }
 
