@@ -303,6 +303,94 @@ func TestStoreHash(t *testing.T) {
 			t.Fatalf("stored hash = %#v, want compact hash for one distinct field", stored)
 		}
 	})
+
+	t.Run("Compact hash upgrades when entry count exceeds threshold", func(t *testing.T) {
+		store := NewStore()
+		for i := 0; i < compactHashMaxEntries; i++ {
+			if _, err := store.HSet("h", []HashFieldValue{{Field: string(rune('a' + i)), Value: []byte("v")}}); err != nil {
+				t.Fatalf("HSet() seed error = %v", err)
+			}
+		}
+		expiresAt := time.Now().Add(time.Hour).UnixMilli()
+		if ok := store.expireKeyForTest("h", expiresAt); !ok {
+			t.Fatal("expireKeyForTest() ok = false, want true")
+		}
+
+		added, err := store.HSet("h", []HashFieldValue{{Field: "overflow", Value: []byte("v")}})
+		if err != nil || added != 1 {
+			t.Fatalf("HSet() overflow = (%d, %v), want (1, nil)", added, err)
+		}
+		stored := store.valueObjectForTest("h")
+		if stored == nil || stored.Kind != ValueKindHash || stored.HashEncoding != ValueEncodingGeneral || stored.Hash == nil {
+			t.Fatalf("stored hash = %#v, want upgraded general hash", stored)
+		}
+		if stored.ExpiresAt != expiresAt {
+			t.Fatalf("upgraded hash ExpiresAt = %d, want %d", stored.ExpiresAt, expiresAt)
+		}
+		got, ok, err := store.HGet("h", "a")
+		if err != nil || !ok || string(got) != "v" {
+			t.Fatalf("HGet(a) after upgrade = (%q, %v, %v), want (v, true, nil)", string(got), ok, err)
+		}
+		got, ok, err = store.HGet("h", "overflow")
+		if err != nil || !ok || string(got) != "v" {
+			t.Fatalf("HGet(overflow) after upgrade = (%q, %v, %v), want (v, true, nil)", string(got), ok, err)
+		}
+	})
+
+	t.Run("Compact hash upgrades when string length exceeds threshold", func(t *testing.T) {
+		longText := make([]byte, compactHashMaxStringSize+1)
+		for i := range longText {
+			longText[i] = 'x'
+		}
+
+		tests := []struct {
+			name      string
+			seed      HashFieldValue
+			update    HashFieldValue
+			wantAdded int64
+			wantField string
+			wantLen   int
+		}{
+			{
+				name:      "field length",
+				seed:      HashFieldValue{Field: "f", Value: []byte("v")},
+				update:    HashFieldValue{Field: string(longText), Value: []byte("v")},
+				wantAdded: 1,
+				wantField: string(longText),
+				wantLen:   1,
+			},
+			{
+				name:      "value length",
+				seed:      HashFieldValue{Field: "f", Value: []byte("v")},
+				update:    HashFieldValue{Field: "f", Value: longText},
+				wantAdded: 0,
+				wantField: "f",
+				wantLen:   len(longText),
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				store := NewStore()
+				if _, err := store.HSet("h", []HashFieldValue{tt.seed}); err != nil {
+					t.Fatalf("HSet() seed error = %v", err)
+				}
+
+				added, err := store.HSet("h", []HashFieldValue{tt.update})
+				if err != nil || added != tt.wantAdded {
+					t.Fatalf("HSet() long update = (%d, %v), want (%d, nil)", added, err, tt.wantAdded)
+				}
+				stored := store.valueObjectForTest("h")
+				if stored == nil || stored.HashEncoding != ValueEncodingGeneral || stored.Hash == nil {
+					t.Fatalf("stored hash = %#v, want upgraded general hash", stored)
+				}
+				got, ok, err := store.HGet("h", tt.wantField)
+				if err != nil || !ok || len(got) != tt.wantLen {
+					t.Fatalf("HGet(%q) after long update = (len %d, %v, %v), want len %d", tt.wantField, len(got), ok, err, tt.wantLen)
+				}
+			})
+		}
+	})
 }
 
 func TestStoreSet(t *testing.T) {
@@ -484,6 +572,35 @@ func TestStoreSet(t *testing.T) {
 		}
 		if got := store.Len(); got != 0 {
 			t.Fatalf("Len() = %d, want 0", got)
+		}
+	})
+
+	t.Run("Integer set upgrades when non-integer member is added", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.SAdd("s", [][]byte{[]byte("1"), []byte("2")}); err != nil {
+			t.Fatalf("SAdd() seed error = %v", err)
+		}
+		expiresAt := time.Now().Add(time.Hour).UnixMilli()
+		if ok := store.expireKeyForTest("s", expiresAt); !ok {
+			t.Fatal("expireKeyForTest() ok = false, want true")
+		}
+
+		added, err := store.SAdd("s", [][]byte{[]byte("2"), []byte("three")})
+		if err != nil || added != 1 {
+			t.Fatalf("SAdd() mixed update = (%d, %v), want (1, nil)", added, err)
+		}
+		stored := store.valueObjectForTest("s")
+		if stored == nil || stored.Kind != ValueKindSet || stored.SetEncoding != ValueEncodingGeneral || stored.Set == nil {
+			t.Fatalf("stored set = %#v, want upgraded general set", stored)
+		}
+		if stored.ExpiresAt != expiresAt {
+			t.Fatalf("upgraded set ExpiresAt = %d, want %d", stored.ExpiresAt, expiresAt)
+		}
+		for _, member := range []string{"1", "2", "three"} {
+			exists, err := store.SIsMember("s", []byte(member))
+			if err != nil || !exists {
+				t.Fatalf("SIsMember(%q) after upgrade = (%v, %v), want (true, nil)", member, exists, err)
+			}
 		}
 	})
 }

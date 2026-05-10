@@ -1,6 +1,9 @@
 package storage
 
-const compactHashMaxEntries = 8
+const (
+	compactHashMaxEntries    = 8
+	compactHashMaxStringSize = 64
+)
 
 type compactHashEntry struct {
 	fieldStart int

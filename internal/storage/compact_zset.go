@@ -5,7 +5,10 @@ import (
 	"slices"
 )
 
-const compactZSetMaxEntries = 8
+const (
+	compactZSetMaxEntries   = 8
+	compactZSetMaxMemberLen = 64
+)
 
 type compactZSetEntry struct {
 	memberStart int
