@@ -395,3 +395,107 @@ func TestConnMachineCloseIsIdempotent(t *testing.T) {
 		t.Fatalf("Err() = %v, want first close error %v", machine.Err(), first)
 	}
 }
+
+func TestConnMachineBufferEncodedOrdersPushFramesWithResponses(t *testing.T) {
+	run, _ := echoRunner(t)
+	machine := NewConnMachine(nil)
+
+	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if err := machine.ProcessPending(context.Background(), run); err != nil {
+		t.Fatalf("ProcessPending() error = %v", err)
+	}
+
+	// Drain part of the buffered response so the pending output has a non-zero
+	// write offset, then append a push frame behind it.
+	short := &shortWriter{limit: 2}
+	if err := machine.Flush(short); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+	if err := machine.BufferEncoded([]byte("+push\r\n")); err != nil {
+		t.Fatalf("BufferEncoded() error = %v", err)
+	}
+
+	rest := flushAll(t, machine)
+	if got, want := short.buf.String()+string(rest), "+OK\r\n+push\r\n"; got != want {
+		t.Fatalf("flushed output = %q, want %q", got, want)
+	}
+}
+
+func TestConnMachineBufferEncodedRejectsClosedMachine(t *testing.T) {
+	machine := NewConnMachine(nil)
+	machine.Close(nil)
+
+	if err := machine.BufferEncoded([]byte("+push\r\n")); !errors.Is(err, ErrConnMachineClosed) {
+		t.Fatalf("BufferEncoded() after close = %v, want ErrConnMachineClosed", err)
+	}
+}
+
+func TestConnMachineProcessNextExecutesOneRequestAtATime(t *testing.T) {
+	run, executed := echoRunner(t)
+	machine := NewConnMachine(nil)
+
+	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+
+	more, err := machine.ProcessNext(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ProcessNext() error = %v", err)
+	}
+	if !more {
+		t.Fatal("ProcessNext() more = false after first request, want true")
+	}
+	if len(*executed) != 1 || machine.PendingRequests() != 1 {
+		t.Fatalf("executed %d requests with %d pending, want 1 and 1", len(*executed), machine.PendingRequests())
+	}
+
+	more, err = machine.ProcessNext(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ProcessNext() second call error = %v", err)
+	}
+	if more {
+		t.Fatal("ProcessNext() more = true after final request, want false")
+	}
+	if len(*executed) != 2 {
+		t.Fatalf("executed %d requests, want 2", len(*executed))
+	}
+
+	if got, want := flushAll(t, machine), "+OK\r\n+OK\r\n"; string(got) != want {
+		t.Fatalf("flushed output = %q, want %q", got, want)
+	}
+}
+
+func TestConnMachineWriteBufferLimitClosesOnOversizedResponses(t *testing.T) {
+	run := func(_ context.Context, _ protocol.Value) ([]protocol.Value, error) {
+		return []protocol.Value{protocol.BulkString{Data: bytes.Repeat([]byte("x"), 64)}}, nil
+	}
+	machine := NewConnMachine(nil)
+	machine.maxWriteBuffer = 32
+
+	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if err := machine.ProcessPending(context.Background(), run); err == nil {
+		t.Fatal("ProcessPending() error = nil, want write-buffer limit error")
+	}
+	if machine.State() != ConnStateClosed {
+		t.Fatalf("State() = %d, want ConnStateClosed", machine.State())
+	}
+}
+
+func TestConnMachineWriteBufferLimitRejectsOversizedPushFrames(t *testing.T) {
+	machine := NewConnMachine(nil)
+	machine.maxWriteBuffer = 8
+
+	if err := machine.BufferEncoded([]byte("+ok\r\n")); err != nil {
+		t.Fatalf("BufferEncoded() within limit error = %v", err)
+	}
+	if err := machine.BufferEncoded([]byte("+more\r\n")); err == nil {
+		t.Fatal("BufferEncoded() error = nil, want write-buffer limit error")
+	}
+	if machine.State() == ConnStateClosed {
+		t.Fatal("State() = ConnStateClosed, want machine left open for the caller to close")
+	}
+}

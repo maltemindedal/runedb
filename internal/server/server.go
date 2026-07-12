@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -181,26 +182,8 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	stopShutdown := context.AfterFunc(ctx, s.shutdown)
 	defer stopShutdown()
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
-			}
-
-			var temporary temporaryError
-			if errors.As(err, &temporary) && temporary.Temporary() {
-				s.logger.Warn("temporary accept error", "error", err)
-				continue
-			}
-
-			return fmt.Errorf("server: accept connection: %w", err)
-		}
-
-		clientID := s.registry.Add(conn)
-		s.createClientState(clientID)
-		s.handlerWG.Add(1)
-		go s.handleConnection(ctx, clientID, conn)
+	if err := s.serve(ctx, listener); err != nil {
+		return err
 	}
 
 	s.handlerWG.Wait()
@@ -212,6 +195,89 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	s.logger.Info("RuneDB stopped")
 	return nil
+}
+
+// errEventLoopUnsupported reports that the current platform has no OS I/O
+// multiplexing backend (epoll on Linux, kqueue on macOS).
+var errEventLoopUnsupported = errors.New("server: event loop networking is not supported on this platform")
+
+type inlineExecutionContextKey struct{}
+
+// WithInlineExecution marks ctx as executing commands inline on a shared
+// event-loop goroutine, where a blocked command stalls every connection.
+func WithInlineExecution(ctx context.Context) context.Context {
+	return context.WithValue(ctx, inlineExecutionContextKey{}, true)
+}
+
+// IsInlineExecution reports whether commands on ctx run inline on a shared
+// event-loop goroutine and therefore must fail instead of blocking.
+func IsInlineExecution(ctx context.Context) bool {
+	inline, _ := ctx.Value(inlineExecutionContextKey{}).(bool)
+	return inline
+}
+
+// serve accepts and serves client connections until shutdown. With event-loop
+// mode enabled it dispatches sockets through OS readiness notifications where
+// supported (epoll on Linux, kqueue on macOS) and falls back to one goroutine
+// per connection elsewhere.
+func (s *Server) serve(ctx context.Context, listener net.Listener) error {
+	if s.cfg.EventLoop {
+		err := s.serveEventLoop(ctx, listener)
+		if !errors.Is(err, errEventLoopUnsupported) {
+			return err
+		}
+		s.logger.Warn(
+			"event loop networking is not supported on this platform; falling back to one goroutine per connection",
+			"goos", runtime.GOOS,
+		)
+	}
+
+	return s.serveGoroutinePerConnection(ctx, listener)
+}
+
+// serveGoroutinePerConnection runs the blocking accept loop that spawns one
+// handler goroutine per client connection.
+func (s *Server) serveGoroutinePerConnection(ctx context.Context, listener net.Listener) error {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+
+			var temporary temporaryError
+			if errors.As(err, &temporary) && temporary.Temporary() {
+				s.logger.Warn("temporary accept error", "error", err)
+				continue
+			}
+
+			return fmt.Errorf("server: accept connection: %w", err)
+		}
+
+		clientID, _ := s.registerClient(conn)
+		s.handlerWG.Add(1)
+		go s.handleConnection(ctx, clientID, conn)
+	}
+}
+
+// registerClient adds a connection to the client registry and creates its
+// connection-scoped state. Both networking modes use it.
+func (s *Server) registerClient(conn ClientConn) (uint64, *ClientState) {
+	clientID := s.registry.Add(conn)
+	return clientID, s.createClientState(clientID)
+}
+
+// teardownClient releases every per-client registration both networking modes
+// maintain: replica-peer membership, the client registry entry, and the
+// connection-scoped client state (which detaches watch, pub/sub, and monitor
+// registrations).
+func (s *Server) teardownClient(clientID uint64, logger *slog.Logger) {
+	if peer := s.replicaPeers.Remove(clientID); peer != nil {
+		logger.Info("replica disconnected", "replica_id", clientID, "listening_port", peer.ListeningPort)
+	}
+	s.registry.Remove(clientID)
+	s.removeClientState(clientID)
+	logger.Debug("client disconnected")
 }
 
 // Addr returns the bound listener address once the server has started.

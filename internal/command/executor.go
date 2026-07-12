@@ -200,6 +200,10 @@ func wrongNumberOfArgumentsError(command string) error {
 	return newRESPMessageError("ERR", fmt.Sprintf("wrong number of arguments for '%s' command", command))
 }
 
+func blockingNotSupportedError(command string) error {
+	return newRESPMessageError("ERR", fmt.Sprintf("%s would block; blocking commands are not supported with event-loop networking", command))
+}
+
 func newRESPWrappedError(prefix string, cause error) error {
 	return &prefixedError{prefix: prefix, message: cause.Error(), cause: cause}
 }

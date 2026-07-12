@@ -26,6 +26,7 @@ type Config struct {
 	RequirePass          string
 	MaxMemory            int64
 	SlowlogLogSlowerThan time.Duration
+	EventLoop            bool
 }
 
 // Default returns the default runtime configuration for local development.
@@ -44,6 +45,7 @@ func Default() Config {
 		MasterAuth:           "",
 		MaxMemory:            0,
 		SlowlogLogSlowerThan: 10 * time.Millisecond,
+		EventLoop:            false,
 	}
 }
 
@@ -74,6 +76,7 @@ func parseFlags(fs *flag.FlagSet, args []string) (Config, error) {
 	fs.StringVar(&cfg.ReplicaOf, "replicaof", cfg.ReplicaOf, "optional master address in host:port form for replica mode")
 	fs.StringVar(&cfg.MasterAuth, "masterauth", cfg.MasterAuth, "optional password used by replica mode to AUTH against a protected master")
 	fs.StringVar(&cfg.RequirePass, "requirepass", cfg.RequirePass, "optional password required for AUTH-protected client commands")
+	fs.BoolVar(&cfg.EventLoop, "event-loop", cfg.EventLoop, "serve clients through an OS I/O multiplexing event loop; supported on Linux (epoll) and macOS (kqueue), other platforms fall back to one goroutine per connection")
 	fs.Func("slowlog-log-slower-than", "slow query threshold in microseconds; 0 logs all commands and negative disables slowlog", func(value string) error {
 		threshold, err := parseSlowlogThreshold(value)
 		if err != nil {

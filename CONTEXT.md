@@ -16,6 +16,7 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - RDB snapshot: Redis database file support used for startup loading and graceful-shutdown snapshots.
 - Client state: per-connection state for authentication, transactions, pub/sub mode, monitor mode, and replication role.
 - Connection state machine: the non-blocking per-connection component that buffers readable bytes, parses complete RESP requests, executes commands, and flushes buffered responses incrementally without a dedicated blocking goroutine.
+- Event loop: the opt-in networking mode (`--event-loop`) that serves all client connections from one goroutine backed by OS readiness notifications (`epoll` on Linux, `kqueue` on macOS), dispatching readable and writable sockets through connection state machines.
 - Transaction: Redis-style `MULTI` / `EXEC` command queueing with `WATCH`-based optimistic invalidation.
 - Pub/sub registry: exact-channel subscription bookkeeping used by `SUBSCRIBE`, `UNSUBSCRIBE`, and `PUBLISH`.
 - Replica: a downstream server connected through the supported replication handshake.
@@ -28,7 +29,7 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 
 ## Current Capabilities
 
-- RESP2-centric TCP server with one goroutine per client and graceful signal-driven shutdown.
+- RESP2-centric TCP server with one goroutine per client by default, an opt-in OS I/O multiplexing event loop, and graceful signal-driven shutdown.
 - Thread-safe sharded in-memory storage for strings, hashes, lists, sets, sorted sets, streams, and bitmap and HyperLogLog operations over string values.
 - Geospatial commands (`GEOADD`, `GEODIST`, `GEORADIUS`) backed by geohash scores in regular sorted sets.
 - TTL handling, append-only durability, startup RDB loading, shutdown RDB snapshots, and background AOF rewrite.
@@ -42,7 +43,9 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - Memory accounting is approximate keyspace accounting, not exact process RSS accounting.
 - Replication supports the current `REPLCONF`, `PSYNC`, and `WAIT` surface but is not a complete Redis replication implementation.
 - Redis compatibility is scoped to commands explicitly implemented in `internal/command`; unsupported modifiers should fail explicitly rather than being silently accepted.
-- The connection state machine is introduced but not yet wired into the networking path, which still uses one goroutine per client; OS-level I/O multiplexing is tracked separately.
+- The event loop is opt-in and supported on Linux (`epoll`) and macOS (`kqueue`); other platforms, including Windows, fall back to goroutine-per-connection networking with a startup warning.
+- In event-loop mode, commands execute inline on the loop goroutine, so a command that would block (`BLPOP` on an empty list, `WAIT` that must wait for replica acknowledgements) fails with an error instead of blocking; the immediately satisfiable forms still succeed.
+- Event-loop connections cap buffered response and push output per connection and disconnect consumers that stop draining their socket, in place of the per-write deadlines the goroutine path uses.
 
 ## Documentation Rules
 

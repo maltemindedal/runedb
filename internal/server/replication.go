@@ -65,7 +65,7 @@ type ReplicationState struct {
 // ReplicaPeer describes a replica connection attached to a master.
 type ReplicaPeer struct {
 	ID            uint64
-	Conn          net.Conn
+	Conn          ClientConn
 	ListeningPort int
 	AckOffset     int64
 
@@ -151,7 +151,7 @@ func NewReplicaRegistry() *ReplicaRegistry {
 }
 
 // Add stores or updates a replica peer.
-func (r *ReplicaRegistry) Add(id uint64, conn net.Conn, listeningPort int, writer encodedReplicaWriter) {
+func (r *ReplicaRegistry) Add(id uint64, conn ClientConn, listeningPort int, writer encodedReplicaWriter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -264,7 +264,7 @@ func randomReplicationID() string {
 	return fmt.Sprintf("%040x", time.Now().UnixNano())
 }
 
-func (s *Server) registerReplicaPeer(clientID uint64, conn net.Conn) {
+func (s *Server) registerReplicaPeer(clientID uint64, conn ClientConn) {
 	state := s.getClientState(clientID)
 	if state == nil || !state.IsReplica() {
 		return

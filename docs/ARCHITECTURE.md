@@ -71,9 +71,10 @@ Current responsibilities:
 
 - create the listener with `net.Listen`
 - accept client connections in a loop
-- spawn one goroutine per client
+- spawn one goroutine per client (default networking mode)
 - parse → execute → respond for each request
-- provide a non-blocking connection state machine that buffers reads, parses complete requests, buffers responses, and flushes output incrementally (not yet wired into the accept loop)
+- provide a non-blocking connection state machine that buffers reads, parses complete requests, buffers responses, and flushes output incrementally
+- optionally serve all clients from one event-loop goroutine driven by OS readiness notifications (`--event-loop`), dispatching readable and writable sockets through per-connection state machines
 - maintain an active connection registry for shutdown
 - load startup persistence (RDB and/or AOF) before accepting TCP connections
 - append durable command frames and fan out replication writes after successful execution
@@ -94,6 +95,21 @@ The store now uses a fixed shard set with one `sync.RWMutex` per shard. Single-k
 ### Why RESP3 placeholders now?
 
 The user requested RESP3-aware structure, but full RESP3 support is out of scope for the current implementation. The protocol package therefore exposes lightweight placeholder types so later expansion does not require redesigning the core abstraction.
+
+### Why an opt-in event loop?
+
+The `--event-loop` flag replaces goroutine-per-connection networking with a single event-loop goroutine backed by OS I/O multiplexing, so many idle connections cost file descriptors instead of goroutine stacks.
+
+Platform support boundary:
+
+- Linux uses `epoll` and macOS uses `kqueue`, both through the standard-library `syscall` package with level-triggered readiness.
+- Every other platform (including Windows) logs a warning and falls back to the default goroutine-per-connection path, so the flag is safe to set everywhere.
+
+Inside the loop, each accepted socket is set non-blocking and owned by a connection state machine: readable sockets feed buffered bytes into request parsing and command execution, and writable sockets flush pending RESP output under backpressure. Asynchronous deliveries produced by other connections (pub/sub messages, monitor events, replication payloads) are handed to the loop through a locked per-connection push queue plus a poller wakeup, keeping all socket writes ordered through the machine's single write buffer.
+
+Backpressure and memory safety: requests are executed one at a time with flushes interleaved, and both reading and execution pause for a connection whose buffered output passes a high-water mark, resuming when the socket drains. Buffered output is capped per connection, so a consumer that stops draining its socket is disconnected instead of growing server memory — the event-loop replacement for the per-write deadlines the goroutine path applies to pub/sub and monitor deliveries. When the peer half-closes, the already-parsed pipeline tail is served and its replies drained before the connection closes.
+
+Scope note: commands execute inline on the loop goroutine, so a command that would block (`BLPOP` on an empty list, `WAIT` that must wait for replica acknowledgements) fails with an explicit error in event-loop mode rather than stalling every connection; immediately satisfiable forms still succeed. The goroutine-per-connection path remains the default.
 
 ### Why keep persistence separate from replication?
 
