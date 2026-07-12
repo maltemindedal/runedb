@@ -1,7 +1,6 @@
 package server
 
 import (
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +37,7 @@ type observedCommand struct {
 	Timestamp  time.Time
 }
 
-func observeCommand(value protocol.Value, clientID uint64, conn net.Conn) observedCommand {
+func observeCommand(value protocol.Value, clientID uint64, conn ClientConn) observedCommand {
 	parts, ok := commandParts(value)
 	if !ok {
 		return observedCommand{}

@@ -29,6 +29,12 @@ const (
 // role of Redis's proto-max-bulk-len query-buffer limit.
 const defaultMaxReadBuffer = 512 * 1024 * 1024
 
+// defaultMaxWriteBuffer bounds the response bytes buffered for a client that
+// is not draining its socket, so a stalled or slow consumer is disconnected
+// instead of growing server memory without limit. It mirrors the role of
+// Redis's client-output-buffer-limit.
+const defaultMaxWriteBuffer = 512 * 1024 * 1024
+
 // ConnCommandRunner executes one parsed request with connection-scoped state
 // and returns the RESP responses to buffer for the client. A non-nil error is
 // fatal for the connection.
@@ -69,22 +75,24 @@ type connEvent struct {
 type ConnMachine struct {
 	client *ClientState
 
-	state         ConnMachineState
-	err           error
-	readBuf       []byte
-	resumeAt      int
-	maxReadBuffer int
-	pending       []connEvent
-	writeBuf      []byte
-	writeOff      int
+	state          ConnMachineState
+	err            error
+	readBuf        []byte
+	resumeAt       int
+	maxReadBuffer  int
+	maxWriteBuffer int
+	pending        []connEvent
+	writeBuf       []byte
+	writeOff       int
 }
 
 // NewConnMachine constructs an active connection state machine bound to the
 // connection-scoped client state.
 func NewConnMachine(client *ClientState) *ConnMachine {
 	return &ConnMachine{
-		client:        client,
-		maxReadBuffer: defaultMaxReadBuffer,
+		client:         client,
+		maxReadBuffer:  defaultMaxReadBuffer,
+		maxWriteBuffer: defaultMaxWriteBuffer,
 	}
 }
 
@@ -111,7 +119,12 @@ func (m *ConnMachine) PendingRequests() int {
 
 // HasPendingOutput reports whether buffered response bytes await flushing.
 func (m *ConnMachine) HasPendingOutput() bool {
-	return m.writeOff < len(m.writeBuf)
+	return m.PendingOutputBytes() > 0
+}
+
+// PendingOutputBytes reports how many buffered response bytes await flushing.
+func (m *ConnMachine) PendingOutputBytes() int {
+	return len(m.writeBuf) - m.writeOff
 }
 
 // Feed appends readable bytes to the read buffer and parses every complete
@@ -178,30 +191,52 @@ func (m *ConnMachine) ProcessPending(ctx context.Context, run ConnCommandRunner)
 		return ErrConnMachineClosed
 	}
 
-	for len(m.pending) > 0 {
-		event := m.pending[0]
-		m.pending = m.pending[1:]
-
-		if event.protoErr != nil {
-			if err := m.bufferResponses([]protocol.Value{protocol.ErrorValue{Message: "ERR " + event.protoErr.Error()}}); err != nil {
-				m.Close(err)
-				return err
-			}
-			continue
-		}
-
-		responses, err := run(ctx, event.request)
+	for {
+		more, err := m.ProcessNext(ctx, run)
 		if err != nil {
-			m.Close(err)
 			return err
 		}
-		if err := m.bufferResponses(responses); err != nil {
-			m.Close(err)
-			return err
+		if !more {
+			return nil
 		}
 	}
+}
 
-	return nil
+// ProcessNext executes at most one pending parsed request (or emits one queued
+// protocol-error reply) and reports whether more remain. It lets a driving
+// loop interleave output flushing between requests, so a large pipeline is not
+// forced to buffer its entire response set before the first byte reaches the
+// socket. A runner error is fatal and closes the machine immediately.
+func (m *ConnMachine) ProcessNext(ctx context.Context, run ConnCommandRunner) (bool, error) {
+	if m.state == ConnStateClosed {
+		return false, ErrConnMachineClosed
+	}
+	if len(m.pending) == 0 {
+		return false, nil
+	}
+
+	event := m.pending[0]
+	m.pending = m.pending[1:]
+
+	if event.protoErr != nil {
+		if err := m.bufferResponses([]protocol.Value{protocol.ErrorValue{Message: "ERR " + event.protoErr.Error()}}); err != nil {
+			m.Close(err)
+			return false, err
+		}
+		return len(m.pending) > 0, nil
+	}
+
+	responses, err := run(ctx, event.request)
+	if err != nil {
+		m.Close(err)
+		return false, err
+	}
+	if err := m.bufferResponses(responses); err != nil {
+		m.Close(err)
+		return false, err
+	}
+
+	return len(m.pending) > 0, nil
 }
 
 // Flush writes pending output to w and consumes whatever w accepts, so partial
@@ -239,7 +274,9 @@ func (m *ConnMachine) Flush(w io.Writer) error {
 // messages, monitor events, replication payloads) produced by other
 // connections, keeping every byte written to the socket ordered through the
 // machine's single write buffer. A closing machine still accepts payloads so
-// they drain with the remaining output; a closed machine rejects them.
+// they drain with the remaining output; a closed machine rejects them, and a
+// payload that would grow pending output past the write-buffer limit fails so
+// the caller disconnects the stalled consumer.
 func (m *ConnMachine) BufferEncoded(payload []byte) error {
 	if m.state == ConnStateClosed {
 		return ErrConnMachineClosed
@@ -247,12 +284,11 @@ func (m *ConnMachine) BufferEncoded(payload []byte) error {
 	if len(payload) == 0 {
 		return nil
 	}
-
-	if m.writeOff > 0 {
-		m.writeBuf = append(m.writeBuf[:0], m.writeBuf[m.writeOff:]...)
-		m.writeOff = 0
+	if m.PendingOutputBytes()+len(payload) > m.maxWriteBuffer {
+		return fmt.Errorf("server: pending output exceeds %d byte write-buffer limit", m.maxWriteBuffer)
 	}
 
+	m.compactWriteBuf()
 	m.writeBuf = append(m.writeBuf, payload...)
 	return nil
 }
@@ -281,10 +317,7 @@ func (m *ConnMachine) bufferResponses(values []protocol.Value) error {
 		return nil
 	}
 
-	if m.writeOff > 0 {
-		m.writeBuf = append(m.writeBuf[:0], m.writeBuf[m.writeOff:]...)
-		m.writeOff = 0
-	}
+	m.compactWriteBuf()
 
 	encoded, err := protocol.AppendValues(m.writeBuf, values)
 	if err != nil {
@@ -292,5 +325,21 @@ func (m *ConnMachine) bufferResponses(values []protocol.Value) error {
 	}
 
 	m.writeBuf = encoded
+	if m.PendingOutputBytes() > m.maxWriteBuffer {
+		return fmt.Errorf("server: pending output exceeds %d byte write-buffer limit", m.maxWriteBuffer)
+	}
 	return nil
+}
+
+// compactWriteBuf reclaims the flushed prefix of the write buffer before an
+// append. Compaction is amortized: it runs only once the flushed prefix
+// dominates the buffer, so repeated appends against a partially drained buffer
+// stay linear instead of moving the whole unwritten tail on every call.
+func (m *ConnMachine) compactWriteBuf() {
+	if m.writeOff == 0 || m.writeOff < len(m.writeBuf)/2 {
+		return
+	}
+
+	m.writeBuf = append(m.writeBuf[:0], m.writeBuf[m.writeOff:]...)
+	m.writeOff = 0
 }

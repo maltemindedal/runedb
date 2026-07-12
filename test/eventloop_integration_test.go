@@ -3,10 +3,12 @@
 package test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,4 +210,105 @@ func assertParsedValue(t *testing.T, parser *protocol.Parser, want protocol.Valu
 		t.Fatalf("Parse() error = %v", err)
 	}
 	assertValuesEqual(t, got, want)
+}
+
+func TestEventLoopRejectsBlockingCommandsInsteadOfStallingTheLoop(t *testing.T) {
+	addr, stop, errCh := startTestServer(t, eventLoopTestConfig())
+	defer stop()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer closeTestResource(t, conn)
+	parser := protocol.NewParser(conn)
+
+	// BLPOP on an empty list would park the loop goroutine forever; it must
+	// fail fast instead. A satisfiable BLPOP still succeeds.
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{
+		Message: "ERR BLPOP would block; blocking commands are not supported with event-loop networking",
+	}, "BLPOP", "jobs")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "RPUSH", "jobs", "task-1")
+	assertCommandResponse(t, conn, parser, protocol.Array{Elements: []protocol.Value{
+		protocol.BulkString{Data: []byte("jobs")},
+		protocol.BulkString{Data: []byte("task-1")},
+	}}, "BLPOP", "jobs")
+
+	// WAIT that cannot be satisfied immediately would self-deadlock its
+	// GETACK round-trip; it must fail fast. The immediate forms still work.
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "k", "v")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 0}, "WAIT", "0", "100")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 0}, "WAIT", "1", "0")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{
+		Message: "ERR WAIT would block; blocking commands are not supported with event-loop networking",
+	}, "WAIT", "1", "100")
+
+	// The connection stays serviceable after the rejected commands, and other
+	// clients were never stalled.
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "PONG"}, "PING")
+
+	stop()
+	waitForServerStop(t, errCh)
+}
+
+func TestEventLoopDrainsPipelinedRepliesAfterClientCloseWrite(t *testing.T) {
+	addr, stop, errCh := startTestServer(t, eventLoopTestConfig())
+	defer stop()
+
+	setupConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) setup error = %v", addr, err)
+	}
+	defer closeTestResource(t, setupConn)
+	setupParser := protocol.NewParser(setupConn)
+
+	// A value large enough that the pipelined replies exceed typical kernel
+	// send buffers, forcing the flush path through EAGAIN.
+	payload := strings.Repeat("v", 1<<20)
+	assertCommandResponse(t, setupConn, setupParser, protocol.SimpleString{Value: "OK"}, "SET", "big", payload)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) error = %v", addr, err)
+	}
+	defer closeTestResource(t, conn)
+
+	const pipelined = 8
+	var pipeline bytes.Buffer
+	for i := 0; i < pipelined; i++ {
+		if err := protocol.WriteValue(&pipeline, request("GET", "big")); err != nil {
+			t.Fatalf("WriteValue(GET) error = %v", err)
+		}
+	}
+	if _, err := conn.Write(pipeline.Bytes()); err != nil {
+		t.Fatalf("Write(pipeline) error = %v", err)
+	}
+
+	// Half-close the write side before reading a single reply: the server must
+	// still serve the parsed pipeline tail and drain every buffered response.
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		t.Fatalf("connection type = %T, want *net.TCPConn", conn)
+	}
+	if err := tcpConn.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite() error = %v", err)
+	}
+
+	parser := protocol.NewParser(conn)
+	for i := 0; i < pipelined; i++ {
+		reply, err := parser.Parse()
+		if err != nil {
+			t.Fatalf("Parse() reply %d error = %v", i, err)
+		}
+		bulk, ok := reply.(protocol.BulkString)
+		if !ok || len(bulk.Data) != len(payload) {
+			t.Fatalf("reply %d = %T with %d bytes, want full %d-byte bulk string", i, reply, len(bulk.Data), len(payload))
+		}
+	}
+	if _, err := parser.Parse(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Parse() after pipeline = %v, want io.EOF", err)
+	}
+
+	stop()
+	waitForServerStop(t, errCh)
 }

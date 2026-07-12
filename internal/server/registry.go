@@ -6,20 +6,30 @@ import (
 	"sync"
 )
 
+// ClientConn is the connection surface the server tracks per client: enough
+// to close it and attribute it. Narrowing this from net.Conn keeps callers
+// from depending on direct socket I/O or deadlines, which the event-loop
+// networking mode does not expose — its connections are driven exclusively by
+// the loop goroutine.
+type ClientConn interface {
+	Close() error
+	RemoteAddr() net.Addr
+}
+
 // Registry tracks active client connections.
 type Registry struct {
 	mu      sync.RWMutex
 	nextID  uint64
-	clients map[uint64]net.Conn
+	clients map[uint64]ClientConn
 }
 
 // NewRegistry creates an empty client registry.
 func NewRegistry() *Registry {
-	return &Registry{clients: make(map[uint64]net.Conn)}
+	return &Registry{clients: make(map[uint64]ClientConn)}
 }
 
 // Add registers a new client connection and returns its unique ID.
-func (r *Registry) Add(conn net.Conn) uint64 {
+func (r *Registry) Add(conn ClientConn) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -47,7 +57,7 @@ func (r *Registry) Count() int {
 // CloseAll closes every tracked client connection.
 func (r *Registry) CloseAll() error {
 	r.mu.Lock()
-	clients := make([]net.Conn, 0, len(r.clients))
+	clients := make([]ClientConn, 0, len(r.clients))
 	for id, conn := range r.clients {
 		clients = append(clients, conn)
 		delete(r.clients, id)

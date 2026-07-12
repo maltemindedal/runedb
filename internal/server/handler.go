@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -12,7 +13,6 @@ import (
 
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {
 	defer s.handlerWG.Done()
-	defer s.registry.Remove(clientID)
 
 	parser := protocol.NewParser(conn)
 	writer := bufio.NewWriter(conn)
@@ -28,13 +28,7 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 
 	logger := s.logger.With("client_id", clientID, "remote_addr", conn.RemoteAddr().String())
 	logger.Debug("client connected")
-	defer logger.Debug("client disconnected")
-	defer func() {
-		if peer := s.replicaPeers.Remove(clientID); peer != nil {
-			logger.Info("replica disconnected", "replica_id", clientID, "listening_port", peer.ListeningPort)
-		}
-	}()
-	defer s.removeClientState(clientID)
+	defer s.teardownClient(clientID, logger)
 	defer func() {
 		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			logger.Debug("failed to close connection", "error", err)
@@ -63,37 +57,57 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 			continue
 		}
 
-		if s.monitorRegistry.HasSubscribers() {
-			s.broadcastMonitorEvent(observeCommand(value, clientID, conn))
-		}
-		result, execErr := s.executor.ExecuteDetailed(ctx, value)
+		responses, registerReplica, execErr := s.executeClientRequest(ctx, clientID, conn, logger, value)
 		if execErr != nil {
-			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
-				return
-			}
-			logger.Debug("command execution failed", "error", execErr)
-			result = SingleResponse(responseError(execErr))
-		}
-
-		durabilityPayload, durableErr := s.prepareDurabilityBeforeResponse(result.Durability, logger)
-		if durableErr != nil {
-			result = SingleResponse(persistenceFailureResponse())
-			result.Propagation = nil
-			result.Durability = nil
-			durabilityPayload = nil
-		}
-
-		if err := s.writeClientResponses(ctx, writer, result.Responses); err != nil {
-			s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
-			logger.Warn("failed to write response", "error", err, "propagation_frames", len(result.Propagation))
 			return
 		}
-		if result.RegisterReplica {
+
+		if err := s.writeClientResponses(ctx, writer, responses); err != nil {
+			logger.Warn("failed to write response", "error", err)
+			return
+		}
+		// Register only after the handshake response reached the socket, so a
+		// concurrently propagated command cannot precede the FULLRESYNC frames
+		// in the replica's stream.
+		if registerReplica {
 			s.registerReplicaPeer(clientID, conn)
 		}
-		s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
-		s.commandsProcessed.Add(1)
 	}
+}
+
+// executeClientRequest runs one parsed request through the command pipeline
+// shared by both networking modes: monitor observation, execution, durability
+// preparation and its persistence-failure downgrade, mutation-effect
+// finalization, and the processed-command counter. It returns the RESP
+// responses to deliver and whether the caller must register the connection as
+// a replica peer once those responses have been written or buffered. A
+// non-nil error is fatal for the connection.
+func (s *Server) executeClientRequest(ctx context.Context, clientID uint64, conn ClientConn, logger *slog.Logger, request protocol.Value) ([]protocol.Value, bool, error) {
+	if s.monitorRegistry.HasSubscribers() {
+		s.broadcastMonitorEvent(observeCommand(request, clientID, conn))
+	}
+
+	result, execErr := s.executor.ExecuteDetailed(ctx, request)
+	if execErr != nil {
+		if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
+			return nil, false, execErr
+		}
+		logger.Debug("command execution failed", "error", execErr)
+		result = SingleResponse(responseError(execErr))
+	}
+
+	durabilityPayload, durableErr := s.prepareDurabilityBeforeResponse(result.Durability, logger)
+	if durableErr != nil {
+		result = SingleResponse(persistenceFailureResponse())
+		result.Propagation = nil
+		result.Durability = nil
+		durabilityPayload = nil
+	}
+
+	s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
+	s.commandsProcessed.Add(1)
+
+	return result.Responses, result.RegisterReplica, nil
 }
 
 func (s *Server) writeClientResponses(ctx context.Context, writer *bufio.Writer, values []protocol.Value) error {

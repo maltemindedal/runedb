@@ -28,6 +28,17 @@ const eventLoopReadChunk = 64 * 1024
 // other connections. Level-triggered readiness re-reports leftover data.
 const eventLoopReadBudget = 1 << 20
 
+// eventLoopOutputHighWater is the pending-output level above which the loop
+// stops reading and executing further requests for a connection until its
+// buffered responses drain, so a pipelining client that reads slowly cannot
+// amplify small requests into unbounded response memory.
+const eventLoopOutputHighWater = 1 << 20
+
+// eventLoopAcceptRetryDelay is how long accepting pauses after the process
+// runs out of file descriptors, preventing a level-triggered busy loop on a
+// backlog the loop cannot drain.
+const eventLoopAcceptRetryDelay = 100 * time.Millisecond
+
 // pollEvent is one readiness notification translated from the OS poller.
 type pollEvent struct {
 	fd       int
@@ -41,8 +52,8 @@ type pollEvent struct {
 type poller interface {
 	// Add registers fd for read readiness.
 	Add(fd int) error
-	// SetWrite enables or disables write-readiness reporting for fd.
-	SetWrite(fd int, writable bool) error
+	// Set replaces fd's readiness interest set.
+	Set(fd int, readable, writable bool) error
 	// Remove deregisters fd entirely.
 	Remove(fd int) error
 	// Wait blocks until readiness events arrive and translates them into
@@ -96,7 +107,6 @@ func (s *Server) serveEventLoop(ctx context.Context, listener net.Listener) erro
 		poller:       p,
 		listenerFile: listenerFile,
 		listenFD:     listenFD,
-		localAddr:    listener.Addr(),
 		conns:        make(map[int]*eventConn),
 		events:       make([]pollEvent, pollerEventBatch),
 		readBuf:      make([]byte, eventLoopReadChunk),
@@ -107,65 +117,46 @@ func (s *Server) serveEventLoop(ctx context.Context, listener net.Listener) erro
 }
 
 // connCommandRunner returns a ConnCommandRunner that executes one parsed
-// request through the same pipeline as handleConnection: monitor observation,
-// command execution, durability preparation, replica registration, and
-// mutation-effect finalization. Responses are returned for the ConnMachine to
-// buffer rather than written directly, so mutation effects finalize before the
-// reply reaches the socket instead of after, as on the goroutine path. A
-// returned error is fatal for the connection.
-func (s *Server) connCommandRunner(clientID uint64, conn net.Conn, logger *slog.Logger) ConnCommandRunner {
+// request through the command pipeline shared with the goroutine path.
+// Responses are returned for the ConnMachine to buffer rather than written
+// directly. Replica registration happens before the responses are buffered,
+// which is safe only because the loop is single-threaded: no other command can
+// propagate to the new peer between registration and the handshake responses
+// reaching the machine's write buffer.
+func (s *Server) connCommandRunner(clientID uint64, conn ClientConn, logger *slog.Logger) ConnCommandRunner {
 	return func(ctx context.Context, request protocol.Value) ([]protocol.Value, error) {
-		if s.monitorRegistry.HasSubscribers() {
-			s.broadcastMonitorEvent(observeCommand(request, clientID, conn))
+		responses, registerReplica, err := s.executeClientRequest(ctx, clientID, conn, logger, request)
+		if err != nil {
+			return nil, err
 		}
-
-		result, execErr := s.executor.ExecuteDetailed(ctx, request)
-		if execErr != nil {
-			if errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded) {
-				return nil, execErr
-			}
-			logger.Debug("command execution failed", "error", execErr)
-			result = SingleResponse(responseError(execErr))
-		}
-
-		durabilityPayload, durableErr := s.prepareDurabilityBeforeResponse(result.Durability, logger)
-		if durableErr != nil {
-			result = SingleResponse(persistenceFailureResponse())
-			result.Propagation = nil
-			result.Durability = nil
-			durabilityPayload = nil
-		}
-
-		if result.RegisterReplica {
+		if registerReplica {
 			s.registerReplicaPeer(clientID, conn)
 		}
-		s.finalizeMutationEffects(ctx, result.Durability, durabilityPayload, result.Propagation, logger)
-		s.commandsProcessed.Add(1)
-
-		return result.Responses, nil
+		return responses, nil
 	}
 }
 
 // eventLoop drives all client connections from one goroutine. Connection state
 // (ConnMachine, interest flags) is owned exclusively by that goroutine; the
 // mutex only guards the queues that other goroutines use to hand work to the
-// loop (async push frames and close requests), which are paired with a poller
-// wakeup.
+// loop (async push frames, close requests, and accept resumption), which are
+// paired with a poller wakeup.
 type eventLoop struct {
 	srv          *Server
 	poller       poller
 	listenerFile *os.File
 	listenFD     int
-	localAddr    net.Addr
 	ctx          context.Context
 
-	conns   map[int]*eventConn
-	events  []pollEvent
-	readBuf []byte
+	conns        map[int]*eventConn
+	events       []pollEvent
+	readBuf      []byte
+	acceptPaused bool
 
-	mu        sync.Mutex
-	pushed    []*eventConn
-	closeReqs []*eventConn
+	mu           sync.Mutex
+	pushed       []*eventConn
+	closeReqs    []*eventConn
+	resumeAccept bool
 }
 
 // eventConn tracks one accepted connection inside the event loop. All fields
@@ -175,13 +166,13 @@ type eventConn struct {
 	fd         int
 	clientID   uint64
 	remoteAddr net.Addr
-	state      *ClientState
 	machine    *ConnMachine
 	ctx        context.Context
 	run        ConnCommandRunner
-	handle     *eventConnHandle
 	logger     *slog.Logger
+	wantRead   bool
 	wantWrite  bool
+	peerClosed bool
 
 	pushBuf        []byte
 	pushQueued     bool
@@ -212,7 +203,9 @@ func (l *eventLoop) run(ctx context.Context) error {
 		for _, event := range l.events[:n] {
 			if event.fd == l.listenFD {
 				if event.readable {
-					l.acceptReady()
+					if err := l.acceptReady(); err != nil {
+						return err
+					}
 				}
 				continue
 			}
@@ -225,16 +218,19 @@ func (l *eventLoop) run(ctx context.Context) error {
 				l.connReadable(conn)
 			}
 			// The readable path may have closed and unregistered the
-			// connection; re-check before flushing.
+			// connection; re-check before resuming it.
 			if event.writable && l.conns[event.fd] == conn {
-				l.flushConn(conn)
+				// Draining output may also unblock request execution that was
+				// paused by the output high-water mark.
+				l.processConn(conn)
 			}
 		}
 	}
 }
 
 // applyQueuedWork moves cross-goroutine push frames into connection write
-// buffers and applies queued close requests.
+// buffers, applies queued close requests, and resumes accepting after a
+// descriptor-exhaustion pause.
 func (l *eventLoop) applyQueuedWork() {
 	type pushWork struct {
 		conn *eventConn
@@ -255,6 +251,8 @@ func (l *eventLoop) applyQueuedWork() {
 	l.pushed = l.pushed[:0]
 	closes := append([]*eventConn(nil), l.closeReqs...)
 	l.closeReqs = l.closeReqs[:0]
+	resumeAccept := l.resumeAccept
+	l.resumeAccept = false
 	l.mu.Unlock()
 
 	for _, push := range pushes {
@@ -265,7 +263,7 @@ func (l *eventLoop) applyQueuedWork() {
 			l.closeConn(push.conn, err)
 			continue
 		}
-		l.flushConn(push.conn)
+		l.finishConnEvent(push.conn)
 	}
 
 	for _, conn := range closes {
@@ -273,16 +271,32 @@ func (l *eventLoop) applyQueuedWork() {
 			l.closeConn(conn, nil)
 		}
 	}
+
+	if resumeAccept && l.acceptPaused {
+		if err := l.poller.Set(l.listenFD, true, false); err != nil {
+			l.srv.logger.Warn("failed to resume accepting after descriptor exhaustion", "error", err)
+			return
+		}
+		l.acceptPaused = false
+	}
 }
 
 // queuePush appends an async push frame (pub/sub message, monitor event, or
 // replication payload) for delivery by the loop goroutine. Safe for concurrent
-// use; the per-client responseMu already serializes whole frames.
+// use; the per-client responseMu already serializes whole frames. A
+// connection whose push queue exceeds the write-buffer limit is closed, so a
+// consumer that stopped draining its socket cannot grow server memory without
+// bound.
 func (l *eventLoop) queuePush(conn *eventConn, payload []byte) (int, error) {
 	l.mu.Lock()
 	if conn.detached {
 		l.mu.Unlock()
 		return 0, net.ErrClosed
+	}
+	if len(conn.pushBuf)+len(payload) > defaultMaxWriteBuffer {
+		l.mu.Unlock()
+		l.requestClose(conn)
+		return 0, fmt.Errorf("server: push buffer exceeds %d byte write-buffer limit", defaultMaxWriteBuffer)
 	}
 	conn.pushBuf = append(conn.pushBuf, payload...)
 	alreadyQueued := conn.pushQueued
@@ -312,18 +326,29 @@ func (l *eventLoop) requestClose(conn *eventConn) {
 	_ = l.poller.Wake()
 }
 
-func (l *eventLoop) acceptReady() {
+// acceptReady accepts queued connections until the listener would block. A
+// fatal accept error is returned and terminates the event loop, matching the
+// goroutine path; descriptor exhaustion pauses accepting briefly instead of
+// busy-looping on level-triggered readiness.
+func (l *eventLoop) acceptReady() error {
 	for {
 		fd, sa, err := syscall.Accept(l.listenFD)
 		if err != nil {
 			switch err {
 			case syscall.EAGAIN:
-				return
-			case syscall.EINTR, syscall.ECONNABORTED:
+				return nil
+			case syscall.EINTR, syscall.ECONNABORTED, syscall.ECONNRESET:
 				continue
+			case syscall.EMFILE, syscall.ENFILE:
+				l.srv.logger.Warn(
+					"accept failed: file descriptor limit reached; pausing accepts",
+					"error", err,
+					"retry_after", eventLoopAcceptRetryDelay,
+				)
+				l.pauseAccepting()
+				return nil
 			default:
-				l.srv.logger.Warn("event loop accept failed", "error", err)
-				return
+				return fmt.Errorf("server: accept connection: %w", err)
 			}
 		}
 
@@ -343,30 +368,49 @@ func (l *eventLoop) acceptReady() {
 	}
 }
 
-func (l *eventLoop) registerConn(fd int, remoteAddr net.Addr) {
-	conn := &eventConn{fd: fd, remoteAddr: remoteAddr}
-	conn.handle = &eventConnHandle{loop: l, conn: conn}
+// pauseAccepting drops the listener's read interest and schedules a resumption
+// wakeup, so descriptor exhaustion backs off instead of spinning.
+func (l *eventLoop) pauseAccepting() {
+	if l.acceptPaused {
+		return
+	}
+	if err := l.poller.Set(l.listenFD, false, false); err != nil {
+		l.srv.logger.Warn("failed to pause accepting", "error", err)
+		return
+	}
+	l.acceptPaused = true
 
-	conn.clientID = l.srv.registry.Add(conn.handle)
-	conn.state = l.srv.createClientState(conn.clientID)
-	conn.state.BindResponseWriter(bufio.NewWriter(&eventConnPushWriter{loop: l, conn: conn}))
+	time.AfterFunc(eventLoopAcceptRetryDelay, func() {
+		l.mu.Lock()
+		l.resumeAccept = true
+		l.mu.Unlock()
+		_ = l.poller.Wake()
+	})
+}
+
+func (l *eventLoop) registerConn(fd int, remoteAddr net.Addr) {
+	conn := &eventConn{fd: fd, remoteAddr: remoteAddr, wantRead: true}
+	handle := &eventConnHandle{loop: l, conn: conn}
+
+	clientID, state := l.srv.registerClient(handle)
+	conn.clientID = clientID
+	state.BindResponseWriter(bufio.NewWriter(&eventConnPushWriter{loop: l, conn: conn}))
 
 	remoteAddrText := ""
 	if remoteAddr != nil {
 		remoteAddrText = remoteAddr.String()
 	}
-	conn.state.SetRemoteAddr(remoteAddrText)
+	state.SetRemoteAddr(remoteAddrText)
 
-	conn.machine = NewConnMachine(conn.state)
-	conn.ctx = WithClientState(l.ctx, conn.state)
-	conn.logger = l.srv.logger.With("client_id", conn.clientID, "remote_addr", remoteAddrText)
-	conn.run = l.srv.connCommandRunner(conn.clientID, conn.handle, conn.logger)
+	conn.machine = NewConnMachine(state)
+	conn.ctx = WithInlineExecution(WithClientState(l.ctx, state))
+	conn.logger = l.srv.logger.With("client_id", clientID, "remote_addr", remoteAddrText)
+	conn.run = l.srv.connCommandRunner(clientID, handle, conn.logger)
 
 	if err := l.poller.Add(fd); err != nil {
 		conn.logger.Warn("failed to register accepted connection with poller", "error", err)
 		conn.machine.Close(err)
-		l.srv.registry.Remove(conn.clientID)
-		l.srv.removeClientState(conn.clientID)
+		l.srv.teardownClient(clientID, conn.logger)
 		closeIgnoringError(fd)
 		return
 	}
@@ -376,72 +420,99 @@ func (l *eventLoop) registerConn(fd int, remoteAddr net.Addr) {
 }
 
 func (l *eventLoop) connReadable(conn *eventConn) {
-	budget := eventLoopReadBudget
-	sawEOF := false
-
-	for budget > 0 {
-		n, err := syscall.Read(conn.fd, l.readBuf)
-		if n > 0 {
-			budget -= n
-			if conn.machine.State() == ConnStateActive {
-				if feedErr := conn.machine.Feed(l.readBuf[:n]); feedErr != nil {
-					l.closeConn(conn, feedErr)
-					return
+	// Skip pulling more input while buffered output is above the high-water
+	// mark; the interest set already dropped read readiness in that state, but
+	// an event may still be in flight.
+	if conn.machine.PendingOutputBytes() <= eventLoopOutputHighWater {
+		budget := eventLoopReadBudget
+		for budget > 0 {
+			n, err := syscall.Read(conn.fd, l.readBuf)
+			if n > 0 {
+				budget -= n
+				if conn.machine.State() == ConnStateActive {
+					if feedErr := conn.machine.Feed(l.readBuf[:n]); feedErr != nil {
+						l.closeConn(conn, feedErr)
+						return
+					}
 				}
+				// A machine in the closing state drains its buffered replies
+				// but rejects new input, so bytes read past that point are
+				// discarded.
 			}
-			// A machine in the closing state drains its buffered replies but
-			// rejects new input, so bytes read past that point are discarded.
-		}
-		if err != nil {
-			if err == syscall.EAGAIN {
+			if err != nil {
+				if err == syscall.EAGAIN {
+					break
+				}
+				if err == syscall.EINTR {
+					continue
+				}
+				l.closeConn(conn, err)
+				return
+			}
+			if n == 0 {
+				// The peer finished sending. Serve the already-parsed pipeline
+				// tail and drain its replies before closing, like the
+				// goroutine path does.
+				conn.peerClosed = true
 				break
 			}
-			if err == syscall.EINTR {
-				continue
+			if n < len(l.readBuf) {
+				break
 			}
-			l.closeConn(conn, err)
-			return
-		}
-		if n == 0 {
-			sawEOF = true
-			break
-		}
-		if n < len(l.readBuf) {
-			break
 		}
 	}
 
 	l.processConn(conn)
-
-	if sawEOF && l.conns[conn.fd] == conn {
-		// The peer finished sending; already-parsed requests were executed and
-		// flushed above, matching the goroutine path which serves the pipeline
-		// tail before observing EOF.
-		l.closeConn(conn, nil)
-	}
 }
 
-// processConn executes parsed requests and flushes buffered output.
+// processConn executes parsed requests, interleaving flushes so buffered
+// output stays near the high-water mark, then settles the connection's
+// readiness interest. Execution pauses while output is backed up and resumes
+// from writable events once the socket drains.
 func (l *eventLoop) processConn(conn *eventConn) {
-	if conn.machine.State() != ConnStateClosed {
-		if err := conn.machine.ProcessPending(conn.ctx, conn.run); err != nil {
+	for conn.machine.State() != ConnStateClosed {
+		if conn.machine.PendingOutputBytes() > eventLoopOutputHighWater {
+			if !l.flushOnce(conn) {
+				return
+			}
+			if conn.machine.PendingOutputBytes() > eventLoopOutputHighWater {
+				break
+			}
+		}
+
+		more, err := conn.machine.ProcessNext(conn.ctx, conn.run)
+		if err != nil {
 			l.closeConn(conn, err)
 			return
 		}
+		if !more {
+			break
+		}
 	}
-	l.flushConn(conn)
+
+	l.finishConnEvent(conn)
 }
 
-// flushConn writes pending output, tracks write interest for backpressure, and
-// finishes connections whose machine reached the closed state.
-func (l *eventLoop) flushConn(conn *eventConn) {
-	if conn.machine.State() == ConnStateClosed {
-		l.closeConn(conn, conn.machine.Err())
-		return
-	}
-
+// flushOnce writes pending output once and reports whether the connection is
+// still usable. A full kernel send buffer is not an error; any other write
+// failure closes the connection.
+func (l *eventLoop) flushOnce(conn *eventConn) bool {
 	if err := conn.machine.Flush(fdWriter{fd: conn.fd}); err != nil && !errors.Is(err, errEventLoopWouldBlock) {
 		l.closeConn(conn, err)
+		return false
+	}
+	return true
+}
+
+// finishConnEvent flushes pending output, finishes connections whose machine
+// closed or whose peer stopped sending and has been fully served, and settles
+// the readiness interest set for the next Wait.
+func (l *eventLoop) finishConnEvent(conn *eventConn) {
+	if conn.machine.State() == ConnStateClosed {
+		l.closeConn(conn, conn.machine.Err())
+		return
+	}
+	if !l.flushOnce(conn) {
 		return
 	}
 	if conn.machine.State() == ConnStateClosed {
@@ -449,18 +520,27 @@ func (l *eventLoop) flushConn(conn *eventConn) {
 		return
 	}
 
-	l.setWriteInterest(conn, conn.machine.HasPendingOutput())
-}
-
-func (l *eventLoop) setWriteInterest(conn *eventConn, want bool) {
-	if conn.wantWrite == want {
+	if conn.peerClosed && !conn.machine.HasPendingOutput() && conn.machine.PendingRequests() == 0 {
+		l.closeConn(conn, nil)
 		return
 	}
-	if err := l.poller.SetWrite(conn.fd, want); err != nil {
+
+	// Reading stays off after EOF (level-triggered readiness would spin) and
+	// while output is backed up beyond the high-water mark.
+	wantRead := !conn.peerClosed && conn.machine.PendingOutputBytes() <= eventLoopOutputHighWater
+	l.setInterest(conn, wantRead, conn.machine.HasPendingOutput())
+}
+
+func (l *eventLoop) setInterest(conn *eventConn, wantRead, wantWrite bool) {
+	if conn.wantRead == wantRead && conn.wantWrite == wantWrite {
+		return
+	}
+	if err := l.poller.Set(conn.fd, wantRead, wantWrite); err != nil {
 		l.closeConn(conn, err)
 		return
 	}
-	conn.wantWrite = want
+	conn.wantRead = wantRead
+	conn.wantWrite = wantWrite
 }
 
 func (l *eventLoop) closeConn(conn *eventConn, cause error) {
@@ -480,12 +560,7 @@ func (l *eventLoop) closeConn(conn *eventConn, cause error) {
 	}
 	closeIgnoringError(conn.fd)
 
-	if peer := l.srv.replicaPeers.Remove(conn.clientID); peer != nil {
-		conn.logger.Info("replica disconnected", "replica_id", conn.clientID, "listening_port", peer.ListeningPort)
-	}
-	l.srv.registry.Remove(conn.clientID)
-	l.srv.removeClientState(conn.clientID)
-	conn.logger.Debug("client disconnected")
+	l.srv.teardownClient(conn.clientID, conn.logger)
 }
 
 func (l *eventLoop) cleanup() {
@@ -546,32 +621,21 @@ func (w *eventConnPushWriter) Write(p []byte) (int, error) {
 	return w.loop.queuePush(w.conn, p)
 }
 
-// eventConnHandle is the minimal net.Conn surface registered with the client
+// eventConnHandle is the ClientConn surface registered with the client
 // registry so shutdown, INFO connected-client counts, and replica bookkeeping
 // keep working for event-loop connections. Close hands the actual teardown to
-// the loop goroutine; direct reads and writes are not supported because all
-// socket I/O is owned by the loop.
+// the loop goroutine, which owns all socket I/O.
 type eventConnHandle struct {
 	loop *eventLoop
 	conn *eventConn
 }
-
-var errEventConnHandleIO = errors.New("server: event loop connections do not support direct I/O")
-
-func (h *eventConnHandle) Read([]byte) (int, error)  { return 0, errEventConnHandleIO }
-func (h *eventConnHandle) Write([]byte) (int, error) { return 0, errEventConnHandleIO }
 
 func (h *eventConnHandle) Close() error {
 	h.loop.requestClose(h.conn)
 	return nil
 }
 
-func (h *eventConnHandle) LocalAddr() net.Addr  { return h.loop.localAddr }
 func (h *eventConnHandle) RemoteAddr() net.Addr { return h.conn.remoteAddr }
-
-func (h *eventConnHandle) SetDeadline(time.Time) error      { return nil }
-func (h *eventConnHandle) SetReadDeadline(time.Time) error  { return nil }
-func (h *eventConnHandle) SetWriteDeadline(time.Time) error { return nil }
 
 func sockaddrTCPAddr(sa syscall.Sockaddr) net.Addr {
 	switch sa := sa.(type) {

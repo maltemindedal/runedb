@@ -107,7 +107,9 @@ Platform support boundary:
 
 Inside the loop, each accepted socket is set non-blocking and owned by a connection state machine: readable sockets feed buffered bytes into request parsing and command execution, and writable sockets flush pending RESP output under backpressure. Asynchronous deliveries produced by other connections (pub/sub messages, monitor events, replication payloads) are handed to the loop through a locked per-connection push queue plus a poller wakeup, keeping all socket writes ordered through the machine's single write buffer.
 
-Scope note: commands execute inline on the loop goroutine, so a command that blocks (for example `WAIT` with a long timeout) stalls every connection served by the loop for its duration. The goroutine-per-connection path remains the default.
+Backpressure and memory safety: requests are executed one at a time with flushes interleaved, and both reading and execution pause for a connection whose buffered output passes a high-water mark, resuming when the socket drains. Buffered output is capped per connection, so a consumer that stops draining its socket is disconnected instead of growing server memory — the event-loop replacement for the per-write deadlines the goroutine path applies to pub/sub and monitor deliveries. When the peer half-closes, the already-parsed pipeline tail is served and its replies drained before the connection closes.
+
+Scope note: commands execute inline on the loop goroutine, so a command that would block (`BLPOP` on an empty list, `WAIT` that must wait for replica acknowledgements) fails with an explicit error in event-loop mode rather than stalling every connection; immediately satisfiable forms still succeed. The goroutine-per-connection path remains the default.
 
 ### Why keep persistence separate from replication?
 

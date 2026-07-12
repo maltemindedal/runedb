@@ -4,8 +4,6 @@ package server
 
 import (
 	"fmt"
-	"net"
-	"sync"
 	"syscall"
 )
 
@@ -26,12 +24,11 @@ func newPoller() (poller, error) {
 
 	p := &epollPoller{
 		epfd:     epfd,
-		wakeR:    pipeFDs[0],
-		wakeW:    pipeFDs[1],
+		wake:     wakePipe{readFD: pipeFDs[0], writeFD: pipeFDs[1]},
 		epEvents: make([]syscall.EpollEvent, pollerEventBatch),
 	}
-	wakeEvent := syscall.EpollEvent{Events: syscall.EPOLLIN, Fd: int32(p.wakeR)}
-	if err := syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, p.wakeR, &wakeEvent); err != nil {
+	wakeEvent := syscall.EpollEvent{Events: syscall.EPOLLIN, Fd: int32(p.wake.readFD)}
+	if err := syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, p.wake.readFD, &wakeEvent); err != nil {
 		_ = p.Close()
 		return nil, fmt.Errorf("register wake pipe: %w", err)
 	}
@@ -40,37 +37,38 @@ func newPoller() (poller, error) {
 }
 
 type epollPoller struct {
-	epfd  int
-	wakeR int
-	wakeW int
+	epfd int
+	wake wakePipe
 
 	epEvents []syscall.EpollEvent
-
-	// wakeMu serializes Wake against Close so a late cross-goroutine wakeup
-	// cannot write to a closed (and potentially reused) descriptor.
-	wakeMu     sync.Mutex
-	wakeClosed bool
 }
 
-func (p *epollPoller) Add(fd int) error {
-	event := syscall.EpollEvent{Events: epollReadEvents, Fd: int32(fd)}
-	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &event)
-}
+const epollReadEvents = syscall.EPOLLIN | syscall.EPOLLRDHUP
 
-func (p *epollPoller) SetWrite(fd int, writable bool) error {
-	events := uint32(epollReadEvents)
+func epollEventBits(readable, writable bool) uint32 {
+	var events uint32
+	if readable {
+		events |= epollReadEvents
+	}
 	if writable {
 		events |= syscall.EPOLLOUT
 	}
-	event := syscall.EpollEvent{Events: events, Fd: int32(fd)}
+	return events
+}
+
+func (p *epollPoller) Add(fd int) error {
+	event := syscall.EpollEvent{Events: epollEventBits(true, false), Fd: int32(fd)}
+	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &event)
+}
+
+func (p *epollPoller) Set(fd int, readable, writable bool) error {
+	event := syscall.EpollEvent{Events: epollEventBits(readable, writable), Fd: int32(fd)}
 	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, fd, &event)
 }
 
 func (p *epollPoller) Remove(fd int) error {
 	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
 }
-
-const epollReadEvents = syscall.EPOLLIN | syscall.EPOLLRDHUP
 
 func (p *epollPoller) Wait(events []pollEvent) (int, error) {
 	for {
@@ -85,8 +83,8 @@ func (p *epollPoller) Wait(events []pollEvent) (int, error) {
 		out := 0
 		for _, epEvent := range p.epEvents[:n] {
 			fd := int(epEvent.Fd)
-			if fd == p.wakeR {
-				p.drainWake()
+			if fd == p.wake.readFD {
+				p.wake.drain()
 				continue
 			}
 			if out >= len(events) {
@@ -104,43 +102,11 @@ func (p *epollPoller) Wait(events []pollEvent) (int, error) {
 	}
 }
 
-func (p *epollPoller) drainWake() {
-	var buf [64]byte
-	for {
-		n, err := syscall.Read(p.wakeR, buf[:])
-		if n <= 0 || err != nil {
-			return
-		}
-	}
-}
-
 func (p *epollPoller) Wake() error {
-	p.wakeMu.Lock()
-	defer p.wakeMu.Unlock()
-
-	if p.wakeClosed {
-		return net.ErrClosed
-	}
-	for {
-		_, err := syscall.Write(p.wakeW, []byte{1})
-		switch err {
-		case syscall.EINTR:
-			continue
-		case syscall.EAGAIN:
-			// The pipe is full, so a wakeup is already pending.
-			return nil
-		default:
-			return err
-		}
-	}
+	return p.wake.wake()
 }
 
 func (p *epollPoller) Close() error {
-	p.wakeMu.Lock()
-	p.wakeClosed = true
-	closeIgnoringError(p.wakeW)
-	closeIgnoringError(p.wakeR)
-	p.wakeMu.Unlock()
-
+	p.wake.close()
 	return syscall.Close(p.epfd)
 }

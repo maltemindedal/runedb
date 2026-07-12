@@ -44,7 +44,8 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - Replication supports the current `REPLCONF`, `PSYNC`, and `WAIT` surface but is not a complete Redis replication implementation.
 - Redis compatibility is scoped to commands explicitly implemented in `internal/command`; unsupported modifiers should fail explicitly rather than being silently accepted.
 - The event loop is opt-in and supported on Linux (`epoll`) and macOS (`kqueue`); other platforms, including Windows, fall back to goroutine-per-connection networking with a startup warning.
-- In event-loop mode, commands execute inline on the loop goroutine, so a blocking command such as `WAIT` with a long timeout stalls the other connections served by the loop for its duration.
+- In event-loop mode, commands execute inline on the loop goroutine, so a command that would block (`BLPOP` on an empty list, `WAIT` that must wait for replica acknowledgements) fails with an error instead of blocking; the immediately satisfiable forms still succeed.
+- Event-loop connections cap buffered response and push output per connection and disconnect consumers that stop draining their socket, in place of the per-write deadlines the goroutine path uses.
 
 ## Documentation Rules
 

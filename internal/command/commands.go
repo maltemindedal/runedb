@@ -308,6 +308,13 @@ func (e *Executor) handleWait(ctx context.Context, request *Request) (server.Exe
 		return e.finishWaitResult(replicas, ackedReplicas, targetOffset, startedAt, false), nil
 	}
 
+	// On the event loop, waiting would deadlock: the GETACK frames queued
+	// below are flushed by the loop goroutine this command is blocking, and
+	// incoming REPLCONF ACK frames are read by it too.
+	if server.IsInlineExecution(ctx) {
+		return server.ExecuteResult{}, blockingNotSupportedError("WAIT")
+	}
+
 	if err := e.requestReplicaAcknowledgements(); err != nil {
 		return server.ExecuteResult{}, err
 	}
@@ -746,6 +753,14 @@ func (e *Executor) handleBLPop(ctx context.Context, request *Request) (protocol.
 				protocol.BulkString{Data: clone(request.Args[0])},
 				protocol.BulkString{Data: value},
 			}}, nil
+		}
+
+		// On the event loop, blocking would deadlock the whole server: the
+		// LPUSH that fires the waiter can only execute on the loop goroutine
+		// this command is blocking.
+		if server.IsInlineExecution(ctx) {
+			e.store.UnsubscribeListPush(key, waiter)
+			return nil, blockingNotSupportedError("BLPOP")
 		}
 
 		select {

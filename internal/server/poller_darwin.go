@@ -4,8 +4,6 @@ package server
 
 import (
 	"fmt"
-	"net"
-	"sync"
 	"syscall"
 )
 
@@ -36,11 +34,10 @@ func newPoller() (poller, error) {
 
 	p := &kqueuePoller{
 		kq:       kq,
-		wakeR:    pipeFDs[0],
-		wakeW:    pipeFDs[1],
+		wake:     wakePipe{readFD: pipeFDs[0], writeFD: pipeFDs[1]},
 		kqEvents: make([]syscall.Kevent_t, pollerEventBatch),
 	}
-	if err := p.change(p.wakeR, syscall.EVFILT_READ, syscall.EV_ADD); err != nil {
+	if err := p.change(p.wake.readFD, syscall.EVFILT_READ, syscall.EV_ADD); err != nil {
 		_ = p.Close()
 		return nil, fmt.Errorf("register wake pipe: %w", err)
 	}
@@ -49,16 +46,10 @@ func newPoller() (poller, error) {
 }
 
 type kqueuePoller struct {
-	kq    int
-	wakeR int
-	wakeW int
+	kq   int
+	wake wakePipe
 
 	kqEvents []syscall.Kevent_t
-
-	// wakeMu serializes Wake against Close so a late cross-goroutine wakeup
-	// cannot write to a closed (and potentially reused) descriptor.
-	wakeMu     sync.Mutex
-	wakeClosed bool
 }
 
 func (p *kqueuePoller) change(fd int, filter int16, flags uint16) error {
@@ -71,31 +62,34 @@ func (p *kqueuePoller) change(fd int, filter int16, flags uint16) error {
 	return err
 }
 
-func (p *kqueuePoller) Add(fd int) error {
-	return p.change(fd, syscall.EVFILT_READ, syscall.EV_ADD)
-}
-
-func (p *kqueuePoller) SetWrite(fd int, writable bool) error {
-	if writable {
-		return p.change(fd, syscall.EVFILT_WRITE, syscall.EV_ADD)
+// setFilter adds or deletes one kqueue filter, treating deletion of an absent
+// filter as a no-op so interest updates stay idempotent.
+func (p *kqueuePoller) setFilter(fd int, filter int16, enable bool) error {
+	if enable {
+		return p.change(fd, filter, syscall.EV_ADD)
 	}
 
-	err := p.change(fd, syscall.EVFILT_WRITE, syscall.EV_DELETE)
+	err := p.change(fd, filter, syscall.EV_DELETE)
 	if err == syscall.ENOENT {
 		return nil
 	}
 	return err
 }
 
+func (p *kqueuePoller) Add(fd int) error {
+	return p.change(fd, syscall.EVFILT_READ, syscall.EV_ADD)
+}
+
+func (p *kqueuePoller) Set(fd int, readable, writable bool) error {
+	if err := p.setFilter(fd, syscall.EVFILT_READ, readable); err != nil {
+		return err
+	}
+	return p.setFilter(fd, syscall.EVFILT_WRITE, writable)
+}
+
 func (p *kqueuePoller) Remove(fd int) error {
-	readErr := p.change(fd, syscall.EVFILT_READ, syscall.EV_DELETE)
-	if readErr == syscall.ENOENT {
-		readErr = nil
-	}
-	writeErr := p.change(fd, syscall.EVFILT_WRITE, syscall.EV_DELETE)
-	if writeErr == syscall.ENOENT {
-		writeErr = nil
-	}
+	readErr := p.setFilter(fd, syscall.EVFILT_READ, false)
+	writeErr := p.setFilter(fd, syscall.EVFILT_WRITE, false)
 	if readErr != nil {
 		return readErr
 	}
@@ -115,8 +109,8 @@ func (p *kqueuePoller) Wait(events []pollEvent) (int, error) {
 		out := 0
 		for _, kqEvent := range p.kqEvents[:n] {
 			fd := int(kqEvent.Ident)
-			if fd == p.wakeR {
-				p.drainWake()
+			if fd == p.wake.readFD {
+				p.wake.drain()
 				continue
 			}
 			if out >= len(events) {
@@ -134,43 +128,11 @@ func (p *kqueuePoller) Wait(events []pollEvent) (int, error) {
 	}
 }
 
-func (p *kqueuePoller) drainWake() {
-	var buf [64]byte
-	for {
-		n, err := syscall.Read(p.wakeR, buf[:])
-		if n <= 0 || err != nil {
-			return
-		}
-	}
-}
-
 func (p *kqueuePoller) Wake() error {
-	p.wakeMu.Lock()
-	defer p.wakeMu.Unlock()
-
-	if p.wakeClosed {
-		return net.ErrClosed
-	}
-	for {
-		_, err := syscall.Write(p.wakeW, []byte{1})
-		switch err {
-		case syscall.EINTR:
-			continue
-		case syscall.EAGAIN:
-			// The pipe is full, so a wakeup is already pending.
-			return nil
-		default:
-			return err
-		}
-	}
+	return p.wake.wake()
 }
 
 func (p *kqueuePoller) Close() error {
-	p.wakeMu.Lock()
-	p.wakeClosed = true
-	closeIgnoringError(p.wakeW)
-	closeIgnoringError(p.wakeR)
-	p.wakeMu.Unlock()
-
+	p.wake.close()
 	return syscall.Close(p.kq)
 }

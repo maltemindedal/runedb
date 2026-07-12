@@ -81,8 +81,8 @@ func TestPollerTogglesWriteInterest(t *testing.T) {
 		t.Fatalf("Add(%d) error = %v", local, err)
 	}
 
-	if err := p.SetWrite(local, true); err != nil {
-		t.Fatalf("SetWrite(true) error = %v", err)
+	if err := p.Set(local, true, true); err != nil {
+		t.Fatalf("Set(read+write) error = %v", err)
 	}
 	events := waitForEvents(t, p)
 	writable := false
@@ -95,12 +95,12 @@ func TestPollerTogglesWriteInterest(t *testing.T) {
 		t.Fatalf("events = %#v, want writable event for fd %d", events, local)
 	}
 
-	if err := p.SetWrite(local, false); err != nil {
-		t.Fatalf("SetWrite(false) error = %v", err)
+	if err := p.Set(local, true, false); err != nil {
+		t.Fatalf("Set(read only) error = %v", err)
 	}
 	// Disabling twice must stay idempotent even when no write filter exists.
-	if err := p.SetWrite(local, false); err != nil {
-		t.Fatalf("SetWrite(false) second call error = %v", err)
+	if err := p.Set(local, true, false); err != nil {
+		t.Fatalf("Set(read only) second call error = %v", err)
 	}
 }
 
