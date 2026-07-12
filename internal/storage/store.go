@@ -84,6 +84,23 @@ func (s *Store) Set(key string, value []byte, expiresAt int64) {
 
 // Get fetches a value from the store, passively evicting it if it has expired.
 func (s *Store) Get(key string) ([]byte, bool, error) {
+	var copied []byte
+	ok, err := s.withStringValue(key, func(data []byte) error {
+		copied = cloneBytes(data)
+		return nil
+	})
+	if !ok || err != nil {
+		return nil, ok, err
+	}
+
+	return copied, true, nil
+}
+
+// withStringValue runs fn on the stored string payload for key while holding
+// the shard read lock, handling passive expiry and access tracking. It
+// reports whether a live value was found; fn must not retain data beyond the
+// call.
+func (s *Store) withStringValue(key string, fn func(data []byte) error) (bool, error) {
 	now := time.Now().UnixMilli()
 	shard := s.shardForKey(key)
 
@@ -91,7 +108,7 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 	value, ok := shard.data[key]
 	if !ok {
 		shard.mu.RUnlock()
-		return nil, false, nil
+		return false, nil
 	}
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
@@ -102,17 +119,18 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 			s.deleteKeyLocked(shard, key)
 		}
 		shard.mu.Unlock()
-		return nil, false, nil
+		return false, nil
 	}
 	data, err := value.StringValue()
 	if err != nil {
 		shard.mu.RUnlock()
-		return nil, true, err
+		return true, err
 	}
 	value.touch(now)
+	err = fn(data)
 	shard.mu.RUnlock()
 
-	return cloneBytes(data), true, nil
+	return true, err
 }
 
 // Delete removes a key from the store.
