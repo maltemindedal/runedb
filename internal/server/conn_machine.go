@@ -56,12 +56,12 @@ type connEvent struct {
 // the connection closes.
 //
 // On a permanent protocol error the machine emits an ordered error reply and
-// then closes the connection. This intentionally diverges from the current
+// then closes the connection. This intentionally diverges from the
 // goroutine-per-connection handler, which replies and keeps serving; closing
 // matches Redis, which terminates a connection after a protocol error because
 // the byte stream can no longer be resynchronized. The divergence is confined
-// to this not-yet-wired path (see issue #19) and does not affect the current
-// networking path.
+// to event-loop mode, which drives connections through this machine, and does
+// not affect the default networking path.
 //
 // A ConnMachine is not safe for concurrent use; a single driving loop must own
 // it. Cross-goroutine async deliveries continue to flow through ClientState,
@@ -231,6 +231,29 @@ func (m *ConnMachine) Flush(w io.Writer) error {
 		m.Close(nil)
 	}
 
+	return nil
+}
+
+// BufferEncoded appends a pre-encoded RESP payload to the pending output
+// buffer. The event loop uses it to deliver asynchronous push frames (pub/sub
+// messages, monitor events, replication payloads) produced by other
+// connections, keeping every byte written to the socket ordered through the
+// machine's single write buffer. A closing machine still accepts payloads so
+// they drain with the remaining output; a closed machine rejects them.
+func (m *ConnMachine) BufferEncoded(payload []byte) error {
+	if m.state == ConnStateClosed {
+		return ErrConnMachineClosed
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+
+	if m.writeOff > 0 {
+		m.writeBuf = append(m.writeBuf[:0], m.writeBuf[m.writeOff:]...)
+		m.writeOff = 0
+	}
+
+	m.writeBuf = append(m.writeBuf, payload...)
 	return nil
 }
 

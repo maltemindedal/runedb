@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -181,11 +182,52 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	stopShutdown := context.AfterFunc(ctx, s.shutdown)
 	defer stopShutdown()
 
+	if err := s.serve(ctx, listener); err != nil {
+		return err
+	}
+
+	s.handlerWG.Wait()
+	if err := s.closeAOFWriter(); err != nil {
+		return err
+	}
+	if err := s.persistSnapshot(); err != nil {
+		return err
+	}
+	s.logger.Info("RuneDB stopped")
+	return nil
+}
+
+// errEventLoopUnsupported reports that the current platform has no OS I/O
+// multiplexing backend (epoll on Linux, kqueue on macOS).
+var errEventLoopUnsupported = errors.New("server: event loop networking is not supported on this platform")
+
+// serve accepts and serves client connections until shutdown. With event-loop
+// mode enabled it dispatches sockets through OS readiness notifications where
+// supported (epoll on Linux, kqueue on macOS) and falls back to one goroutine
+// per connection elsewhere.
+func (s *Server) serve(ctx context.Context, listener net.Listener) error {
+	if s.cfg.EventLoop {
+		err := s.serveEventLoop(ctx, listener)
+		if !errors.Is(err, errEventLoopUnsupported) {
+			return err
+		}
+		s.logger.Warn(
+			"event loop networking is not supported on this platform; falling back to one goroutine per connection",
+			"goos", runtime.GOOS,
+		)
+	}
+
+	return s.serveGoroutinePerConnection(ctx, listener)
+}
+
+// serveGoroutinePerConnection runs the blocking accept loop that spawns one
+// handler goroutine per client connection.
+func (s *Server) serveGoroutinePerConnection(ctx context.Context, listener net.Listener) error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
-				break
+				return nil
 			}
 
 			var temporary temporaryError
@@ -202,16 +244,6 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.handlerWG.Add(1)
 		go s.handleConnection(ctx, clientID, conn)
 	}
-
-	s.handlerWG.Wait()
-	if err := s.closeAOFWriter(); err != nil {
-		return err
-	}
-	if err := s.persistSnapshot(); err != nil {
-		return err
-	}
-	s.logger.Info("RuneDB stopped")
-	return nil
 }
 
 // Addr returns the bound listener address once the server has started.

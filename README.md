@@ -4,7 +4,7 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 
 ## Current status
 
-- raw TCP listener with one goroutine per client
+- raw TCP listener with one goroutine per client, or an opt-in `--event-loop` mode backed by OS I/O multiplexing
 - RESP parser and writer
 - sharded, thread-safe in-memory store with TTL support
 - append-only-file durability with startup replay, configurable `appendfsync`, and `BGREWRITEAOF`
@@ -27,7 +27,8 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 ### Network and lifecycle
 
 - TCP server built on `net.Listen` / `Accept`
-- one goroutine per client connection
+- one goroutine per client connection by default
+- opt-in `--event-loop` mode that serves all clients from one goroutine using OS readiness notifications (`epoll` on Linux, `kqueue` on macOS; other platforms fall back to goroutine-per-connection)
 - graceful shutdown through context cancellation and tracked active clients
 - per-connection `ClientState` attached to request contexts for `AUTH`, transactions, pub/sub, and replication state
 
@@ -150,6 +151,7 @@ From `d:\10_personal\runedb`:
 - `go run ./cmd/runedb --port 6379 --maxmemory 104857600`
 - `go run ./cmd/runedb --port 6379 --eviction-interval 100ms --eviction-sample-size 20`
 - `go run ./cmd/runedb --port 6379 --slowlog-log-slower-than 10000`
+- `go run ./cmd/runedb --port 6379 --event-loop`
 - `go run ./cmd/runedb --port 6380 --replicaof 127.0.0.1:6379 --masterauth secret`
 
 ### Validate the project
