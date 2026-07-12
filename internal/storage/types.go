@@ -54,6 +54,24 @@ type ZSetRangeEntry struct {
 	Score  float64
 }
 
+// ScoreRange bounds a sorted-set score interval for ZRangeByScore scans.
+// Min and Max are inclusive unless the matching exclusive flag is set, and
+// either bound may be infinite.
+type ScoreRange struct {
+	Min          float64
+	Max          float64
+	MinExclusive bool
+	MaxExclusive bool
+}
+
+func (r ScoreRange) belowMin(score float64) bool {
+	return score < r.Min || (r.MinExclusive && score == r.Min)
+}
+
+func (r ScoreRange) aboveMax(score float64) bool {
+	return score > r.Max || (r.MaxExclusive && score == r.Max)
+}
+
 // StreamEntry represents a stream entry returned by XREAD.
 type StreamEntry struct {
 	ID     string

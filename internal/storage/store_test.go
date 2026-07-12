@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -1279,6 +1280,134 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 
 		if _, err := store.ZRange("leaders", 0, -1); !errors.Is(err, ErrWrongType) {
 			t.Fatalf("ZRange() error = %v, want ErrWrongType", err)
+		}
+	})
+
+	t.Run("ZRangeByScores honors bounds across encodings", func(t *testing.T) {
+		compactEntries := make([]ZSetEntry, 0, compactZSetMaxEntries)
+		generalEntries := make([]ZSetEntry, 0, compactZSetMaxEntries*2)
+		for i := 0; i < compactZSetMaxEntries; i++ {
+			compactEntries = append(compactEntries, ZSetEntry{Member: []byte{'m', byte('0' + i)}, Score: float64(i)})
+		}
+		for i := 0; i < compactZSetMaxEntries*2; i++ {
+			generalEntries = append(generalEntries, ZSetEntry{Member: []byte{'m', 'a' + byte(i)}, Score: float64(i)})
+		}
+
+		encodings := []struct {
+			name    string
+			entries []ZSetEntry
+		}{
+			{name: "compact", entries: compactEntries},
+			{name: "general", entries: generalEntries},
+		}
+		for _, encoding := range encodings {
+			t.Run(encoding.name, func(t *testing.T) {
+				store := NewStore()
+				if _, err := store.ZAdd("leaders", encoding.entries); err != nil {
+					t.Fatalf("ZAdd() error = %v", err)
+				}
+
+				tests := []struct {
+					name       string
+					scoreRange ScoreRange
+					want       []float64
+				}{
+					{name: "inclusive bounds", scoreRange: ScoreRange{Min: 2, Max: 4}, want: []float64{2, 3, 4}},
+					{name: "exclusive bounds", scoreRange: ScoreRange{Min: 2, Max: 4, MinExclusive: true, MaxExclusive: true}, want: []float64{3}},
+					{name: "unbounded", scoreRange: ScoreRange{Min: math.Inf(-1), Max: math.Inf(1)}, want: scoresOfEntries(encoding.entries)},
+					{name: "empty interval", scoreRange: ScoreRange{Min: 2.5, Max: 2.75}, want: []float64{}},
+					{name: "beyond maximum", scoreRange: ScoreRange{Min: 1000, Max: math.Inf(1)}, want: []float64{}},
+				}
+				for _, tt := range tests {
+					values, err := store.ZRangeByScores("leaders", tt.scoreRange)
+					if err != nil {
+						t.Fatalf("ZRangeByScores(%s) error = %v", tt.name, err)
+					}
+					if len(values) != len(tt.want) {
+						t.Fatalf("len(ZRangeByScores(%s)) = %d, want %d", tt.name, len(values), len(tt.want))
+					}
+					for i, got := range values {
+						if got.Score != tt.want[i] {
+							t.Fatalf("ZRangeByScores(%s)[%d].Score = %v, want %v", tt.name, i, got.Score, tt.want[i])
+						}
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("ZRangeByScores orders equal scores by member", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.ZAdd("leaders", []ZSetEntry{
+			{Member: []byte("beta"), Score: 2},
+			{Member: []byte("alpha"), Score: 2},
+			{Member: []byte("omega"), Score: 3},
+		}); err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+
+		values, err := store.ZRangeByScores("leaders", ScoreRange{Min: 2, Max: 2})
+		if err != nil {
+			t.Fatalf("ZRangeByScores() error = %v", err)
+		}
+		want := []string{"alpha", "beta"}
+		if len(values) != len(want) {
+			t.Fatalf("len(ZRangeByScores()) = %d, want %d", len(values), len(want))
+		}
+		for i, got := range values {
+			if got.Member != want[i] {
+				t.Fatalf("ZRangeByScores()[%d].Member = %q, want %q", i, got.Member, want[i])
+			}
+		}
+	})
+
+	t.Run("ZRangeByScores concatenates disjoint ranges in order", func(t *testing.T) {
+		store := NewStore()
+		entries := make([]ZSetEntry, 0, 10)
+		for i := 0; i < 10; i++ {
+			entries = append(entries, ZSetEntry{Member: []byte{'m', byte('0' + i)}, Score: float64(i)})
+		}
+		if _, err := store.ZAdd("leaders", entries); err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+
+		values, err := store.ZRangeByScores("leaders",
+			ScoreRange{Min: math.Inf(-1), Max: 2, MaxExclusive: true},
+			ScoreRange{Min: 5, Max: 6},
+			ScoreRange{Min: 9, Max: math.Inf(1)},
+		)
+		if err != nil {
+			t.Fatalf("ZRangeByScores() error = %v", err)
+		}
+		want := []float64{0, 1, 5, 6, 9}
+		if len(values) != len(want) {
+			t.Fatalf("len(ZRangeByScores()) = %d, want %d", len(values), len(want))
+		}
+		for i, got := range values {
+			if got.Score != want[i] {
+				t.Fatalf("ZRangeByScores()[%d].Score = %v, want %v", i, got.Score, want[i])
+			}
+		}
+	})
+
+	t.Run("ZRangeByScores returns empty for missing key", func(t *testing.T) {
+		store := NewStore()
+
+		values, err := store.ZRangeByScores("missing", ScoreRange{Min: math.Inf(-1), Max: math.Inf(1)})
+		if err != nil {
+			t.Fatalf("ZRangeByScores() error = %v", err)
+		}
+		if len(values) != 0 {
+			t.Fatalf("len(ZRangeByScores()) = %d, want 0", len(values))
+		}
+	})
+
+	t.Run("ZRangeByScores rejects wrong value type", func(t *testing.T) {
+		store := NewStore()
+		store.Set("leaders", []byte("hello"), 0)
+
+		if _, err := store.ZRangeByScores("leaders", ScoreRange{Min: 0, Max: 1}); !errors.Is(err, ErrWrongType) {
+			t.Fatalf("ZRangeByScores() error = %v, want ErrWrongType", err)
 		}
 	})
 

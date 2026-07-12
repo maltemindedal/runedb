@@ -242,6 +242,25 @@ func (v *ValueObject) zsetRangeByRank(start, stop int) ([]ZSetRangeEntry, error)
 	return v.ZSet.rangeByRank(start, stop), nil
 }
 
+func (v *ValueObject) zsetRangeByScore(scoreRange ScoreRange) ([]ZSetRangeEntry, error) {
+	if v == nil {
+		return nil, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindZSet {
+		return nil, ErrWrongType
+	}
+	if v.ZSetEncoding == ValueEncodingCompact {
+		if v.CompactZSet == nil {
+			return nil, errInvalidValueObjectState
+		}
+		return v.CompactZSet.rangeByScore(scoreRange), nil
+	}
+	if v.ZSet == nil {
+		return nil, errInvalidValueObjectState
+	}
+	return v.ZSet.rangeByScore(scoreRange), nil
+}
+
 func (v *ValueObject) cloneZSetValue(expiresAt int64) (*ValueObject, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState

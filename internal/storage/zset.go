@@ -201,6 +201,31 @@ func (sl *zsetSkipList) deleteNode(node *zsetNode, update [zsetMaxLevel]*zsetNod
 	sl.length--
 }
 
+func (s *SortedSet) rangeByScore(scoreRange ScoreRange) []ZSetRangeEntry {
+	var items []ZSetRangeEntry
+	for node := s.order.firstInScoreRange(scoreRange); node != nil; node = node.levels[0].forward {
+		if scoreRange.aboveMax(node.score) {
+			break
+		}
+		items = append(items, ZSetRangeEntry{Member: node.member, Score: node.score})
+	}
+
+	return items
+}
+
+// firstInScoreRange returns the first node whose score satisfies the range's
+// lower bound, or nil when no node does. The caller checks the upper bound.
+func (sl *zsetSkipList) firstInScoreRange(scoreRange ScoreRange) *zsetNode {
+	x := sl.header
+	for i := sl.level - 1; i >= 0; i-- {
+		for next := x.levels[i].forward; next != nil && scoreRange.belowMin(next.score); next = x.levels[i].forward {
+			x = next
+		}
+	}
+
+	return x.levels[0].forward
+}
+
 func (sl *zsetSkipList) getByRank(rank int) *zsetNode {
 	if rank <= 0 || rank > sl.length {
 		return nil

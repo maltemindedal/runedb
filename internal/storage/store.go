@@ -591,6 +591,48 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 	return entries, nil
 }
 
+// ZRangeByScores returns the members of the sorted set stored at key whose
+// scores fall within the given score ranges, concatenated in range order.
+// The ranges must be disjoint and ascending so the result stays ordered by
+// score then member. All ranges are scanned under a single lock acquisition,
+// so the result reflects one consistent snapshot of the set.
+func (s *Store) ZRangeByScores(key string, scoreRanges ...ScoreRange) ([]ZSetRangeEntry, error) {
+	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
+
+	shard.mu.RLock()
+	value, ok := shard.data[key]
+	if !ok {
+		shard.mu.RUnlock()
+		return []ZSetRangeEntry{}, nil
+	}
+	if isExpired(value, now) {
+		shard.mu.RUnlock()
+
+		shard.mu.Lock()
+		value, ok = shard.data[key]
+		if ok && isExpired(value, time.Now().UnixMilli()) {
+			s.deleteKeyLocked(shard, key)
+		}
+		shard.mu.Unlock()
+		return []ZSetRangeEntry{}, nil
+	}
+
+	var entries []ZSetRangeEntry
+	for _, scoreRange := range scoreRanges {
+		ranged, err := value.zsetRangeByScore(scoreRange)
+		if err != nil {
+			shard.mu.RUnlock()
+			return nil, err
+		}
+		entries = append(entries, ranged...)
+	}
+	value.touch(now)
+	shard.mu.RUnlock()
+
+	return entries, nil
+}
+
 // XAdd appends a new stream entry to the stream stored at key and returns its ID.
 func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 	if len(values) == 0 || len(values)%2 != 0 {

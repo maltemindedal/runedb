@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -111,7 +112,7 @@ func (e *Executor) handleGeoRadius(_ context.Context, request *Request) (protoco
 	radiusMeters := radius * unitMeters
 
 	key := string(request.Args[0])
-	entries, err := e.store.ZRange(key, 0, -1)
+	entries, err := e.store.ZRangeByScores(key, geoRadiusScoreRanges(longitude, latitude, radiusMeters)...)
 	if err != nil {
 		if errors.Is(err, storage.ErrWrongType) {
 			return nil, ErrWrongTypeError()
@@ -128,6 +129,118 @@ func (e *Executor) handleGeoRadius(_ context.Context, request *Request) (protoco
 	}
 
 	return protocol.Array{Elements: elements}, nil
+}
+
+// geoRadiusScoreRanges returns the disjoint, ascending score ranges GEORADIUS
+// scans instead of the full sorted set: the geohash cell containing the
+// center at the deepest bit depth whose cell size covers the radius bounding
+// box, plus its eight neighbors. Two guard ranges bracket the cells for the
+// scores that fall outside every cell range: plain ZADD can write arbitrary
+// scores (decoded as the corner cell of the coordinate space), and GEOADD at
+// exactly the maximum longitude or latitude encodes above 52 bits. Scanning
+// the ranges in order yields members in sorted-set order, so results match a
+// full scan exactly.
+func geoRadiusScoreRanges(longitude, latitude, radiusMeters float64) []storage.ScoreRange {
+	deltaLatitude, deltaLongitude := geoBoundingDeltas(latitude, radiusMeters)
+	step := uint(geoStep)
+	for step > 1 && !geoCellCovers(step, deltaLatitude, deltaLongitude) {
+		step--
+	}
+
+	cellRanges := geoNeighborCellRanges(longitude, latitude, step)
+
+	ranges := make([]storage.ScoreRange, 0, len(cellRanges)+2)
+	ranges = append(ranges, storage.ScoreRange{Min: math.Inf(-1), Max: 0, MaxExclusive: true})
+	ranges = append(ranges, cellRanges...)
+	ranges = append(ranges, storage.ScoreRange{Min: float64(uint64(1) << (2 * geoStep)), Max: math.Inf(1)})
+	return ranges
+}
+
+// geoBoundingDeltas returns the half-height and half-width in degrees of the
+// smallest latitude/longitude box containing every point within radiusMeters
+// of a center at the given latitude. A half-width of 180 means the box wraps
+// the full longitude range.
+func geoBoundingDeltas(latitude, radiusMeters float64) (deltaLatitude, deltaLongitude float64) {
+	radiusRadians := radiusMeters / geoEarthRadiusMeters
+	deltaLatitude = radiansToDegrees(radiusRadians)
+	if math.Abs(latitude)+deltaLatitude >= 90 {
+		return deltaLatitude, 180
+	}
+
+	deltaLongitude = radiansToDegrees(math.Asin(math.Sin(radiusRadians) / math.Cos(degreesToRadians(latitude))))
+	return deltaLatitude, deltaLongitude
+}
+
+// geoCellCovers reports whether a single geohash cell at the given step is at
+// least as large as the bounding-box half-deltas, which guarantees the cell
+// containing the center plus its eight neighbors cover the whole search box.
+func geoCellCovers(step uint, deltaLatitude, deltaLongitude float64) bool {
+	cells := float64(uint64(1) << step)
+	cellHeight := (geoLatitudeMax - geoLatitudeMin) / cells
+	cellWidth := (geoLongitudeMax - geoLongitudeMin) / cells
+	return cellHeight >= deltaLatitude && cellWidth >= deltaLongitude
+}
+
+// geoNeighborCellRanges returns the score ranges of the geohash cell
+// containing the center and its eight neighbors at the given step, wrapping
+// longitude across the antimeridian and dropping latitude neighbors beyond
+// the poles. The ranges are sorted ascending and adjacent or duplicate ranges
+// are merged so each is scanned once.
+func geoNeighborCellRanges(longitude, latitude float64, step uint) []storage.ScoreRange {
+	centerLatCell, centerLonCell := geoCellCoords(longitude, latitude, step)
+	cells := int64(1) << step
+	shift := 2 * (geoStep - step)
+
+	ranges := make([]storage.ScoreRange, 0, 9)
+	for deltaLat := int64(-1); deltaLat <= 1; deltaLat++ {
+		latCell := int64(centerLatCell) + deltaLat
+		if latCell < 0 || latCell >= cells {
+			continue
+		}
+		for deltaLon := int64(-1); deltaLon <= 1; deltaLon++ {
+			lonCell := (int64(centerLonCell) + deltaLon + cells) % cells
+			minBits := interleave64(uint32(latCell), uint32(lonCell)) << shift
+			ranges = append(ranges, storage.ScoreRange{
+				Min:          float64(minBits),
+				Max:          float64(minBits + uint64(1)<<shift),
+				MaxExclusive: true,
+			})
+		}
+	}
+
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Min < ranges[j].Min })
+
+	merged := make([]storage.ScoreRange, 0, len(ranges))
+	merged = append(merged, ranges[0])
+	for _, scoreRange := range ranges[1:] {
+		last := &merged[len(merged)-1]
+		if scoreRange.Min <= last.Max {
+			last.Max = math.Max(last.Max, scoreRange.Max)
+			continue
+		}
+		merged = append(merged, scoreRange)
+	}
+	return merged
+}
+
+// geoCellCoords returns the latitude and longitude cell indexes at the given
+// step of the geohash cell containing the position, derived from the same
+// encoding that produces stored scores so cell indexes are score prefixes by
+// construction. The exact upper coordinate boundary encodes one past the last
+// cell and is clamped into it.
+func geoCellCoords(longitude, latitude float64, step uint) (latCell, lonCell uint64) {
+	latitudeBits, longitudeBits := deinterleave64(geohashEncode(longitude, latitude))
+	cells := uint64(1) << step
+
+	latCell = uint64(latitudeBits) >> (geoStep - step)
+	if latCell >= cells {
+		latCell = cells - 1
+	}
+	lonCell = uint64(longitudeBits) >> (geoStep - step)
+	if lonCell >= cells {
+		lonCell = cells - 1
+	}
+	return latCell, lonCell
 }
 
 func parseGeoCoordinates(rawLongitude, rawLatitude []byte) (float64, float64, error) {
@@ -254,4 +367,8 @@ func geoDistanceMeters(longitude1, latitude1, longitude2, latitude2 float64) flo
 
 func degreesToRadians(degrees float64) float64 {
 	return degrees * (math.Pi / 180)
+}
+
+func radiansToDegrees(radians float64) float64 {
+	return radians * (180 / math.Pi)
 }

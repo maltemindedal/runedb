@@ -2,7 +2,10 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -325,6 +328,165 @@ func TestExecutorGeoRadius(t *testing.T) {
 		}
 		assertRESPPrefix(t, err, "WRONGTYPE")
 	})
+
+	t.Run("treats non-geo scores deterministically", func(t *testing.T) {
+		executor := newTestExecutor()
+		if _, err := executor.Execute(context.Background(), requestValue("ZADD", "mixed", "-1", "negative", "1e300", "huge")); err != nil {
+			t.Fatalf("ZADD error = %v", err)
+		}
+		if _, err := executor.Execute(context.Background(), requestValue("GEOADD", "mixed", "13.361389", "38.115556", "Palermo")); err != nil {
+			t.Fatalf("GEOADD error = %v", err)
+		}
+
+		// Out-of-range scores map to zero geohash bits, which decode to the
+		// south-west corner cell of the coordinate space.
+		cornerLongitude, cornerLatitude := geohashDecode(0)
+		value, err := executor.Execute(context.Background(), requestValue(
+			"GEORADIUS", "mixed",
+			strconv.FormatFloat(cornerLongitude, 'f', -1, 64),
+			strconv.FormatFloat(cornerLatitude, 'f', -1, 64),
+			"1000", "m",
+		))
+		if err != nil {
+			t.Fatalf("GEORADIUS corner error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.TextBulkString{Value: "negative"},
+			protocol.TextBulkString{Value: "huge"},
+		}})
+
+		value, err = executor.Execute(context.Background(), requestValue("GEORADIUS", "mixed", "13.361389", "38.115556", "1", "km"))
+		if err != nil {
+			t.Fatalf("GEORADIUS Palermo error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
+			protocol.TextBulkString{Value: "Palermo"},
+		}})
+	})
+}
+
+// TestExecutorGeoRadiusMatchesFullScan checks the geohash score-range pruning
+// against a reference full scan replicating the previous GEORADIUS
+// implementation: every member decoded and distance-filtered in sorted-set
+// order.
+func TestExecutorGeoRadiusMatchesFullScan(t *testing.T) {
+	points := geoWorldGridPoints()
+
+	executor := newTestExecutor()
+	args := []string{"GEOADD", "world"}
+	for _, point := range points {
+		args = append(args,
+			strconv.FormatFloat(point.longitude, 'f', -1, 64),
+			strconv.FormatFloat(point.latitude, 'f', -1, 64),
+			point.member,
+		)
+	}
+	if _, err := executor.Execute(context.Background(), requestValue(args...)); err != nil {
+		t.Fatalf("GEOADD error = %v", err)
+	}
+
+	queries := []struct {
+		name           string
+		longitude      float64
+		latitude       float64
+		radius         float64
+		wantMinMatches int
+	}{
+		{name: "zero radius", longitude: 30, latitude: 20, radius: 0},
+		{name: "tiny radius", longitude: 15, latitude: 37, radius: 1},
+		{name: "city radius", longitude: 15, latitude: 37, radius: 200_000},
+		{name: "regional radius", longitude: -122, latitude: 47, radius: 1_500_000, wantMinMatches: 1},
+		{name: "hemispheric radius", longitude: 0, latitude: 0, radius: 9_000_000, wantMinMatches: 10},
+		{name: "global radius", longitude: 10, latitude: 10, radius: 30_000_000, wantMinMatches: len(points)},
+		{name: "antimeridian crossing", longitude: -180, latitude: 10, radius: 5_000, wantMinMatches: 2},
+		{name: "near north pole", longitude: 0, latitude: 85, radius: 300_000, wantMinMatches: 1},
+		{name: "boundary corner", longitude: 179.9, latitude: 85, radius: 100_000, wantMinMatches: 1},
+		{name: "south boundary", longitude: -179, latitude: -85, radius: 700_000, wantMinMatches: 1},
+	}
+	for _, query := range queries {
+		t.Run(query.name, func(t *testing.T) {
+			value, err := executor.Execute(context.Background(), requestValue(
+				"GEORADIUS", "world",
+				strconv.FormatFloat(query.longitude, 'f', -1, 64),
+				strconv.FormatFloat(query.latitude, 'f', -1, 64),
+				strconv.FormatFloat(query.radius, 'f', -1, 64),
+				"m",
+			))
+			if err != nil {
+				t.Fatalf("GEORADIUS error = %v", err)
+			}
+
+			want := fullScanGeoRadiusMembers(points, query.longitude, query.latitude, query.radius)
+			if len(want) < query.wantMinMatches {
+				t.Fatalf("full-scan reference matched %d members, want at least %d", len(want), query.wantMinMatches)
+			}
+			wantElements := make([]protocol.Value, 0, len(want))
+			for _, member := range want {
+				wantElements = append(wantElements, protocol.TextBulkString{Value: member})
+			}
+			assertValueEqual(t, value, protocol.Array{Elements: wantElements})
+		})
+	}
+}
+
+type geoTestPoint struct {
+	member    string
+	longitude float64
+	latitude  float64
+}
+
+// geoWorldGridPoints spans a coarse world grid plus positions that stress the
+// antimeridian wrap and the exact coordinate range boundaries, whose scores
+// overflow the 52-bit geohash encoding.
+func geoWorldGridPoints() []geoTestPoint {
+	points := make([]geoTestPoint, 0, 128)
+	for longitude := -180.0; longitude < 180.0; longitude += 30 {
+		for latitude := -80.0; latitude <= 80.0; latitude += 20 {
+			points = append(points, geoTestPoint{
+				member:    fmt.Sprintf("grid:%g:%g", longitude, latitude),
+				longitude: longitude,
+				latitude:  latitude,
+			})
+		}
+	}
+
+	return append(points,
+		geoTestPoint{member: "antimeridian-east", longitude: 179.99, latitude: 10},
+		geoTestPoint{member: "antimeridian-west", longitude: -179.99, latitude: 10},
+		geoTestPoint{member: "north-edge", longitude: 12.5, latitude: geoLatitudeMax},
+		geoTestPoint{member: "east-edge", longitude: geoLongitudeMax, latitude: 37.5},
+		geoTestPoint{member: "max-corner", longitude: geoLongitudeMax, latitude: geoLatitudeMax},
+	)
+}
+
+func fullScanGeoRadiusMembers(points []geoTestPoint, longitude, latitude, radiusMeters float64) []string {
+	type scoredMember struct {
+		member string
+		score  float64
+	}
+
+	scored := make([]scoredMember, 0, len(points))
+	for _, point := range points {
+		scored = append(scored, scoredMember{
+			member: point.member,
+			score:  float64(geohashEncode(point.longitude, point.latitude)),
+		})
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score < scored[j].score
+		}
+		return scored[i].member < scored[j].member
+	})
+
+	matches := make([]string, 0, len(scored))
+	for _, candidate := range scored {
+		memberLongitude, memberLatitude := geohashDecode(geohashBits(candidate.score))
+		if geoDistanceMeters(longitude, latitude, memberLongitude, memberLatitude) <= radiusMeters {
+			matches = append(matches, candidate.member)
+		}
+	}
+	return matches
 }
 
 func geoAddSicilyRequest() protocol.Value {

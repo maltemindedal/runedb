@@ -92,6 +92,23 @@ func (s *CompactZSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	return items
 }
 
+func (s *CompactZSet) rangeByScore(scoreRange ScoreRange) []ZSetRangeEntry {
+	if s == nil {
+		return nil
+	}
+
+	var items []ZSetRangeEntry
+	for _, entry := range s.entries {
+		if scoreRange.aboveMax(entry.score) {
+			break
+		}
+		if !scoreRange.belowMin(entry.score) {
+			items = append(items, ZSetRangeEntry{Member: s.member(entry), Score: entry.score})
+		}
+	}
+	return items
+}
+
 func (s *CompactZSet) sort() {
 	slices.SortFunc(s.entries, func(left, right compactZSetEntry) int {
 		if left.score < right.score {
