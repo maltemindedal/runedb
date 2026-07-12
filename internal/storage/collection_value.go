@@ -202,6 +202,27 @@ func (v *ValueObject) zsetAdd(entries []ZSetEntry) (int64, error) {
 	return zsetAddGeneral(v.ZSet, entries), nil
 }
 
+func (v *ValueObject) zsetScore(member []byte) (float64, bool, error) {
+	if v == nil {
+		return 0, false, errInvalidValueObjectState
+	}
+	if v.Kind != ValueKindZSet {
+		return 0, false, ErrWrongType
+	}
+	if v.ZSetEncoding == ValueEncodingCompact {
+		if v.CompactZSet == nil {
+			return 0, false, errInvalidValueObjectState
+		}
+		score, ok := v.CompactZSet.score(member)
+		return score, ok, nil
+	}
+	if v.ZSet == nil {
+		return 0, false, errInvalidValueObjectState
+	}
+	score, ok := v.ZSet.score(string(member))
+	return score, ok, nil
+}
+
 func (v *ValueObject) zsetRangeByRank(start, stop int) ([]ZSetRangeEntry, error) {
 	if v == nil {
 		return nil, errInvalidValueObjectState

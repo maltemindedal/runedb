@@ -1282,6 +1282,68 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 		}
 	})
 
+	t.Run("ZScores returns scores across encodings", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("alpha"), Score: 1.5}}); err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+
+		scores, found, err := store.ZScores("leaders", [][]byte{[]byte("alpha")})
+		if err != nil {
+			t.Fatalf("ZScores() compact error = %v", err)
+		}
+		if !found[0] || scores[0] != 1.5 {
+			t.Fatalf("ZScores() compact = %v, %v, want 1.5, true", scores[0], found[0])
+		}
+
+		entries := make([]ZSetEntry, 0, compactZSetMaxEntries+1)
+		for i := 0; i <= compactZSetMaxEntries; i++ {
+			entries = append(entries, ZSetEntry{Member: []byte{'m', byte('0' + i)}, Score: float64(i)})
+		}
+		if _, err := store.ZAdd("leaders", entries); err != nil {
+			t.Fatalf("ZAdd() upgrade error = %v", err)
+		}
+
+		scores, found, err = store.ZScores("leaders", [][]byte{[]byte("alpha")})
+		if err != nil {
+			t.Fatalf("ZScores() general error = %v", err)
+		}
+		if !found[0] || scores[0] != 1.5 {
+			t.Fatalf("ZScores() general = %v, %v, want 1.5, true", scores[0], found[0])
+		}
+	})
+
+	t.Run("ZScores reports missing members and keys", func(t *testing.T) {
+		store := NewStore()
+		if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: []byte("alpha"), Score: 1}}); err != nil {
+			t.Fatalf("ZAdd() error = %v", err)
+		}
+
+		scores, found, err := store.ZScores("leaders", [][]byte{[]byte("alpha"), []byte("beta")})
+		if err != nil {
+			t.Fatalf("ZScores() error = %v", err)
+		}
+		if !found[0] || scores[0] != 1 {
+			t.Fatalf("ZScores()[0] = %v, %v, want 1, true", scores[0], found[0])
+		}
+		if found[1] {
+			t.Fatalf("ZScores()[1] found = true, want false")
+		}
+
+		if _, found, err := store.ZScores("missing", [][]byte{[]byte("alpha")}); err != nil || found[0] {
+			t.Fatalf("ZScores() missing key = %v, %v, want false, nil", found[0], err)
+		}
+	})
+
+	t.Run("ZScores rejects wrong value type", func(t *testing.T) {
+		store := NewStore()
+		store.Set("leaders", []byte("hello"), 0)
+
+		if _, _, err := store.ZScores("leaders", [][]byte{[]byte("alpha")}); !errors.Is(err, ErrWrongType) {
+			t.Fatalf("ZScores() error = %v, want ErrWrongType", err)
+		}
+	})
+
 	t.Run("ZAdd recreates expired key", func(t *testing.T) {
 		store := NewStore()
 		store.Set("leaders", []byte("stale"), time.Now().Add(-time.Millisecond).UnixMilli())

@@ -476,6 +476,20 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleZRange,
 			validate: validateZRangeRequest,
 		},
+		"GEOADD": {
+			handler:    e.handleGeoAdd,
+			validate:   validateGeoAddRequest,
+			propagates: true,
+			durable:    true,
+		},
+		"GEODIST": {
+			handler:  e.handleGeoDist,
+			validate: validateGeoDistRequest,
+		},
+		"GEORADIUS": {
+			handler:  e.handleGeoRadius,
+			validate: validateGeoRadiusRequest,
+		},
 		"XADD": {
 			handler:  e.handleXAdd,
 			validate: validateXAddRequest,
@@ -800,6 +814,49 @@ func validateZRangeRequest(request *Request) error {
 		return err
 	}
 	if _, err := parseIntegerArgument(request.Args[2]); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGeoAddRequest(request *Request) error {
+	if len(request.Args) < 4 || (len(request.Args)-1)%3 != 0 {
+		return wrongNumberOfArgumentsError("GEOADD")
+	}
+	for i := 1; i < len(request.Args); i += 3 {
+		if _, _, err := parseGeoCoordinates(request.Args[i], request.Args[i+1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGeoDistRequest(request *Request) error {
+	if len(request.Args) != 3 && len(request.Args) != 4 {
+		return wrongNumberOfArgumentsError("GEODIST")
+	}
+	if len(request.Args) == 4 {
+		if _, err := parseGeoUnitArgument(request.Args[3]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateGeoRadiusRequest(request *Request) error {
+	if len(request.Args) < 5 {
+		return wrongNumberOfArgumentsError("GEORADIUS")
+	}
+	if len(request.Args) > 5 {
+		return ErrSyntaxError()
+	}
+	if _, _, err := parseGeoCoordinates(request.Args[1], request.Args[2]); err != nil {
+		return err
+	}
+	if _, err := parseGeoRadiusArgument(request.Args[3]); err != nil {
+		return err
+	}
+	if _, err := parseGeoUnitArgument(request.Args[4]); err != nil {
 		return err
 	}
 	return nil

@@ -505,6 +505,47 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	return added, nil
 }
 
+// ZScores returns the scores of the requested sorted-set members under a
+// single lock acquisition; found[i] reports whether members[i] exists.
+func (s *Store) ZScores(key string, members [][]byte) ([]float64, []bool, error) {
+	scores := make([]float64, len(members))
+	found := make([]bool, len(members))
+
+	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
+
+	shard.mu.RLock()
+	value, ok := shard.data[key]
+	if !ok {
+		shard.mu.RUnlock()
+		return scores, found, nil
+	}
+	if isExpired(value, now) {
+		shard.mu.RUnlock()
+
+		shard.mu.Lock()
+		value, ok = shard.data[key]
+		if ok && isExpired(value, time.Now().UnixMilli()) {
+			s.deleteKeyLocked(shard, key)
+		}
+		shard.mu.Unlock()
+		return scores, found, nil
+	}
+	for i, member := range members {
+		score, exists, err := value.zsetScore(member)
+		if err != nil {
+			shard.mu.RUnlock()
+			return nil, nil, err
+		}
+		scores[i] = score
+		found[i] = exists
+	}
+	value.touch(now)
+	shard.mu.RUnlock()
+
+	return scores, found, nil
+}
+
 // ZRange returns an inclusive rank range from the sorted set stored at key.
 func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) {
 	now := time.Now().UnixMilli()

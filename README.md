@@ -92,6 +92,9 @@ A high-performance, concurrent Redis-compatible key-value store built from scrat
 - `SMEMBERS <key>`
 - `ZADD <key> <score> <member> [score member ...]`
 - `ZRANGE <key> <start> <stop> [WITHSCORES]`
+- `GEOADD <key> <longitude> <latitude> <member> [longitude latitude member ...]`
+- `GEODIST <key> <member1> <member2> [m|km|ft|mi]`
+- `GEORADIUS <key> <longitude> <latitude> <radius> <m|km|ft|mi>`
 - `XADD <key> <id|*> <field> <value> [field value ...]`
 - `XREAD STREAMS <key> <id>`
 - `MULTI`
