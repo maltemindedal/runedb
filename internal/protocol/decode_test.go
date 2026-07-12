@@ -129,6 +129,68 @@ func TestDecodeDoesNotRetainBuffer(t *testing.T) {
 	}
 }
 
+func TestDecodeHugeBulkLengthReportsIncomplete(t *testing.T) {
+	// A near-MaxInt declared length must not overflow the payload-availability
+	// check into a false "complete" read that then indexes out of range.
+	for _, length := range []string{"9223372036854775807", "9223372036854775806"} {
+		input := []byte("$" + length + "\r\n")
+		value, consumed, err := Decode(input)
+		if !errors.Is(err, ErrIncomplete) {
+			t.Fatalf("Decode($%s) error = %v, want ErrIncomplete", length, err)
+		}
+		if value != nil || consumed != 0 {
+			t.Fatalf("Decode($%s) = (%#v, %d), want (nil, 0)", length, value, consumed)
+		}
+	}
+}
+
+func TestDecodeDeeplyNestedArrayIsBounded(t *testing.T) {
+	// Deep nesting must fail as a protocol error rather than recursing until
+	// the goroutine stack overflows.
+	var buf []byte
+	for i := 0; i < maxNestingDepth+16; i++ {
+		buf = append(buf, "*1\r\n"...)
+	}
+	buf = append(buf, ":1\r\n"...)
+
+	_, consumed, err := Decode(buf)
+	if err == nil || errors.Is(err, ErrIncomplete) {
+		t.Fatalf("Decode(deeply nested) error = %v, want permanent protocol error", err)
+	}
+	if consumed != 0 {
+		t.Fatalf("Decode(deeply nested) consumed = %d, want 0", consumed)
+	}
+}
+
+func TestDecodeNestingAtLimitSucceeds(t *testing.T) {
+	// One level below the guard must still decode so the limit does not reject
+	// legitimately nested frames.
+	depth := maxNestingDepth - 1
+	var buf []byte
+	for i := 0; i < depth; i++ {
+		buf = append(buf, "*1\r\n"...)
+	}
+	buf = append(buf, ":1\r\n"...)
+
+	value, consumed, err := Decode(buf)
+	if err != nil {
+		t.Fatalf("Decode(nested to limit) error = %v", err)
+	}
+	if consumed != len(buf) {
+		t.Fatalf("Decode(nested to limit) consumed = %d, want %d", consumed, len(buf))
+	}
+	for i := 0; i < depth; i++ {
+		array, ok := value.(Array)
+		if !ok || len(array.Elements) != 1 {
+			t.Fatalf("level %d = %#v, want single-element array", i, value)
+		}
+		value = array.Elements[0]
+	}
+	if want := (Integer{Value: 1}); value != want {
+		t.Fatalf("innermost value = %#v, want %#v", value, want)
+	}
+}
+
 func TestDecodeProtocolErrors(t *testing.T) {
 	tests := []struct {
 		name  string

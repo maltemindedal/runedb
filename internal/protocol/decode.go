@@ -10,12 +10,20 @@ import (
 // frame. Callers should retry Decode after more bytes arrive.
 var ErrIncomplete = errors.New("protocol: incomplete frame")
 
+// maxNestingDepth bounds RESP array nesting so a maliciously deep frame cannot
+// exhaust the goroutine stack through Decode's recursion.
+const maxNestingDepth = 128
+
 // Decode parses one RESP value from the front of buf without blocking.
 // It returns the parsed value and the number of bytes consumed. When buf does
 // not yet hold a complete frame, Decode returns ErrIncomplete and consumes
 // nothing. Any other error is a permanent protocol error. Returned values do
 // not retain buf, so callers may reuse or compact it after Decode returns.
 func Decode(buf []byte) (Value, int, error) {
+	return decode(buf, 0)
+}
+
+func decode(buf []byte, depth int) (Value, int, error) {
 	if len(buf) == 0 {
 		return nil, 0, ErrIncomplete
 	}
@@ -68,7 +76,7 @@ func Decode(buf []byte) (Value, int, error) {
 	case '$':
 		return decodeBulkString(buf)
 	case '*':
-		return decodeArray(buf)
+		return decodeArray(buf, depth)
 	default:
 		return nil, 0, fmt.Errorf("protocol: unsupported frame prefix %q", string(prefix))
 	}
@@ -93,7 +101,7 @@ func decodeBulkString(buf []byte) (Value, int, error) {
 	}
 
 	remaining := buf[consumed:]
-	if len(remaining) < length+2 {
+	if length > len(remaining)-2 {
 		return nil, 0, ErrIncomplete
 	}
 	if remaining[length] != '\r' || remaining[length+1] != '\n' {
@@ -103,7 +111,11 @@ func decodeBulkString(buf []byte) (Value, int, error) {
 	return BulkString{Data: bytes.Clone(remaining[:length])}, consumed + length + 2, nil
 }
 
-func decodeArray(buf []byte) (Value, int, error) {
+func decodeArray(buf []byte, depth int) (Value, int, error) {
+	if depth >= maxNestingDepth {
+		return nil, 0, fmt.Errorf("protocol: array nesting exceeds %d levels", maxNestingDepth)
+	}
+
 	line, n, err := decodeLine(buf[1:])
 	if err != nil {
 		return nil, 0, err
@@ -123,7 +135,7 @@ func decodeArray(buf []byte) (Value, int, error) {
 
 	elements := make([]Value, 0, min(count, 64))
 	for i := 0; i < count; i++ {
-		element, elementN, err := Decode(buf[consumed:])
+		element, elementN, err := decode(buf[consumed:], depth+1)
 		if err != nil {
 			if errors.Is(err, ErrIncomplete) {
 				return nil, 0, ErrIncomplete

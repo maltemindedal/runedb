@@ -208,6 +208,44 @@ func TestConnMachineProtocolErrorClosesAfterOrderedReplies(t *testing.T) {
 	}
 }
 
+func TestConnMachineFeedSurvivesHugeBulkLength(t *testing.T) {
+	// A near-MaxInt bulk length must buffer as an incomplete frame, not panic
+	// the driving loop through an out-of-range index in the decoder.
+	machine := NewConnMachine(1, nil)
+
+	if err := machine.Feed([]byte("$9223372036854775807\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.PendingRequests() != 0 {
+		t.Fatalf("PendingRequests() = %d, want 0 for incomplete frame", machine.PendingRequests())
+	}
+	if machine.State() != ConnStateActive {
+		t.Fatalf("State() = %d, want ConnStateActive", machine.State())
+	}
+}
+
+func TestConnMachineFeedRejectsDeeplyNestedArray(t *testing.T) {
+	// Deep nesting must surface as a protocol error that closes the connection,
+	// not a stack overflow.
+	machine := NewConnMachine(1, nil)
+
+	var frame []byte
+	for i := 0; i < 4096; i++ {
+		frame = append(frame, "*1\r\n"...)
+	}
+	frame = append(frame, ":1\r\n"...)
+
+	if err := machine.Feed(frame); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.State() != ConnStateClosing {
+		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
+	}
+	if machine.Err() == nil {
+		t.Fatal("Err() = nil, want recorded protocol error")
+	}
+}
+
 func TestConnMachineRunnerErrorClosesImmediately(t *testing.T) {
 	machine := NewConnMachine(1, nil)
 	fatal := fmt.Errorf("execution pipeline failed")
