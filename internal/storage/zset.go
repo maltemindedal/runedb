@@ -76,6 +76,11 @@ func (s *SortedSet) add(member string, score float64) bool {
 	return !exists
 }
 
+func (s *SortedSet) score(member string) (float64, bool) {
+	score, ok := s.index[member]
+	return score, ok
+}
+
 func (s *SortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	if start < 0 || stop < start || start >= s.order.length {
 		return nil

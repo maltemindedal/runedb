@@ -505,6 +505,39 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, error) {
 	return added, nil
 }
 
+// ZScore returns the score of a sorted-set member and whether the member exists.
+func (s *Store) ZScore(key string, member []byte) (float64, bool, error) {
+	now := time.Now().UnixMilli()
+	shard := s.shardForKey(key)
+
+	shard.mu.RLock()
+	value, ok := shard.data[key]
+	if !ok {
+		shard.mu.RUnlock()
+		return 0, false, nil
+	}
+	if isExpired(value, now) {
+		shard.mu.RUnlock()
+
+		shard.mu.Lock()
+		value, ok = shard.data[key]
+		if ok && isExpired(value, time.Now().UnixMilli()) {
+			s.deleteKeyLocked(shard, key)
+		}
+		shard.mu.Unlock()
+		return 0, false, nil
+	}
+	score, exists, err := value.zsetScore(member)
+	if err != nil {
+		shard.mu.RUnlock()
+		return 0, false, err
+	}
+	value.touch(now)
+	shard.mu.RUnlock()
+
+	return score, exists, nil
+}
+
 // ZRange returns an inclusive rank range from the sorted set stored at key.
 func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) {
 	now := time.Now().UnixMilli()

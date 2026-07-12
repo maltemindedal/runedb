@@ -68,6 +68,15 @@ func (s *CompactZSet) add(member []byte, score float64) bool {
 	return true
 }
 
+func (s *CompactZSet) score(member []byte) (float64, bool) {
+	for _, entry := range s.entries {
+		if s.memberEqual(entry, member) {
+			return entry.score, true
+		}
+	}
+	return 0, false
+}
+
 func (s *CompactZSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	if s == nil || start < 0 || stop < start || start >= len(s.entries) {
 		return nil
