@@ -51,7 +51,7 @@ func (w *shortWriter) Write(p []byte) (int, error) {
 
 func TestConnMachinePartialReads(t *testing.T) {
 	run, executed := echoRunner(t)
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 
 	request := []byte("*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n")
 	for i, b := range request {
@@ -83,7 +83,7 @@ func TestConnMachinePartialReads(t *testing.T) {
 
 func TestConnMachineCommandBoundaries(t *testing.T) {
 	run, executed := echoRunner(t)
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 
 	// Two complete requests plus the beginning of a third in one readable chunk.
 	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nPING\r\n*2\r\n$4\r\nECHO\r\n$3\r\nhe")); err != nil {
@@ -122,7 +122,7 @@ func TestConnMachineCommandBoundaries(t *testing.T) {
 }
 
 func TestConnMachinePartialWrites(t *testing.T) {
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 	run := func(context.Context, protocol.Value) ([]protocol.Value, error) {
 		return []protocol.Value{protocol.BulkString{Data: []byte("a longer payload that needs several flushes")}}, nil
 	}
@@ -157,7 +157,7 @@ func TestConnMachinePartialWrites(t *testing.T) {
 
 func TestConnMachineProtocolErrorClosesAfterOrderedReplies(t *testing.T) {
 	run, executed := echoRunner(t)
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 
 	// One valid request followed by an unsupported frame prefix.
 	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\nX\r\n")); err != nil {
@@ -211,7 +211,7 @@ func TestConnMachineProtocolErrorClosesAfterOrderedReplies(t *testing.T) {
 func TestConnMachineFeedSurvivesHugeBulkLength(t *testing.T) {
 	// A near-MaxInt bulk length must buffer as an incomplete frame, not panic
 	// the driving loop through an out-of-range index in the decoder.
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 
 	if err := machine.Feed([]byte("$9223372036854775807\r\n")); err != nil {
 		t.Fatalf("Feed() error = %v", err)
@@ -227,7 +227,7 @@ func TestConnMachineFeedSurvivesHugeBulkLength(t *testing.T) {
 func TestConnMachineFeedRejectsDeeplyNestedArray(t *testing.T) {
 	// Deep nesting must surface as a protocol error that closes the connection,
 	// not a stack overflow.
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 
 	var frame []byte
 	for i := 0; i < 4096; i++ {
@@ -246,8 +246,84 @@ func TestConnMachineFeedRejectsDeeplyNestedArray(t *testing.T) {
 	}
 }
 
+func TestConnMachineRejectsOversizedFrame(t *testing.T) {
+	// A single incomplete frame whose buffered bytes exceed the read-buffer
+	// limit must be rejected as a protocol error rather than buffered without
+	// bound.
+	machine := NewConnMachine(nil)
+	machine.maxReadBuffer = 16
+
+	if err := machine.Feed([]byte("$100\r\nabcdefghijklmnop")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.State() != ConnStateClosing {
+		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
+	}
+	if machine.Err() == nil {
+		t.Fatal("Err() = nil, want recorded protocol error for oversized frame")
+	}
+}
+
+func TestConnMachineRejectsAbsurdDeclaredLength(t *testing.T) {
+	// A bulk string declaring a length far past the limit must be rejected up
+	// front, before its payload is buffered, via the decoder's byte hint.
+	machine := NewConnMachine(nil)
+	machine.maxReadBuffer = 1024
+
+	if err := machine.Feed([]byte("$1000000\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.State() != ConnStateClosing {
+		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
+	}
+	if machine.Err() == nil {
+		t.Fatal("Err() = nil, want recorded protocol error for absurd length")
+	}
+}
+
+func TestConnMachineDefersDecodeUntilFrameCanComplete(t *testing.T) {
+	// While a bulk payload is still arriving, the machine must not re-decode on
+	// every append; it waits until the buffer reaches the declared frame size.
+	run, executed := echoRunner(t)
+	machine := NewConnMachine(nil)
+
+	if err := machine.Feed([]byte("*1\r\n$5\r\nhe")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.resumeAt == 0 {
+		t.Fatal("resumeAt = 0, want a pending-frame byte hint")
+	}
+
+	// Feeding fewer bytes than the hint requires keeps the frame pending.
+	if err := machine.Feed([]byte("ll")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.PendingRequests() != 0 {
+		t.Fatalf("PendingRequests() = %d, want 0 before the frame completes", machine.PendingRequests())
+	}
+
+	// The final byte plus terminator completes the frame.
+	if err := machine.Feed([]byte("o\r\n")); err != nil {
+		t.Fatalf("Feed() error = %v", err)
+	}
+	if machine.PendingRequests() != 1 {
+		t.Fatalf("PendingRequests() = %d, want 1 once the frame completes", machine.PendingRequests())
+	}
+	if err := machine.ProcessPending(context.Background(), run); err != nil {
+		t.Fatalf("ProcessPending() error = %v", err)
+	}
+	request, ok := (*executed)[0].(protocol.Array)
+	if !ok || len(request.Elements) != 1 {
+		t.Fatalf("request = %#v, want single-element array", (*executed)[0])
+	}
+	payload, ok := request.Elements[0].(protocol.BulkString)
+	if !ok || string(payload.Data) != "hello" {
+		t.Fatalf("payload = %#v, want %q", request.Elements[0], "hello")
+	}
+}
+
 func TestConnMachineRunnerErrorClosesImmediately(t *testing.T) {
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 	fatal := fmt.Errorf("execution pipeline failed")
 	run := func(context.Context, protocol.Value) ([]protocol.Value, error) {
 		return nil, fatal
@@ -279,7 +355,7 @@ func TestConnMachineCloseCleansUpClientState(t *testing.T) {
 	}
 	state.EnqueueCommand("SET", [][]byte{[]byte("foo"), []byte("bar")})
 
-	machine := NewConnMachine(7, state)
+	machine := NewConnMachine(state)
 	if err := machine.Feed([]byte("*1\r\n$4\r\nPING\r\n")); err != nil {
 		t.Fatalf("Feed() error = %v", err)
 	}
@@ -309,7 +385,7 @@ func TestConnMachineCloseCleansUpClientState(t *testing.T) {
 }
 
 func TestConnMachineCloseIsIdempotent(t *testing.T) {
-	machine := NewConnMachine(1, nil)
+	machine := NewConnMachine(nil)
 	first := fmt.Errorf("peer reset")
 
 	machine.Close(first)

@@ -129,6 +129,50 @@ func TestDecodeDoesNotRetainBuffer(t *testing.T) {
 	}
 }
 
+func TestDecodeIntegerAcceptsLeadingPlus(t *testing.T) {
+	// A leading '+' sign is valid in a RESP integer frame and must decode the
+	// same way the blocking parser does, not as a protocol error.
+	value, consumed, err := Decode([]byte(":+42\r\n"))
+	if err != nil {
+		t.Fatalf("Decode(:+42) error = %v", err)
+	}
+	if want := (Integer{Value: 42}); value != want {
+		t.Fatalf("Decode(:+42) = %#v, want %#v", value, want)
+	}
+	if consumed != len(":+42\r\n") {
+		t.Fatalf("Decode(:+42) consumed = %d, want %d", consumed, len(":+42\r\n"))
+	}
+}
+
+func TestDecodeIncompleteCarriesByteHint(t *testing.T) {
+	// A bulk string missing payload bytes reports the total frame size so a
+	// caller can defer re-decoding until enough bytes arrive.
+	_, _, err := Decode([]byte("$5\r\nhe"))
+	var incomplete *IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("Decode error = %v, want *IncompleteError", err)
+	}
+	if want := len("$5\r\nhello\r\n"); incomplete.Need != want {
+		t.Fatalf("IncompleteError.Need = %d, want %d", incomplete.Need, want)
+	}
+	if !errors.Is(err, ErrIncomplete) {
+		t.Fatal("errors.Is(err, ErrIncomplete) = false, want true")
+	}
+}
+
+func TestDecodeArrayIncompleteCarriesByteHint(t *testing.T) {
+	// The hint on a partially-arrived array element must account for the array
+	// header bytes so it reflects the whole frame's size.
+	_, _, err := Decode([]byte("*1\r\n$5\r\nhe"))
+	var incomplete *IncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("Decode error = %v, want *IncompleteError", err)
+	}
+	if want := len("*1\r\n$5\r\nhello\r\n"); incomplete.Need != want {
+		t.Fatalf("IncompleteError.Need = %d, want %d", incomplete.Need, want)
+	}
+}
+
 func TestDecodeHugeBulkLengthReportsIncomplete(t *testing.T) {
 	// A near-MaxInt declared length must not overflow the payload-availability
 	// check into a false "complete" read that then indexes out of range.

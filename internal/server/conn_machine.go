@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -21,6 +22,12 @@ const (
 	// ConnStateClosed has released connection resources; all operations fail.
 	ConnStateClosed
 )
+
+// defaultMaxReadBuffer bounds the bytes a single incomplete frame may buffer
+// before the machine rejects it as a protocol error, preventing a client from
+// exhausting memory with an oversized or never-terminated frame. It mirrors the
+// role of Redis's proto-max-bulk-len query-buffer limit.
+const defaultMaxReadBuffer = 512 * 1024 * 1024
 
 // ConnCommandRunner executes one parsed request with connection-scoped state
 // and returns the RESP responses to buffer for the client. A non-nil error is
@@ -48,26 +55,36 @@ type connEvent struct {
 // bound ClientState, which the machine detaches from shared registries when
 // the connection closes.
 //
+// On a permanent protocol error the machine emits an ordered error reply and
+// then closes the connection. This intentionally diverges from the current
+// goroutine-per-connection handler, which replies and keeps serving; closing
+// matches Redis, which terminates a connection after a protocol error because
+// the byte stream can no longer be resynchronized. The divergence is confined
+// to this not-yet-wired path (see issue #19) and does not affect the current
+// networking path.
+//
 // A ConnMachine is not safe for concurrent use; a single driving loop must own
 // it. Cross-goroutine async deliveries continue to flow through ClientState,
 // which carries its own locking.
 type ConnMachine struct {
-	clientID uint64
-	client   *ClientState
+	client *ClientState
 
-	state    ConnMachineState
-	err      error
-	readBuf  []byte
-	pending  []connEvent
-	writeBuf []byte
+	state         ConnMachineState
+	err           error
+	readBuf       []byte
+	resumeAt      int
+	maxReadBuffer int
+	pending       []connEvent
+	writeBuf      []byte
+	writeOff      int
 }
 
 // NewConnMachine constructs an active connection state machine bound to the
 // connection-scoped client state.
-func NewConnMachine(clientID uint64, client *ClientState) *ConnMachine {
+func NewConnMachine(client *ClientState) *ConnMachine {
 	return &ConnMachine{
-		clientID: clientID,
-		client:   client,
+		client:        client,
+		maxReadBuffer: defaultMaxReadBuffer,
 	}
 }
 
@@ -79,16 +96,6 @@ func (m *ConnMachine) State() ConnMachineState {
 // Err returns the error that moved the machine toward close, if any.
 func (m *ConnMachine) Err() error {
 	return m.err
-}
-
-// ClientID returns the connection registry identifier.
-func (m *ConnMachine) ClientID() uint64 {
-	return m.clientID
-}
-
-// Client returns the bound connection-scoped client state.
-func (m *ConnMachine) Client() *ClientState {
-	return m.client
 }
 
 // PendingRequests reports how many parsed requests await execution.
@@ -104,31 +111,40 @@ func (m *ConnMachine) PendingRequests() int {
 
 // HasPendingOutput reports whether buffered response bytes await flushing.
 func (m *ConnMachine) HasPendingOutput() bool {
-	return len(m.writeBuf) > 0
+	return m.writeOff < len(m.writeBuf)
 }
 
 // Feed appends readable bytes to the read buffer and parses every complete
 // RESP request they finish. Incomplete trailing frames stay buffered until
-// more bytes arrive. A permanent protocol error queues an ordered RESP error
-// reply and transitions the machine to the closing state, so callers should
-// check State after feeding.
+// more bytes arrive; the machine defers re-decoding until the buffer reaches
+// the byte count the pending frame is known to need, so a frame arriving in
+// many small chunks is not rescanned on every append. A permanent protocol
+// error — including a frame exceeding the read-buffer limit — queues an ordered
+// RESP error reply and transitions the machine to the closing state, so callers
+// should check State after feeding.
 func (m *ConnMachine) Feed(data []byte) error {
 	if m.state != ConnStateActive {
 		return ErrConnMachineClosed
 	}
 
 	m.readBuf = append(m.readBuf, data...)
+	if m.resumeAt > 0 && len(m.readBuf) < m.resumeAt {
+		return nil
+	}
+
 	consumed := 0
 	for {
 		value, n, err := protocol.Decode(m.readBuf[consumed:])
 		if errors.Is(err, protocol.ErrIncomplete) {
+			m.resumeAt = 0
+			var incomplete *protocol.IncompleteError
+			if errors.As(err, &incomplete) {
+				m.resumeAt = incomplete.Need
+			}
 			break
 		}
 		if err != nil {
-			m.pending = append(m.pending, connEvent{protoErr: err})
-			m.err = err
-			m.state = ConnStateClosing
-			m.readBuf = nil
+			m.enterProtocolError(err)
 			return nil
 		}
 
@@ -137,7 +153,21 @@ func (m *ConnMachine) Feed(data []byte) error {
 	}
 
 	m.readBuf = append(m.readBuf[:0], m.readBuf[consumed:]...)
+
+	if len(m.readBuf) > m.maxReadBuffer || m.resumeAt > m.maxReadBuffer {
+		m.enterProtocolError(fmt.Errorf("protocol: frame exceeds %d byte read-buffer limit", m.maxReadBuffer))
+	}
 	return nil
+}
+
+// enterProtocolError queues an ordered error reply, records the fatal cause,
+// and transitions to the closing state so buffered replies still drain.
+func (m *ConnMachine) enterProtocolError(err error) {
+	m.pending = append(m.pending, connEvent{protoErr: err})
+	m.err = err
+	m.state = ConnStateClosing
+	m.readBuf = nil
+	m.resumeAt = 0
 }
 
 // ProcessPending executes parsed requests in arrival order through run and
@@ -175,23 +205,29 @@ func (m *ConnMachine) ProcessPending(ctx context.Context, run ConnCommandRunner)
 }
 
 // Flush writes pending output to w and consumes whatever w accepts, so partial
-// writes leave the remainder buffered for a later call. Once a closing machine
-// has drained its parsed requests and pending output, Flush completes the
-// transition to the closed state.
+// writes leave the remainder buffered for a later call. The unwritten remainder
+// is tracked by an offset rather than recompacted, so draining a large reply to
+// a slow reader stays linear. Once a closing machine has drained its parsed
+// requests and pending output, Flush completes the transition to the closed
+// state.
 func (m *ConnMachine) Flush(w io.Writer) error {
 	if m.state == ConnStateClosed {
 		return ErrConnMachineClosed
 	}
 
-	if len(m.writeBuf) > 0 {
-		n, err := w.Write(m.writeBuf)
-		m.writeBuf = append(m.writeBuf[:0], m.writeBuf[n:]...)
+	if m.writeOff < len(m.writeBuf) {
+		n, err := w.Write(m.writeBuf[m.writeOff:])
+		m.writeOff += n
+		if m.writeOff >= len(m.writeBuf) {
+			m.writeBuf = m.writeBuf[:0]
+			m.writeOff = 0
+		}
 		if err != nil {
 			return err
 		}
 	}
 
-	if m.state == ConnStateClosing && len(m.writeBuf) == 0 && len(m.pending) == 0 {
+	if m.state == ConnStateClosing && !m.HasPendingOutput() && len(m.pending) == 0 {
 		m.Close(nil)
 	}
 
@@ -210,8 +246,10 @@ func (m *ConnMachine) Close(err error) {
 	}
 	m.state = ConnStateClosed
 	m.readBuf = nil
+	m.resumeAt = 0
 	m.pending = nil
 	m.writeBuf = nil
+	m.writeOff = 0
 	m.client.Disconnect()
 }
 
@@ -220,11 +258,16 @@ func (m *ConnMachine) bufferResponses(values []protocol.Value) error {
 		return nil
 	}
 
-	payload, err := protocol.EncodeValues(values)
+	if m.writeOff > 0 {
+		m.writeBuf = append(m.writeBuf[:0], m.writeBuf[m.writeOff:]...)
+		m.writeOff = 0
+	}
+
+	encoded, err := protocol.AppendValues(m.writeBuf, values)
 	if err != nil {
 		return err
 	}
 
-	m.writeBuf = append(m.writeBuf, payload...)
+	m.writeBuf = encoded
 	return nil
 }

@@ -10,6 +10,29 @@ import (
 // frame. Callers should retry Decode after more bytes arrive.
 var ErrIncomplete = errors.New("protocol: incomplete frame")
 
+// IncompleteError reports an incomplete frame along with Need, a lower bound on
+// the total buffer length the frame requires. Callers can defer re-decoding
+// until the buffer reaches Need bytes to avoid rescanning the same prefix on
+// every append. Need is only populated when the shortfall is known from a
+// length prefix; a line still missing its terminator reports the bare
+// ErrIncomplete sentinel instead. errors.Is(err, ErrIncomplete) matches both.
+type IncompleteError struct {
+	Need int
+}
+
+func (e *IncompleteError) Error() string { return ErrIncomplete.Error() }
+
+func (e *IncompleteError) Unwrap() error { return ErrIncomplete }
+
+// incompleteNeed returns an incomplete-frame error carrying a total-bytes hint,
+// or the bare sentinel when the hint is non-positive.
+func incompleteNeed(total int) error {
+	if total <= 0 {
+		return ErrIncomplete
+	}
+	return &IncompleteError{Need: total}
+}
+
 // maxNestingDepth bounds RESP array nesting so a maliciously deep frame cannot
 // exhaust the goroutine stack through Decode's recursion.
 const maxNestingDepth = 128
@@ -46,33 +69,31 @@ func decode(buf []byte, depth int) (Value, int, error) {
 		if err != nil {
 			return nil, 0, err
 		}
-		value, err := parseIntBytes(line, 10, 64)
+		value, err := integerFromLine(line)
 		if err != nil {
-			return nil, 0, fmt.Errorf("protocol: parse integer: %w", err)
+			return nil, 0, err
 		}
-		return Integer{Value: value}, 1 + n, nil
+		return value, 1 + n, nil
 	case '#':
 		line, n, err := decodeLine(buf[1:])
 		if err != nil {
 			return nil, 0, err
 		}
-		switch string(line) {
-		case "t":
-			return Boolean{Value: true}, 1 + n, nil
-		case "f":
-			return Boolean{Value: false}, 1 + n, nil
-		default:
-			return nil, 0, fmt.Errorf("protocol: invalid boolean marker %q", string(line))
+		value, err := booleanFromMarker(line)
+		if err != nil {
+			return nil, 0, err
 		}
+		return value, 1 + n, nil
 	case '_':
 		line, n, err := decodeLine(buf[1:])
 		if err != nil {
 			return nil, 0, err
 		}
-		if len(line) != 0 {
-			return nil, 0, fmt.Errorf("protocol: invalid null payload %q", string(line))
+		value, err := nullFromPayload(line)
+		if err != nil {
+			return nil, 0, err
 		}
-		return Null{}, 1 + n, nil
+		return value, 1 + n, nil
 	case '$':
 		return decodeBulkString(buf)
 	case '*':
@@ -102,7 +123,7 @@ func decodeBulkString(buf []byte) (Value, int, error) {
 
 	remaining := buf[consumed:]
 	if length > len(remaining)-2 {
-		return nil, 0, ErrIncomplete
+		return nil, 0, incompleteNeed(consumed + length + 2)
 	}
 	if remaining[length] != '\r' || remaining[length+1] != '\n' {
 		return nil, 0, fmt.Errorf("protocol: bulk string payload missing CRLF terminator")
@@ -138,6 +159,10 @@ func decodeArray(buf []byte, depth int) (Value, int, error) {
 		element, elementN, err := decode(buf[consumed:], depth+1)
 		if err != nil {
 			if errors.Is(err, ErrIncomplete) {
+				var incomplete *IncompleteError
+				if errors.As(err, &incomplete) {
+					return nil, 0, incompleteNeed(consumed + incomplete.Need)
+				}
 				return nil, 0, ErrIncomplete
 			}
 			return nil, 0, fmt.Errorf("protocol: parse array element %d: %w", i, err)
@@ -156,9 +181,11 @@ func decodeLine(buf []byte) ([]byte, int, error) {
 	if idx < 0 {
 		return nil, 0, ErrIncomplete
 	}
-	if idx == 0 || buf[idx-1] != '\r' {
-		return nil, 0, fmt.Errorf("protocol: line missing CRLF terminator")
+
+	content, err := trimCRLF(buf[:idx+1])
+	if err != nil {
+		return nil, 0, err
 	}
 
-	return buf[:idx-1], idx + 1, nil
+	return content, idx + 1, nil
 }
