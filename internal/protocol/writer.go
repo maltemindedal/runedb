@@ -39,6 +39,27 @@ func EncodeValues(values []Value) ([]byte, error) {
 	return payload, nil
 }
 
+// AppendValue appends the wire representation of value to dst and returns the
+// extended slice, letting callers encode directly into an existing buffer
+// without an intermediate allocation.
+func AppendValue(dst []byte, value Value) ([]byte, error) {
+	return appendEncodedValue(dst, value)
+}
+
+// AppendValues appends the wire representations of values to dst in order and
+// returns the extended slice. On error dst is returned unmodified in length.
+func AppendValues(dst []byte, values []Value) ([]byte, error) {
+	original := len(dst)
+	for _, value := range values {
+		next, err := appendEncodedValue(dst, value)
+		if err != nil {
+			return dst[:original], err
+		}
+		dst = next
+	}
+	return dst, nil
+}
+
 // EncodedLen reports how many bytes Encode would emit for value.
 func EncodedLen(value Value) (int, error) {
 	switch typed := value.(type) {

@@ -15,6 +15,7 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - AOF rewrite: background compaction that snapshots live durable state into a replacement append-only file.
 - RDB snapshot: Redis database file support used for startup loading and graceful-shutdown snapshots.
 - Client state: per-connection state for authentication, transactions, pub/sub mode, monitor mode, and replication role.
+- Connection state machine: the non-blocking per-connection component that buffers readable bytes, parses complete RESP requests, executes commands, and flushes buffered responses incrementally without a dedicated blocking goroutine.
 - Transaction: Redis-style `MULTI` / `EXEC` command queueing with `WATCH`-based optimistic invalidation.
 - Pub/sub registry: exact-channel subscription bookkeeping used by `SUBSCRIBE`, `UNSUBSCRIBE`, and `PUBLISH`.
 - Replica: a downstream server connected through the supported replication handshake.
@@ -41,6 +42,7 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - Memory accounting is approximate keyspace accounting, not exact process RSS accounting.
 - Replication supports the current `REPLCONF`, `PSYNC`, and `WAIT` surface but is not a complete Redis replication implementation.
 - Redis compatibility is scoped to commands explicitly implemented in `internal/command`; unsupported modifiers should fail explicitly rather than being silently accepted.
+- The connection state machine is introduced but not yet wired into the networking path, which still uses one goroutine per client; OS-level I/O multiplexing is tracked separately.
 
 ## Documentation Rules
 

@@ -45,41 +45,27 @@ func (p *Parser) Parse() (Value, error) {
 		}
 		return ErrorValue{Message: line}, nil
 	case ':':
-		line, err := p.readLine()
+		line, err := p.readLineBytes()
 		if err != nil {
 			return nil, err
 		}
-		value, err := strconv.ParseInt(line, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("protocol: parse integer: %w", err)
-		}
-		return Integer{Value: value}, nil
+		return integerFromLine(line)
 	case '$':
 		return p.parseBulkString()
 	case '*':
 		return p.parseArray()
 	case '#':
-		line, err := p.readLine()
+		line, err := p.readLineBytes()
 		if err != nil {
 			return nil, err
 		}
-		switch line {
-		case "t":
-			return Boolean{Value: true}, nil
-		case "f":
-			return Boolean{Value: false}, nil
-		default:
-			return nil, fmt.Errorf("protocol: invalid boolean marker %q", line)
-		}
+		return booleanFromMarker(line)
 	case '_':
-		line, err := p.readLine()
+		line, err := p.readLineBytes()
 		if err != nil {
 			return nil, err
 		}
-		if line != "" {
-			return nil, fmt.Errorf("protocol: invalid null payload %q", line)
-		}
-		return Null{}, nil
+		return nullFromPayload(line)
 	default:
 		return nil, fmt.Errorf("protocol: unsupported frame prefix %q", string(prefix))
 	}
@@ -226,8 +212,8 @@ func parseIntBytes(raw []byte, base, bitSize int) (int64, error) {
 	}
 
 	negative := false
-	if raw[0] == '-' {
-		negative = true
+	if raw[0] == '-' || raw[0] == '+' {
+		negative = raw[0] == '-'
 		raw = raw[1:]
 		if len(raw) == 0 {
 			return 0, strconv.ErrSyntax
