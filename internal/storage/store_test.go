@@ -1369,7 +1369,7 @@ func TestStoreSortedSetBehavior(t *testing.T) {
 	t.Run("Compact sorted set upgrades when member count exceeds threshold", func(t *testing.T) {
 		store := NewStore()
 		for i := 0; i < compactZSetMaxEntries; i++ {
-			member := []byte(fmt.Sprintf("m%d", i))
+			member := fmt.Appendf(nil, "m%d", i)
 			if _, err := store.ZAdd("leaders", []ZSetEntry{{Member: member, Score: float64(i)}}); err != nil {
 				t.Fatalf("ZAdd() seed error = %v", err)
 			}

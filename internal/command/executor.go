@@ -30,6 +30,8 @@ var (
 	ErrValueNotFloat = errors.New("value is not a valid float")
 	// ErrWrongType reports that a command targeted the wrong logical value type.
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
+	// ErrNotHyperLogLog reports that a string key does not hold a valid HyperLogLog value.
+	ErrNotHyperLogLog = errors.New("key is not a valid HyperLogLog string value")
 	// ErrNoAuth reports that the client must authenticate before running a command.
 	ErrNoAuth = errors.New("authentication required")
 	// ErrWrongPass reports that the supplied AUTH credentials were rejected.
@@ -152,6 +154,11 @@ func ErrValueNotFloatError() error {
 // ErrWrongTypeError reports a Redis-style wrong-type failure.
 func ErrWrongTypeError() error {
 	return newRESPError("WRONGTYPE", "Operation against a key holding the wrong kind of value", ErrWrongType)
+}
+
+// ErrNotHyperLogLogError reports that a string key does not hold a valid HyperLogLog value.
+func ErrNotHyperLogLogError() error {
+	return newRESPError("WRONGTYPE", "Key is not a valid HyperLogLog string value.", ErrNotHyperLogLog)
 }
 
 // ErrNoAuthError reports that the client must authenticate first.

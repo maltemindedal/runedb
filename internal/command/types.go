@@ -412,6 +412,16 @@ func (e *Executor) commandSpecs() map[string]commandSpec {
 			handler:  e.handleBitCount,
 			validate: validateBitCountRequest,
 		},
+		"PFADD": {
+			handler:    e.handlePFAdd,
+			validate:   minArgsValidator("PFADD", 1),
+			propagates: true,
+			durable:    true,
+		},
+		"PFCOUNT": {
+			handler:  e.handlePFCount,
+			validate: minArgsValidator("PFCOUNT", 1),
+		},
 		"DEL": {
 			handler:    e.handleDel,
 			validate:   minArgsValidator("DEL", 1),

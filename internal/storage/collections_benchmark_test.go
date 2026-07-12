@@ -82,7 +82,7 @@ func BenchmarkSet(b *testing.B) {
 	b.Run("SAdd unique batch", func(b *testing.B) {
 		members := make([][]byte, 16)
 		for i := range members {
-			members[i] = []byte(fmt.Sprintf("m%d", i))
+			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -99,7 +99,7 @@ func BenchmarkSet(b *testing.B) {
 		store := NewStore()
 		members := make([][]byte, 16)
 		for i := range members {
-			members[i] = []byte(fmt.Sprintf("m%d", i))
+			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
 		if _, err := store.SAdd("s", members); err != nil {
 			b.Fatal(err)
@@ -133,7 +133,7 @@ func BenchmarkSet(b *testing.B) {
 	b.Run("SRem hit batch", func(b *testing.B) {
 		members := make([][]byte, 16)
 		for i := range members {
-			members[i] = []byte(fmt.Sprintf("m%d", i))
+			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -156,7 +156,7 @@ func BenchmarkSet(b *testing.B) {
 		}
 		members := make([][]byte, 16)
 		for i := range members {
-			members[i] = []byte(fmt.Sprintf("absent%d", i))
+			members[i] = fmt.Appendf(nil, "absent%d", i)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
@@ -172,7 +172,7 @@ func BenchmarkSet(b *testing.B) {
 		store := NewStore()
 		members := make([][]byte, 64)
 		for i := range members {
-			members[i] = []byte(fmt.Sprintf("m%d", i))
+			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
 		if _, err := store.SAdd("s", members); err != nil {
 			b.Fatal(err)
