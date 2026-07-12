@@ -42,3 +42,11 @@ func (s *Store) valueObjectForTest(key string) *ValueObject {
 
 	return shard.data[key]
 }
+
+func scoresOfEntries(entries []ZSetEntry) []float64 {
+	scores := make([]float64, 0, len(entries))
+	for _, entry := range entries {
+		scores = append(scores, entry.Score)
+	}
+	return scores
+}

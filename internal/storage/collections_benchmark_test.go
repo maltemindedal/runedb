@@ -78,6 +78,46 @@ func BenchmarkHash(b *testing.B) {
 	})
 }
 
+func BenchmarkZSet(b *testing.B) {
+	newLargeZSet := func(b *testing.B) *Store {
+		b.Helper()
+		store := NewStore()
+		entries := make([]ZSetEntry, 16384)
+		for i := range entries {
+			entries[i] = ZSetEntry{Member: fmt.Appendf(nil, "m%d", i), Score: float64(i)}
+		}
+		if _, err := store.ZAdd("z", entries); err != nil {
+			b.Fatal(err)
+		}
+		return store
+	}
+
+	b.Run("ZRangeByScore narrow range of 16384", func(b *testing.B) {
+		store := newLargeZSet(b)
+		scoreRange := ScoreRange{Min: 8192, Max: 8200, MaxExclusive: true}
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			if _, err := store.ZRangeByScore("z", scoreRange); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("ZRange full scan of 16384", func(b *testing.B) {
+		store := newLargeZSet(b)
+		b.ReportAllocs()
+		b.ResetTimer()
+
+		for i := 0; i < b.N; i++ {
+			if _, err := store.ZRange("z", 0, -1); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkSet(b *testing.B) {
 	b.Run("SAdd unique batch", func(b *testing.B) {
 		members := make([][]byte, 16)
