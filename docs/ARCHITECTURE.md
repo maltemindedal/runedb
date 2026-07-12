@@ -38,6 +38,7 @@ Owns RESP parsing and encoding.
 Current responsibilities:
 
 - parse RESP2 frames from a buffered TCP reader
+- decode RESP frames incrementally from byte buffers without blocking, reporting incomplete frames distinctly from protocol errors
 - handle fragmented bulk strings and arrays correctly
 - encode simple strings, errors, integers, bulk strings, and arrays
 - include minimal RESP3 placeholder types (`Boolean`, `Null`) for future expansion
@@ -72,6 +73,7 @@ Current responsibilities:
 - accept client connections in a loop
 - spawn one goroutine per client
 - parse → execute → respond for each request
+- provide a non-blocking connection state machine that buffers reads, parses complete requests, buffers responses, and flushes output incrementally (not yet wired into the accept loop)
 - maintain an active connection registry for shutdown
 - load startup persistence (RDB and/or AOF) before accepting TCP connections
 - append durable command frames and fan out replication writes after successful execution
