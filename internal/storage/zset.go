@@ -204,7 +204,7 @@ func (sl *zsetSkipList) deleteNode(node *zsetNode, update [zsetMaxLevel]*zsetNod
 func (s *SortedSet) rangeByScore(scoreRange ScoreRange) []ZSetRangeEntry {
 	var items []ZSetRangeEntry
 	for node := s.order.firstInScoreRange(scoreRange); node != nil; node = node.levels[0].forward {
-		if node.score > scoreRange.Max || (scoreRange.MaxExclusive && node.score == scoreRange.Max) {
+		if scoreRange.aboveMax(node.score) {
 			break
 		}
 		items = append(items, ZSetRangeEntry{Member: node.member, Score: node.score})
@@ -218,7 +218,7 @@ func (s *SortedSet) rangeByScore(scoreRange ScoreRange) []ZSetRangeEntry {
 func (sl *zsetSkipList) firstInScoreRange(scoreRange ScoreRange) *zsetNode {
 	x := sl.header
 	for i := sl.level - 1; i >= 0; i-- {
-		for next := x.levels[i].forward; next != nil && (next.score < scoreRange.Min || (scoreRange.MinExclusive && next.score == scoreRange.Min)); next = x.levels[i].forward {
+		for next := x.levels[i].forward; next != nil && scoreRange.belowMin(next.score); next = x.levels[i].forward {
 			x = next
 		}
 	}

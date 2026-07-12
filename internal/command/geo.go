@@ -26,10 +26,6 @@ const (
 
 	geoEarthRadiusMeters = 6372797.560856
 
-	// geoMercatorMax is the Mercator projection extent Redis uses to derive
-	// the geohash bit depth for a search radius.
-	geoMercatorMax = 20037726.37
-
 	geoMetersPerKilometer = 1000.0
 	geoMetersPerMile      = 1609.34
 	geoMetersPerFoot      = 0.3048
@@ -116,21 +112,19 @@ func (e *Executor) handleGeoRadius(_ context.Context, request *Request) (protoco
 	radiusMeters := radius * unitMeters
 
 	key := string(request.Args[0])
-	elements := make([]protocol.Value, 0)
-	for _, scoreRange := range geoRadiusScoreRanges(longitude, latitude, radiusMeters) {
-		entries, err := e.store.ZRangeByScore(key, scoreRange)
-		if err != nil {
-			if errors.Is(err, storage.ErrWrongType) {
-				return nil, ErrWrongTypeError()
-			}
-			return nil, err
+	entries, err := e.store.ZRangeByScores(key, geoRadiusScoreRanges(longitude, latitude, radiusMeters)...)
+	if err != nil {
+		if errors.Is(err, storage.ErrWrongType) {
+			return nil, ErrWrongTypeError()
 		}
+		return nil, err
+	}
 
-		for _, entry := range entries {
-			memberLongitude, memberLatitude := geohashDecode(geohashBits(entry.Score))
-			if geoDistanceMeters(longitude, latitude, memberLongitude, memberLatitude) <= radiusMeters {
-				elements = append(elements, protocol.TextBulkString{Value: entry.Member})
-			}
+	elements := make([]protocol.Value, 0, len(entries))
+	for _, entry := range entries {
+		memberLongitude, memberLatitude := geohashDecode(geohashBits(entry.Score))
+		if geoDistanceMeters(longitude, latitude, memberLongitude, memberLatitude) <= radiusMeters {
+			elements = append(elements, protocol.TextBulkString{Value: entry.Member})
 		}
 	}
 
@@ -139,14 +133,16 @@ func (e *Executor) handleGeoRadius(_ context.Context, request *Request) (protoco
 
 // geoRadiusScoreRanges returns the disjoint, ascending score ranges GEORADIUS
 // scans instead of the full sorted set: the geohash cell containing the
-// center at a radius-derived bit depth plus its eight neighbors (the Redis
-// geohash_helper.c algorithm), bracketed by two guard ranges that preserve
-// the full-scan handling of scores plain ZADD wrote outside the geohash
-// encoding range. Scanning the ranges in order yields members in sorted-set
-// order, so results match the previous full scan exactly.
+// center at the deepest bit depth whose cell size covers the radius bounding
+// box, plus its eight neighbors. Two guard ranges bracket the cells for the
+// scores that fall outside every cell range: plain ZADD can write arbitrary
+// scores (decoded as the corner cell of the coordinate space), and GEOADD at
+// exactly the maximum longitude or latitude encodes above 52 bits. Scanning
+// the ranges in order yields members in sorted-set order, so results match a
+// full scan exactly.
 func geoRadiusScoreRanges(longitude, latitude, radiusMeters float64) []storage.ScoreRange {
 	deltaLatitude, deltaLongitude := geoBoundingDeltas(latitude, radiusMeters)
-	step := geoEstimateStepsByRadius(radiusMeters, latitude)
+	step := uint(geoStep)
 	for step > 1 && !geoCellCovers(step, deltaLatitude, deltaLongitude) {
 		step--
 	}
@@ -158,36 +154,6 @@ func geoRadiusScoreRanges(longitude, latitude, radiusMeters float64) []storage.S
 	ranges = append(ranges, cellRanges...)
 	ranges = append(ranges, storage.ScoreRange{Min: float64(uint64(1) << (2 * geoStep)), Max: math.Inf(1)})
 	return ranges
-}
-
-// geoEstimateStepsByRadius mirrors geohashEstimateStepsByRadius from Redis's
-// geohash_helper.c: pick the geohash bit depth whose cell size roughly
-// matches the search radius.
-func geoEstimateStepsByRadius(radiusMeters, latitude float64) uint {
-	if radiusMeters == 0 {
-		return geoStep
-	}
-
-	step := 1
-	for radiusMeters < geoMercatorMax {
-		radiusMeters *= 2
-		step++
-	}
-	step -= 2
-	if latitude > 66 || latitude < -66 {
-		step--
-		if latitude > 80 || latitude < -80 {
-			step--
-		}
-	}
-
-	if step < 1 {
-		step = 1
-	}
-	if step > geoStep {
-		step = geoStep
-	}
-	return uint(step)
 }
 
 // geoBoundingDeltas returns the half-height and half-width in degrees of the
@@ -244,7 +210,8 @@ func geoNeighborCellRanges(longitude, latitude float64, step uint) []storage.Sco
 
 	sort.Slice(ranges, func(i, j int) bool { return ranges[i].Min < ranges[j].Min })
 
-	merged := ranges[:1]
+	merged := make([]storage.ScoreRange, 0, len(ranges))
+	merged = append(merged, ranges[0])
 	for _, scoreRange := range ranges[1:] {
 		last := &merged[len(merged)-1]
 		if scoreRange.Min <= last.Max {
@@ -256,18 +223,20 @@ func geoNeighborCellRanges(longitude, latitude float64, step uint) []storage.Sco
 	return merged
 }
 
-// geoCellCoords returns the latitude and longitude cell indexes of the
-// geohash cell containing the position at the given step, clamping the exact
-// upper coordinate boundary into the last cell.
+// geoCellCoords returns the latitude and longitude cell indexes at the given
+// step of the geohash cell containing the position, derived from the same
+// encoding that produces stored scores so cell indexes are score prefixes by
+// construction. The exact upper coordinate boundary encodes one past the last
+// cell and is clamped into it.
 func geoCellCoords(longitude, latitude float64, step uint) (latCell, lonCell uint64) {
+	latitudeBits, longitudeBits := deinterleave64(geohashEncode(longitude, latitude))
 	cells := uint64(1) << step
-	scale := float64(cells)
 
-	latCell = uint64((latitude - geoLatitudeMin) / (geoLatitudeMax - geoLatitudeMin) * scale)
+	latCell = uint64(latitudeBits) >> (geoStep - step)
 	if latCell >= cells {
 		latCell = cells - 1
 	}
-	lonCell = uint64((longitude - geoLongitudeMin) / (geoLongitudeMax - geoLongitudeMin) * scale)
+	lonCell = uint64(longitudeBits) >> (geoStep - step)
 	if lonCell >= cells {
 		lonCell = cells - 1
 	}

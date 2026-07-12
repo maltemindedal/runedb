@@ -92,14 +92,14 @@ func BenchmarkZSet(b *testing.B) {
 		return store
 	}
 
-	b.Run("ZRangeByScore narrow range of 16384", func(b *testing.B) {
+	b.Run("ZRangeByScores narrow range of 16384", func(b *testing.B) {
 		store := newLargeZSet(b)
 		scoreRange := ScoreRange{Min: 8192, Max: 8200, MaxExclusive: true}
 		b.ReportAllocs()
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
-			if _, err := store.ZRangeByScore("z", scoreRange); err != nil {
+			if _, err := store.ZRangeByScores("z", scoreRange); err != nil {
 				b.Fatal(err)
 			}
 		}

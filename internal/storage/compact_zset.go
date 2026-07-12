@@ -99,10 +99,10 @@ func (s *CompactZSet) rangeByScore(scoreRange ScoreRange) []ZSetRangeEntry {
 
 	var items []ZSetRangeEntry
 	for _, entry := range s.entries {
-		if entry.score > scoreRange.Max || (scoreRange.MaxExclusive && entry.score == scoreRange.Max) {
+		if scoreRange.aboveMax(entry.score) {
 			break
 		}
-		if scoreRange.containsScore(entry.score) {
+		if !scoreRange.belowMin(entry.score) {
 			items = append(items, ZSetRangeEntry{Member: s.member(entry), Score: entry.score})
 		}
 	}

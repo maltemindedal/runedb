@@ -64,14 +64,12 @@ type ScoreRange struct {
 	MaxExclusive bool
 }
 
-func (r ScoreRange) containsScore(score float64) bool {
-	if score < r.Min || (r.MinExclusive && score == r.Min) {
-		return false
-	}
-	if score > r.Max || (r.MaxExclusive && score == r.Max) {
-		return false
-	}
-	return true
+func (r ScoreRange) belowMin(score float64) bool {
+	return score < r.Min || (r.MinExclusive && score == r.Min)
+}
+
+func (r ScoreRange) aboveMax(score float64) bool {
+	return score > r.Max || (r.MaxExclusive && score == r.Max)
 }
 
 // StreamEntry represents a stream entry returned by XREAD.

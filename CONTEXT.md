@@ -26,12 +26,13 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - Maxmemory: approximate keyspace memory pressure limit that triggers probabilistic LRU eviction.
 - HyperLogLog: fixed-size approximate cardinality register set stored as a string value and used by `PFADD` and `PFCOUNT`.
 - Geohash score: a 52-bit interleaved longitude/latitude encoding stored as a sorted-set score and used by `GEOADD`, `GEODIST`, and `GEORADIUS`.
+- Score-range scan: the sorted-set storage primitive that returns members whose scores fall in given intervals under a single lock acquisition, used by `GEORADIUS` to scan only the geohash cells covering a query radius instead of the whole set.
 
 ## Current Capabilities
 
 - RESP2-centric TCP server with one goroutine per client by default, an opt-in OS I/O multiplexing event loop, and graceful signal-driven shutdown.
 - Thread-safe sharded in-memory storage for strings, hashes, lists, sets, sorted sets, streams, and bitmap and HyperLogLog operations over string values.
-- Geospatial commands (`GEOADD`, `GEODIST`, `GEORADIUS`) backed by geohash scores in regular sorted sets.
+- Geospatial commands (`GEOADD`, `GEODIST`, `GEORADIUS`) backed by geohash scores in regular sorted sets, with `GEORADIUS` pruned to score-range scans of the geohash cells covering the query radius.
 - TTL handling, append-only durability, startup RDB loading, shutdown RDB snapshots, and background AOF rewrite.
 - Authentication, transactions, pub/sub, basic replication, memory-pressure eviction, slowlog, monitor, and `INFO` visibility.
 - Unit, integration, race, vet, lint, and benchmark coverage are part of the expected verification workflow.

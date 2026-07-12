@@ -591,9 +591,12 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 	return entries, nil
 }
 
-// ZRangeByScore returns the members of the sorted set stored at key whose
-// scores fall within the given score range, ordered by score then member.
-func (s *Store) ZRangeByScore(key string, scoreRange ScoreRange) ([]ZSetRangeEntry, error) {
+// ZRangeByScores returns the members of the sorted set stored at key whose
+// scores fall within the given score ranges, concatenated in range order.
+// The ranges must be disjoint and ascending so the result stays ordered by
+// score then member. All ranges are scanned under a single lock acquisition,
+// so the result reflects one consistent snapshot of the set.
+func (s *Store) ZRangeByScores(key string, scoreRanges ...ScoreRange) ([]ZSetRangeEntry, error) {
 	now := time.Now().UnixMilli()
 	shard := s.shardForKey(key)
 
@@ -615,10 +618,14 @@ func (s *Store) ZRangeByScore(key string, scoreRange ScoreRange) ([]ZSetRangeEnt
 		return []ZSetRangeEntry{}, nil
 	}
 
-	entries, err := value.zsetRangeByScore(scoreRange)
-	if err != nil {
-		shard.mu.RUnlock()
-		return nil, err
+	var entries []ZSetRangeEntry
+	for _, scoreRange := range scoreRanges {
+		ranged, err := value.zsetRangeByScore(scoreRange)
+		if err != nil {
+			shard.mu.RUnlock()
+			return nil, err
+		}
+		entries = append(entries, ranged...)
 	}
 	value.touch(now)
 	shard.mu.RUnlock()
