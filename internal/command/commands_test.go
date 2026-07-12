@@ -249,6 +249,115 @@ func TestExecutorExecute(t *testing.T) {
 			},
 		},
 		{
+			name: "PFADD reports changed estimate and PFCOUNT counts unique elements",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				value, err := executor.Execute(context.Background(), requestValue("PFADD", "visitors", "alice", "bob", "alice"))
+				if err != nil {
+					t.Fatalf("PFADD error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 1})
+			},
+			request: requestValue("PFCOUNT", "visitors"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 2})
+			},
+		},
+		{
+			name: "PFADD returns zero for repeated elements",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("PFADD", "visitors", "alice")); err != nil {
+					t.Fatalf("PFADD setup error = %v", err)
+				}
+			},
+			request: requestValue("PFADD", "visitors", "alice"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name:    "PFCOUNT returns zero for missing keys",
+			request: requestValue("PFCOUNT", "missing", "also-missing"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 0})
+			},
+		},
+		{
+			name: "PFCOUNT unions multiple HyperLogLog keys",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("PFADD", "morning", "alice", "bob")); err != nil {
+					t.Fatalf("PFADD morning error = %v", err)
+				}
+				if _, err := executor.Execute(context.Background(), requestValue("PFADD", "evening", "bob", "carol")); err != nil {
+					t.Fatalf("PFADD evening error = %v", err)
+				}
+			},
+			request: requestValue("PFCOUNT", "morning", "evening"),
+			assert: func(t *testing.T, value protocol.Value, err error) {
+				t.Helper()
+				if err != nil {
+					t.Fatalf("Execute() error = %v", err)
+				}
+				assertValueEqual(t, value, protocol.Integer{Value: 3})
+			},
+		},
+		{
+			name:    "PFADD rejects missing key argument",
+			request: requestValue("PFADD"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), "wrong number of arguments") {
+					t.Fatalf("Execute() error = %v, want wrong number of arguments", err)
+				}
+			},
+		},
+		{
+			name: "HyperLogLog commands reject wrong value type",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("RPUSH", "queue", "job-1")); err != nil {
+					t.Fatalf("RPUSH error = %v", err)
+				}
+			},
+			request: requestValue("PFADD", "queue", "alice"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrWrongType) {
+					t.Fatalf("Execute() error = %v, want ErrWrongType", err)
+				}
+			},
+		},
+		{
+			name: "HyperLogLog commands reject plain string values",
+			setup: func(t *testing.T, executor *Executor) {
+				t.Helper()
+				if _, err := executor.Execute(context.Background(), requestValue("SET", "greeting", "hello")); err != nil {
+					t.Fatalf("SET error = %v", err)
+				}
+			},
+			request: requestValue("PFCOUNT", "greeting"),
+			assert: func(t *testing.T, _ protocol.Value, err error) {
+				t.Helper()
+				if !errors.Is(err, ErrNotHyperLogLog) {
+					t.Fatalf("Execute() error = %v, want ErrNotHyperLogLog", err)
+				}
+			},
+		},
+		{
 			name: "DEL removes existing keys and returns count",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
@@ -635,6 +744,22 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 0})
 		assertPropagationFrames(t, result.Propagation, requestValue("SETBIT", "bitmap", "0", "1"))
 		assertPropagationFrames(t, result.Durability, requestValue("SETBIT", "bitmap", "0", "1"))
+	})
+
+	t.Run("PFADD returns propagation frame", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("PFADD", "visitors", "alice"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		if len(result.Responses) != 1 {
+			t.Fatalf("len(result.Responses) = %d, want 1", len(result.Responses))
+		}
+
+		assertValueEqual(t, result.Responses[0], protocol.Integer{Value: 1})
+		assertPropagationFrames(t, result.Propagation, requestValue("PFADD", "visitors", "alice"))
+		assertPropagationFrames(t, result.Durability, requestValue("PFADD", "visitors", "alice"))
 	})
 
 	t.Run("PUBLISH returns propagation frame", func(t *testing.T) {

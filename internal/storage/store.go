@@ -25,6 +25,8 @@ var (
 	ErrValueNotInteger = errors.New("value is not an integer or out of range")
 	// ErrWrongType reports that a command targeted the wrong logical value type.
 	ErrWrongType = errors.New("operation against a key holding the wrong kind of value")
+	// ErrNotHyperLogLog reports that a string key does not hold a valid HyperLogLog value.
+	ErrNotHyperLogLog = errors.New("key is not a valid HyperLogLog string value")
 	// ErrMemoryLimitExceeded reports that a write would exceed the configured maxmemory limit.
 	ErrMemoryLimitExceeded = errors.New("command not allowed when used memory > 'maxmemory'")
 )

@@ -105,6 +105,10 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 0}, "SETBIT", "bits", "16", "1")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "GETBIT", "bits", "16")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "BITCOUNT", "bits")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "PFADD", "visitors", "alice", "bob")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 0}, "PFADD", "visitors", "alice")
+	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 2}, "PFCOUNT", "visitors")
+	assertCommandResponse(t, conn, parser, protocol.ErrorValue{Message: "WRONGTYPE Key is not a valid HyperLogLog string value."}, "PFADD", "bad", "x")
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "temp", "1", "PX", "15")
 
 	time.Sleep(25 * time.Millisecond)

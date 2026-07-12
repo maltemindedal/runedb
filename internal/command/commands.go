@@ -592,6 +592,39 @@ func (e *Executor) handleBitCount(_ context.Context, request *Request) (protocol
 	return protocol.Integer{Value: count}, nil
 }
 
+func (e *Executor) handlePFAdd(ctx context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) < 1 {
+		return nil, wrongNumberOfArgumentsError("PFADD")
+	}
+
+	key := string(request.Args[0])
+	changed, evicted, err := e.store.PFAddWithEviction(key, request.Args[1:])
+	if err != nil {
+		return nil, storageCommandError(err)
+	}
+
+	e.recordWriteEffects(ctx, key, evicted)
+	return protocol.Integer{Value: changed}, nil
+}
+
+func (e *Executor) handlePFCount(_ context.Context, request *Request) (protocol.Value, error) {
+	if len(request.Args) < 1 {
+		return nil, wrongNumberOfArgumentsError("PFCOUNT")
+	}
+
+	keys := make([]string, 0, len(request.Args))
+	for _, arg := range request.Args {
+		keys = append(keys, string(arg))
+	}
+
+	count, err := e.store.PFCount(keys)
+	if err != nil {
+		return nil, storageCommandError(err)
+	}
+
+	return protocol.Integer{Value: count}, nil
+}
+
 func (e *Executor) handleDel(_ context.Context, request *Request) (protocol.Value, error) {
 	if len(request.Args) < 1 {
 		return nil, wrongNumberOfArgumentsError("DEL")
@@ -888,6 +921,8 @@ func storageCommandError(err error) error {
 	switch {
 	case errors.Is(err, storage.ErrWrongType):
 		return ErrWrongTypeError()
+	case errors.Is(err, storage.ErrNotHyperLogLog):
+		return ErrNotHyperLogLogError()
 	case errors.Is(err, storage.ErrValueNotInteger):
 		return ErrValueNotIntegerError()
 	case errors.Is(err, storage.ErrSyntax):

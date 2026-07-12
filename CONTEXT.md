@@ -22,11 +22,12 @@ RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The pr
 - Slowlog: bounded in-memory command timing log used by `SLOWLOG`.
 - Monitor: command-event fan-out mode used by `MONITOR`.
 - Maxmemory: approximate keyspace memory pressure limit that triggers probabilistic LRU eviction.
+- HyperLogLog: fixed-size approximate cardinality register set stored as a string value and used by `PFADD` and `PFCOUNT`.
 
 ## Current Capabilities
 
 - RESP2-centric TCP server with one goroutine per client and graceful signal-driven shutdown.
-- Thread-safe sharded in-memory storage for strings, hashes, lists, sets, sorted sets, streams, and bitmap operations over string values.
+- Thread-safe sharded in-memory storage for strings, hashes, lists, sets, sorted sets, streams, and bitmap and HyperLogLog operations over string values.
 - TTL handling, append-only durability, startup RDB loading, shutdown RDB snapshots, and background AOF rewrite.
 - Authentication, transactions, pub/sub, basic replication, memory-pressure eviction, slowlog, monitor, and `INFO` visibility.
 - Unit, integration, race, vet, lint, and benchmark coverage are part of the expected verification workflow.
