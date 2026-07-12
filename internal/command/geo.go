@@ -73,20 +73,16 @@ func (e *Executor) handleGeoDist(_ context.Context, request *Request) (protocol.
 	}
 
 	key := string(request.Args[0])
-	firstScore, firstExists, err := e.store.ZScore(key, request.Args[1])
+	scores, found, err := e.store.ZScores(key, [][]byte{request.Args[1], request.Args[2]})
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
-	secondScore, secondExists, err := e.store.ZScore(key, request.Args[2])
-	if err != nil {
-		return nil, storageCommandError(err)
-	}
-	if !firstExists || !secondExists {
+	if !found[0] || !found[1] {
 		return protocol.BulkString{Null: true}, nil
 	}
 
-	firstLongitude, firstLatitude := geohashDecode(uint64(firstScore))
-	secondLongitude, secondLatitude := geohashDecode(uint64(secondScore))
+	firstLongitude, firstLatitude := geohashDecode(geohashBits(scores[0]))
+	secondLongitude, secondLatitude := geohashDecode(geohashBits(scores[1]))
 	distance := geoDistanceMeters(firstLongitude, firstLatitude, secondLongitude, secondLatitude) / unitMeters
 
 	return protocol.TextBulkString{Value: strconv.FormatFloat(distance, 'f', 4, 64)}, nil
@@ -125,7 +121,7 @@ func (e *Executor) handleGeoRadius(_ context.Context, request *Request) (protoco
 
 	elements := make([]protocol.Value, 0, len(entries))
 	for _, entry := range entries {
-		memberLongitude, memberLatitude := geohashDecode(uint64(entry.Score))
+		memberLongitude, memberLatitude := geohashDecode(geohashBits(entry.Score))
 		if geoDistanceMeters(longitude, latitude, memberLongitude, memberLatitude) <= radiusMeters {
 			elements = append(elements, protocol.TextBulkString{Value: entry.Member})
 		}
@@ -184,6 +180,16 @@ func geohashEncode(longitude, latitude float64) uint64 {
 
 	scale := float64(uint64(1) << geoStep)
 	return interleave64(uint32(latitudeOffset*scale), uint32(longitudeOffset*scale))
+}
+
+// geohashBits converts a sorted-set score to geohash bits. Scores outside the
+// encodable range (written by plain ZADD on the same key) map to zero, because
+// Go's out-of-range float-to-integer conversion is platform-dependent.
+func geohashBits(score float64) uint64 {
+	if score < 0 || score >= float64(uint64(1)<<(2*geoStep+2)) {
+		return 0
+	}
+	return uint64(score)
 }
 
 func geohashDecode(bits uint64) (longitude, latitude float64) {

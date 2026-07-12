@@ -33,6 +33,19 @@ func TestGeohashEncodeDecode(t *testing.T) {
 		}
 	})
 
+	t.Run("out-of-range scores map to zero bits deterministically", func(t *testing.T) {
+		if got := geohashBits(-1); got != 0 {
+			t.Fatalf("geohashBits(-1) = %d, want 0", got)
+		}
+		if got := geohashBits(1e300); got != 0 {
+			t.Fatalf("geohashBits(1e300) = %d, want 0", got)
+		}
+		boundary := float64(geohashEncode(geoLongitudeMax, geoLatitudeMax))
+		if got := geohashBits(boundary); got != uint64(boundary) {
+			t.Fatalf("geohashBits(boundary encode) = %d, want %d", got, uint64(boundary))
+		}
+	})
+
 	t.Run("decode returns the encoded cell center", func(t *testing.T) {
 		longitude, latitude := geohashDecode(geohashEncode(palermoLongitude, palermoLatitude))
 		if math.Abs(longitude-palermoLongitude) > 0.00001 {
@@ -204,6 +217,19 @@ func TestExecutorGeoDist(t *testing.T) {
 			t.Fatal("GEODIST error = nil, want WRONGTYPE error")
 		}
 		assertRESPPrefix(t, err, "WRONGTYPE")
+	})
+
+	t.Run("treats non-geo scores deterministically", func(t *testing.T) {
+		executor := newTestExecutor()
+		if _, err := executor.Execute(context.Background(), requestValue("ZADD", "mixed", "-1", "a", "-2", "b")); err != nil {
+			t.Fatalf("ZADD error = %v", err)
+		}
+
+		value, err := executor.Execute(context.Background(), requestValue("GEODIST", "mixed", "a", "b"))
+		if err != nil {
+			t.Fatalf("GEODIST error = %v", err)
+		}
+		assertValueEqual(t, value, protocol.TextBulkString{Value: "0.0000"})
 	})
 }
 
