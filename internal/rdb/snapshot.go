@@ -8,11 +8,32 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/storage"
 )
+
+// syncDir fsyncs the directory containing path so a preceding rename is durable
+// across a crash. On POSIX a rename's new directory entry is not guaranteed to
+// survive a crash until the parent directory's inode is fsynced. It is a no-op
+// on Windows, where directory handles cannot be synced this way.
+var syncDir = func(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
 
 var emptySnapshot = func() []byte {
 	payload := make([]byte, 0, len(fileHeader)+1+8)
@@ -169,20 +190,24 @@ func appendLength(dst []byte, length uint64) []byte {
 }
 
 func replaceFile(tempPath string, targetPath string) error {
-	err := renameFile(tempPath, targetPath)
-	if err == nil {
-		return nil
-	}
-	if !isReplaceTargetExistsError(err) {
-		return fmt.Errorf("rdb: replace snapshot %q: %w", targetPath, err)
+	if err := renameFile(tempPath, targetPath); err != nil {
+		if !isReplaceTargetExistsError(err) {
+			return fmt.Errorf("rdb: replace snapshot %q: %w", targetPath, err)
+		}
+
+		removeErr := removeFile(targetPath)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("rdb: replace snapshot %q: rename error: %w; remove error: %v", targetPath, err, removeErr)
+		}
+		if retryErr := renameFile(tempPath, targetPath); retryErr != nil {
+			return fmt.Errorf("rdb: replace snapshot %q after removing existing target: %w", targetPath, retryErr)
+		}
 	}
 
-	removeErr := removeFile(targetPath)
-	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		return fmt.Errorf("rdb: replace snapshot %q: rename error: %w; remove error: %v", targetPath, err, removeErr)
-	}
-	if retryErr := renameFile(tempPath, targetPath); retryErr != nil {
-		return fmt.Errorf("rdb: replace snapshot %q after removing existing target: %w", targetPath, retryErr)
+	// Persist the rename itself: the new directory entry is not crash-durable
+	// until the containing directory is fsynced.
+	if err := syncDir(targetPath); err != nil {
+		return fmt.Errorf("rdb: sync directory after replacing snapshot %q: %w", targetPath, err)
 	}
 
 	return nil

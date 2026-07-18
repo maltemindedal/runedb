@@ -649,7 +649,13 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	// approximateValueObjectSize walks every entry of an existing stream, so only
+	// pay that O(n) cost when memory accounting will actually use the result.
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	var (
 		stream    *StreamValue
@@ -673,7 +679,7 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, error) {
 
 	newValue := newStreamValue(stream, expiresAt)
 	s.setKeyLocked(shard, key, newValue)
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
 	}
@@ -1088,7 +1094,13 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 		s.deleteKeyLocked(shard, key)
 		ok = false
 	}
-	oldSize := s.approximateValueObjectSize(key, value)
+	// approximateValueObjectSize walks every element of an existing list, so only
+	// pay that O(n) cost when memory accounting will actually use the result.
+	accounting := s.maxMemoryEnabled()
+	var oldSize int64
+	if accounting {
+		oldSize = s.approximateValueObjectSize(key, value)
+	}
 
 	var list [][]byte
 	var expiresAt int64
@@ -1116,7 +1128,7 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, error) 
 
 	newValue := newListValue(list, expiresAt)
 	s.setKeyLocked(shard, key, newValue)
-	if s.maxMemoryEnabled() {
+	if accounting {
 		newSize := s.approximateValueObjectSize(key, newValue)
 		s.usedMemory.Add(newSize - oldSize)
 	}

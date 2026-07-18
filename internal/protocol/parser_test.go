@@ -126,6 +126,55 @@ func TestParserParse(t *testing.T) {
 	}
 }
 
+// TestParserRejectsOversizedFrames verifies that forged length prefixes and
+// terminator-less lines are rejected with a permanent protocol error rather
+// than triggering a giant allocation (which for a near-MaxInt length would
+// panic and, unrecovered, crash the whole process).
+func TestParserRejectsOversizedFrames(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "bulk length near MaxInt does not allocate",
+			input: "$9223372036854775807\r\n",
+		},
+		{
+			name:  "bulk length just over cap",
+			input: "$536870913\r\n", // maxBulkStringLength + 1
+		},
+		{
+			name:  "array count near MaxInt does not allocate",
+			input: "*9223372036854775807\r\n",
+		},
+		{
+			name:  "array count just over cap",
+			input: "*1048577\r\n", // maxArrayElements + 1
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser(stringsReader(tt.input))
+			if _, err := parser.Parse(); err == nil {
+				t.Fatalf("Parse(%q) error = nil, want oversized-frame rejection", tt.input)
+			}
+		})
+	}
+}
+
+// TestParserRejectsUnboundedLine verifies that a line which never sends its
+// terminator is rejected once it passes maxLineLength instead of growing the
+// line buffer without bound.
+func TestParserRejectsUnboundedLine(t *testing.T) {
+	input := "+" + strings.Repeat("a", maxLineLength*2) // no trailing CRLF
+	parser := NewParser(strings.NewReader(input))
+	if _, err := parser.Parse(); err == nil {
+		t.Fatal("Parse() error = nil, want unbounded-line rejection")
+	}
+}
+
 func TestNewParserReusesBufferedReader(t *testing.T) {
 	reader := bufio.NewReader(bytes.NewReader([]byte("+OK\r\n")))
 	parser := NewParser(reader)

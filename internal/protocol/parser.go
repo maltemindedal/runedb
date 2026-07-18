@@ -15,6 +15,21 @@ type Parser struct {
 	lineBuf []byte
 }
 
+const (
+	// maxBulkStringLength bounds a single bulk string payload the streaming
+	// Parser will allocate. It mirrors the event loop's read-buffer limit
+	// (the equivalent of Redis' proto-max-bulk-len) so a forged length prefix
+	// cannot trigger a huge make([]byte, ...) that panics or OOMs the process.
+	maxBulkStringLength = 512 * 1024 * 1024
+	// maxArrayElements bounds the declared element count of a single RESP array
+	// so a forged multibulk header cannot pre-allocate an enormous slice.
+	maxArrayElements = 1024 * 1024
+	// maxLineLength bounds a single CRLF-terminated line (protocol headers and
+	// length prefixes) so a stream that never sends a terminator cannot grow
+	// the line buffer without bound.
+	maxLineLength = 64 * 1024
+)
+
 // NewParser constructs a Parser backed by a bufio.Reader.
 func NewParser(reader io.Reader) *Parser {
 	if buffered, ok := reader.(*bufio.Reader); ok {
@@ -87,6 +102,9 @@ func (p *Parser) parseBulkString() (Value, error) {
 	if length < -1 {
 		return nil, fmt.Errorf("protocol: invalid bulk string length %d", length)
 	}
+	if length > maxBulkStringLength {
+		return nil, fmt.Errorf("protocol: bulk string length %d exceeds %d byte limit", length, maxBulkStringLength)
+	}
 
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(p.reader, payload); err != nil {
@@ -115,14 +133,17 @@ func (p *Parser) parseArray() (Value, error) {
 	if count < -1 {
 		return nil, fmt.Errorf("protocol: invalid array length %d", count)
 	}
+	if count > maxArrayElements {
+		return nil, fmt.Errorf("protocol: array length %d exceeds %d element limit", count, maxArrayElements)
+	}
 
-	elements := make([]Value, count)
+	elements := make([]Value, 0, min(count, 64))
 	for i := 0; i < count; i++ {
 		element, err := p.Parse()
 		if err != nil {
 			return nil, fmt.Errorf("protocol: parse array element %d: %w", i, err)
 		}
-		elements[i] = element
+		elements = append(elements, element)
 	}
 
 	return Array{Elements: elements}, nil
@@ -157,6 +178,10 @@ func (p *Parser) readLineBytes() ([]byte, error) {
 		if !errors.Is(readErr, bufio.ErrBufferFull) {
 			p.lineBuf = combined[:0]
 			return nil, readErr
+		}
+		if len(combined) > maxLineLength {
+			p.lineBuf = combined[:0]
+			return nil, fmt.Errorf("protocol: line exceeds %d byte limit", maxLineLength)
 		}
 	}
 }

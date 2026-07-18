@@ -29,10 +29,14 @@ type Config struct {
 	EventLoop            bool
 }
 
-// Default returns the default runtime configuration for local development.
+// Default returns the default runtime configuration. The listener binds to
+// loopback (127.0.0.1) so an out-of-the-box server with no --requirepass is not
+// reachable from the network. Set --host explicitly (e.g. 0.0.0.0 or "") to bind
+// other interfaces; do so together with --requirepass to avoid exposing an
+// unauthenticated datastore.
 func Default() Config {
 	return Config{
-		Host:                 "",
+		Host:                 "127.0.0.1",
 		Port:                 6379,
 		LogLevel:             "info",
 		EvictionInterval:     100 * time.Millisecond,
