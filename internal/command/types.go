@@ -41,12 +41,17 @@ type commandSpec struct {
 	// form. Used by SET to rewrite relative EX/PX expirations to an absolute
 	// PXAT so replicas and AOF reloads do not re-anchor the TTL to their own
 	// clock.
-	rewriteFrame func(*Request) (protocol.Array, bool)
+	rewriteFrame func(context.Context, *Request) (protocol.Array, bool)
 }
 
 type executionEffects struct {
 	propagation []protocol.Value
 	durability  []protocol.Value
+	// setExpiryMillis is the absolute Unix-millis deadline the SET handler
+	// computed and stored for this request, carried here so the PXAT rewrite
+	// frame reuses that exact value instead of re-deriving it from a later
+	// clock. Zero means no expiry (keep the verbatim frame).
+	setExpiryMillis int64
 }
 
 type executionEffectsContextKey struct{}
@@ -251,7 +256,7 @@ func executionFrames(ctx context.Context, request *Request, spec commandSpec) ([
 	ensureFrame := func() protocol.Array {
 		if !haveFrame {
 			if spec.rewriteFrame != nil {
-				if rewritten, ok := spec.rewriteFrame(request); ok {
+				if rewritten, ok := spec.rewriteFrame(ctx, request); ok {
 					frame = rewritten
 					haveFrame = true
 					return frame
@@ -290,15 +295,13 @@ func propagationFrame(request *Request) protocol.Array {
 // rewriteSetFrame rewrites a SET carrying a relative EX/PX expiration into
 // `SET key value PXAT <absolute-ms>` so replicas and AOF replay anchor the
 // expiry to the master's clock at execution time rather than re-evaluating the
-// relative window against their own, later, clock. SET without an expiration
-// (or one that cannot be normalized) keeps its verbatim frame.
-func rewriteSetFrame(request *Request) (protocol.Array, bool) {
-	if len(request.Args) < 3 {
-		return protocol.Array{}, false
-	}
-
-	expiresAt, err := storage.ParseExpiryMillis(request.Args[2:])
-	if err != nil || expiresAt <= 0 {
+// relative window against their own, later, clock. The absolute deadline is the
+// one the handler already computed and stored (carried on the execution
+// effects), so the propagated frame matches the master's stored expiry exactly.
+// SET without an expiration keeps its verbatim frame.
+func rewriteSetFrame(ctx context.Context, request *Request) (protocol.Array, bool) {
+	effects := executionEffectsFromContext(ctx)
+	if effects == nil || effects.setExpiryMillis <= 0 {
 		return protocol.Array{}, false
 	}
 
@@ -307,7 +310,7 @@ func rewriteSetFrame(request *Request) (protocol.Array, bool) {
 		protocol.BulkString{Data: request.Args[0]},
 		protocol.BulkString{Data: request.Args[1]},
 		protocol.TextBulkString{Value: "PXAT"},
-		protocol.BulkString{Data: []byte(strconv.FormatInt(expiresAt, 10))},
+		protocol.BulkString{Data: []byte(strconv.FormatInt(effects.setExpiryMillis, 10))},
 	}
 	return protocol.Array{Elements: elements}, true
 }

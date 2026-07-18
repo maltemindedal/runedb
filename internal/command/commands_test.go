@@ -2371,6 +2371,10 @@ func TestSetRelativeExpiryPropagatesAsPXAT(t *testing.T) {
 		}
 		after := time.Now().UnixMilli()
 
+		// The rewritten PXAT must equal the deadline the handler actually stored,
+		// not a value re-derived from a later clock read.
+		storedExpiry := storedExpiryMillis(t, executor, "name")
+
 		for name, frames := range map[string][]protocol.Value{"propagation": result.Propagation, "durability": result.Durability} {
 			if len(frames) != 1 {
 				t.Fatalf("%s frames = %d, want 1", name, len(frames))
@@ -2394,6 +2398,9 @@ func TestSetRelativeExpiryPropagatesAsPXAT(t *testing.T) {
 			}
 			if pxat < before+100_000 || pxat > after+100_000 {
 				t.Fatalf("%s PXAT = %d, want within [%d, %d]", name, pxat, before+100_000, after+100_000)
+			}
+			if pxat != storedExpiry {
+				t.Fatalf("%s PXAT = %d, want exactly the stored deadline %d (no clock drift)", name, pxat, storedExpiry)
 			}
 		}
 	})
@@ -2452,6 +2459,18 @@ func newReplicaPeerStateForExecutor(executor *Executor, id uint64, conn net.Conn
 	state.PromoteToReplica()
 	state.BindResponseWriter(bufio.NewWriter(conn))
 	return state
+}
+
+func storedExpiryMillis(t *testing.T, executor *Executor, key string) int64 {
+	t.Helper()
+	entries, _ := executor.store.SnapshotAll()
+	for _, entry := range entries {
+		if entry.Key == key {
+			return entry.ExpiresAt
+		}
+	}
+	t.Fatalf("key %q not found in store snapshot", key)
+	return 0
 }
 
 func requestValue(parts ...string) protocol.Value {

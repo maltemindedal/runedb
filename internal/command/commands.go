@@ -504,6 +504,9 @@ func (e *Executor) handleSet(ctx context.Context, request *Request) (protocol.Va
 		}
 		return nil, err
 	}
+	if effects := executionEffectsFromContext(ctx); effects != nil {
+		effects.setExpiryMillis = expiresAt
+	}
 	e.touchWatchKeys(key)
 	e.recordEvictedKeys(ctx, evicted)
 	return protocol.SimpleString{Value: "OK"}, nil

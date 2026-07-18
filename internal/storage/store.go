@@ -1165,7 +1165,7 @@ func isExpired(value *ValueObject, now int64) bool {
 	return value != nil && value.ExpiresAt > 0 && now > value.ExpiresAt
 }
 
-// ParseExpiryMillis parses Redis-style EX/PX arguments into a Unix-millis deadline.
+// ParseExpiryMillis parses Redis-style EX/PX/PXAT arguments into a Unix-millis deadline.
 func ParseExpiryMillis(args [][]byte) (int64, error) {
 	if len(args) == 0 {
 		return 0, nil
