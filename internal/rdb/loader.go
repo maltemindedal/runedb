@@ -343,6 +343,9 @@ func (l *loader) readString() ([]byte, error) {
 		if uncompressedEncoded {
 			return nil, errors.New("rdb: invalid encoded uncompressed length")
 		}
+		if uncompressedLength > maxRDBObjectLength {
+			return nil, fmt.Errorf("rdb: LZF uncompressed length %d exceeds %d byte limit", uncompressedLength, maxRDBObjectLength)
+		}
 
 		compressed, err := l.readBytes(compressedLength)
 		if err != nil {
@@ -355,12 +358,19 @@ func (l *loader) readString() ([]byte, error) {
 	}
 }
 
+// maxRDBObjectLength bounds a single declared object/allocation length in an RDB
+// stream. The loader also runs on data received from a replication master, so a
+// forged length field must not be able to pre-allocate an unbounded buffer and
+// OOM the process before the short read is detected. It mirrors the protocol
+// layer's 512 MiB bulk-string limit.
+const maxRDBObjectLength = 512 * 1024 * 1024
+
 func (l *loader) readBytes(length uint64) ([]byte, error) {
 	if length == 0 {
 		return []byte{}, nil
 	}
-	if length > uint64(^uint(0)>>1) {
-		return nil, fmt.Errorf("rdb: length overflow %d", length)
+	if length > maxRDBObjectLength {
+		return nil, fmt.Errorf("rdb: declared object length %d exceeds %d byte limit", length, maxRDBObjectLength)
 	}
 
 	buffer := make([]byte, int(length))

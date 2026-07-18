@@ -4,11 +4,35 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/storage"
 )
+
+// TestLoaderRejectsOversizedString verifies a forged length prefix is rejected
+// against the object-length cap rather than pre-allocating a multi-gigabyte
+// buffer. The loader also runs on RDB payloads received from a replication
+// master, so this closes a network-reachable OOM vector.
+func TestLoaderRejectsOversizedString(t *testing.T) {
+	var payload []byte
+	payload = append(payload, fileHeader...)
+	payload = append(payload, opcodeSelectDB)
+	payload = appendLength(payload, 0)
+	payload = append(payload, valueTypeString)
+	payload = appendString(payload, []byte("key"))
+	// Declare a ~4 GiB value without providing its bytes.
+	payload = appendLength(payload, 4*1024*1024*1024-1)
+
+	_, err := LoadReader(bytes.NewReader(payload), storage.NewStore())
+	if err == nil {
+		t.Fatal("LoadReader() error = nil, want oversized-length rejection")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("LoadReader() error = %v, want object-length-limit rejection", err)
+	}
+}
 
 func TestLoadReader(t *testing.T) {
 	now := time.Now().UnixMilli()

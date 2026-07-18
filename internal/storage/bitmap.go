@@ -72,24 +72,30 @@ func (s *Store) SetBitWithEviction(key string, offset int64, bit int64) (int64, 
 
 func (s *Store) setBit(key string, offset int64, bit int64) (int64, []string, error) {
 	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
+	// Decide the locking mode and accounting mode from a single read of the
+	// maxmemory flag. Reading it again under a narrower lock would be a TOCTOU:
+	// if accounting turned on in between, this call would take only one shard
+	// lock yet enter the cross-shard recalculation path and touch other shards'
+	// maps without holding their locks.
+	accounting := s.maxMemoryEnabled()
+	if accounting {
 		s.writeLockAllShards()
 		defer s.writeUnlockAllShards()
-		return s.setBitLocked(key, offset, bit, now)
+		return s.setBitLocked(key, offset, bit, now, accounting)
 	}
 
 	shard := s.shardForKey(key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	return s.setBitInShardLocked(shard, key, offset, bit, now)
+	return s.setBitInShardLocked(shard, key, offset, bit, now, accounting)
 }
 
-func (s *Store) setBitLocked(key string, offset int64, bit int64, now int64) (int64, []string, error) {
+func (s *Store) setBitLocked(key string, offset int64, bit int64, now int64, accounting bool) (int64, []string, error) {
 	shard := s.shardForKey(key)
-	return s.setBitInShardLocked(shard, key, offset, bit, now)
+	return s.setBitInShardLocked(shard, key, offset, bit, now, accounting)
 }
 
-func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit int64, now int64) (int64, []string, error) {
+func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit int64, now int64, accounting bool) (int64, []string, error) {
 	value, ok := shard.data[key]
 	if ok && isExpired(value, now) {
 		s.deleteKeyLocked(shard, key)
@@ -97,7 +103,6 @@ func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit 
 		value = nil
 	}
 
-	accounting := s.maxMemoryEnabled()
 	var oldSize int64
 	if accounting {
 		oldSize = s.approximateValueObjectSize(key, value)
