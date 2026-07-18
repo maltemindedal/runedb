@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -19,7 +20,29 @@ import (
 var (
 	renameFile = os.Rename
 	removeFile = os.Remove
+	syncDir    = defaultSyncDir
 )
+
+// defaultSyncDir fsyncs the directory containing path so a preceding rename is
+// durable across a crash. On POSIX a rename's new directory entry is not
+// guaranteed to survive a crash until the parent directory's inode is fsynced;
+// without this a crash right after the swap can lose the just-written file. It
+// is a no-op on Windows, where directory handles cannot be synced this way.
+func defaultSyncDir(path string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
 
 // Writer appends RESP payloads to an append-only file and can rewrite it in the background.
 type Writer struct {
@@ -431,20 +454,24 @@ func (w *Writer) logError(msg string, args ...any) {
 }
 
 func replaceFile(tempPath string, targetPath string) error {
-	err := renameFile(tempPath, targetPath)
-	if err == nil {
-		return nil
-	}
-	if !isReplaceTargetExistsError(err) {
-		return fmt.Errorf("aof: replace %q: %w", targetPath, err)
+	if err := renameFile(tempPath, targetPath); err != nil {
+		if !isReplaceTargetExistsError(err) {
+			return fmt.Errorf("aof: replace %q: %w", targetPath, err)
+		}
+
+		removeErr := removeFile(targetPath)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("aof: replace %q: rename error: %w; remove error: %v", targetPath, err, removeErr)
+		}
+		if retryErr := renameFile(tempPath, targetPath); retryErr != nil {
+			return fmt.Errorf("aof: replace %q after removing existing target: %w", targetPath, retryErr)
+		}
 	}
 
-	removeErr := removeFile(targetPath)
-	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-		return fmt.Errorf("aof: replace %q: rename error: %w; remove error: %v", targetPath, err, removeErr)
-	}
-	if retryErr := renameFile(tempPath, targetPath); retryErr != nil {
-		return fmt.Errorf("aof: replace %q after removing existing target: %w", targetPath, retryErr)
+	// Persist the rename itself: the new directory entry is not crash-durable
+	// until the containing directory is fsynced.
+	if err := syncDir(targetPath); err != nil {
+		return fmt.Errorf("aof: sync directory after replacing %q: %w", targetPath, err)
 	}
 
 	return nil

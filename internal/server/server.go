@@ -182,17 +182,34 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	stopShutdown := context.AfterFunc(ctx, s.shutdown)
 	defer stopShutdown()
 
-	if err := s.serve(ctx, listener); err != nil {
-		return err
+	serveErr := s.serve(ctx, listener)
+	if serveErr != nil {
+		// serve failed without ctx cancellation, so client connections may still
+		// be open; force the shutdown path (idempotent) to close the listener and
+		// connections so the handlers below unblock before we wait on them.
+		s.shutdown()
 	}
 
+	// Durability teardown must run regardless of how serve exited: closeAOFWriter
+	// stops the everysec fsync goroutine and flushes buffered commands, and
+	// persistSnapshot writes the shutdown RDB. Skipping them on the error path
+	// would leak the goroutine and silently drop unflushed writes.
 	s.handlerWG.Wait()
+
+	var errs []error
+	if serveErr != nil {
+		errs = append(errs, serveErr)
+	}
 	if err := s.closeAOFWriter(); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("server: close AOF writer: %w", err))
 	}
 	if err := s.persistSnapshot(); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("server: persist shutdown snapshot: %w", err))
 	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
 	s.logger.Info("RuneDB stopped")
 	return nil
 }

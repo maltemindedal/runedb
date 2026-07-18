@@ -13,6 +13,14 @@ import (
 
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {
 	defer s.handlerWG.Done()
+	// A malformed frame must never take the whole process down. The per-request
+	// cleanup defers below still run during the panic unwind; recover only stops
+	// the crash and lets this one connection die.
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("recovered from panic in connection handler", "client_id", clientID, "panic", r)
+		}
+	}()
 
 	parser := protocol.NewParser(conn)
 	writer := bufio.NewWriter(conn)
