@@ -3,10 +3,22 @@ package protocol
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 )
+
+// TestParseMissingCRLFReturnsSentinel locks the typed ErrMissingCRLF sentinel
+// that AOF replay relies on (via errors.Is) to tell a torn trailing record apart
+// from corruption, so a reworded parser message can't silently change that.
+func TestParseMissingCRLFReturnsSentinel(t *testing.T) {
+	// A bulk string whose declared payload is present but not CRLF-terminated.
+	parser := NewParser(strings.NewReader("$4\r\nPINGxx"))
+	if _, err := parser.Parse(); !errors.Is(err, ErrMissingCRLF) {
+		t.Fatalf("Parse() error = %v, want ErrMissingCRLF", err)
+	}
+}
 
 type chunkReader struct {
 	chunks [][]byte

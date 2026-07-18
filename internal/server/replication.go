@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
 	"github.com/maltemindedal/runedb/internal/rdb"
@@ -257,11 +256,14 @@ func (r *ReplicaRegistry) notifyChangedLocked() {
 
 func randomReplicationID() string {
 	var raw [20]byte
-	if _, err := cryptorand.Read(raw[:]); err == nil {
-		return hex.EncodeToString(raw[:])
+	if _, err := cryptorand.Read(raw[:]); err != nil {
+		// crypto/rand only fails when the OS entropy source is broken. A
+		// replication ID must be unpredictable, so fail loudly at startup rather
+		// than fall back to a guessable time-derived value.
+		panic(fmt.Sprintf("server: read crypto/rand for replication ID: %v", err))
 	}
 
-	return fmt.Sprintf("%040x", time.Now().UnixNano())
+	return hex.EncodeToString(raw[:])
 }
 
 func (s *Server) registerReplicaPeer(clientID uint64, conn ClientConn) {

@@ -25,16 +25,19 @@ func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net
 	parser := protocol.NewParser(conn)
 	writer := bufio.NewWriter(conn)
 
+	remoteAddr := ""
+	if addr := conn.RemoteAddr(); addr != nil {
+		remoteAddr = addr.String()
+	}
+
 	if state := s.getClientState(clientID); state != nil {
 		state.BindResponseWriter(writer)
 		state.BindResponseConn(conn)
-		if conn.RemoteAddr() != nil {
-			state.SetRemoteAddr(conn.RemoteAddr().String())
-		}
+		state.SetRemoteAddr(remoteAddr)
 		ctx = WithClientState(ctx, state)
 	}
 
-	logger := s.logger.With("client_id", clientID, "remote_addr", conn.RemoteAddr().String())
+	logger := s.logger.With("client_id", clientID, "remote_addr", remoteAddr)
 	logger.Debug("client connected")
 	defer s.teardownClient(clientID, logger)
 	defer func() {

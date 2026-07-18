@@ -167,7 +167,17 @@ func geoBoundingDeltas(latitude, radiusMeters float64) (deltaLatitude, deltaLong
 		return deltaLatitude, 180
 	}
 
-	deltaLongitude = radiansToDegrees(math.Asin(math.Sin(radiusRadians) / math.Cos(degreesToRadians(latitude))))
+	// The longitude extent is widest at the box's poleward edge, where the
+	// latitude circle is smallest (cos is smallest), not at the center latitude.
+	// Evaluating at |latitude|+deltaLatitude matches Redis' geohashBoundingBox
+	// and avoids an under-sized box that could drop in-radius members.
+	outerLatitude := math.Abs(latitude) + deltaLatitude
+	ratio := math.Sin(radiusRadians) / math.Cos(degreesToRadians(outerLatitude))
+	if ratio >= 1 {
+		// The box wraps around the pole in longitude; cover the full range.
+		return deltaLatitude, 180
+	}
+	deltaLongitude = radiansToDegrees(math.Asin(ratio))
 	return deltaLatitude, deltaLongitude
 }
 

@@ -60,6 +60,26 @@ func TestLoaderRejectsOversizedLZFString(t *testing.T) {
 	}
 }
 
+func TestLoaderAcceptsSupportedVersions(t *testing.T) {
+	for _, version := range []string{"REDIS0001", "REDIS0009", "REDIS0011"} {
+		payload := append([]byte(version), opcodeEOF)
+		payload = append(payload, make([]byte, 8)...)
+		if _, err := LoadReader(bytes.NewReader(payload), storage.NewStore()); err != nil {
+			t.Fatalf("LoadReader(%s) error = %v, want success", version, err)
+		}
+	}
+}
+
+func TestLoaderRejectsInvalidHeaders(t *testing.T) {
+	for _, header := range []string{"REDIS9999", "REDISxxxx", "NOPE00011"} {
+		payload := append([]byte(header), opcodeEOF)
+		payload = append(payload, make([]byte, 8)...)
+		if _, err := LoadReader(bytes.NewReader(payload), storage.NewStore()); !errors.Is(err, ErrInvalidHeader) {
+			t.Fatalf("LoadReader(%s) error = %v, want ErrInvalidHeader", header, err)
+		}
+	}
+}
+
 func TestLoadReader(t *testing.T) {
 	now := time.Now().UnixMilli()
 

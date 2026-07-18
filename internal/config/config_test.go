@@ -7,6 +7,38 @@ import (
 	"time"
 )
 
+func TestParseFlagsRejectsInvalidValues(t *testing.T) {
+	cases := map[string][]string{
+		"negative maxclients": {"--maxclients=-1"},
+		"port too large":      {"--port=70000"},
+		"negative port":       {"--port=-1"},
+		"negative maxmemory":  {"--maxmemory=-1"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+			fs.SetOutput(io.Discard)
+			if _, err := parseFlags(fs, args); err == nil {
+				t.Fatalf("parseFlags(%v) error = nil, want validation failure", args)
+			}
+		})
+	}
+}
+
+func TestParseFlagsAcceptsMaxClients(t *testing.T) {
+	fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+	cfg, err := parseFlags(fs, []string{"--maxclients=50", "--port=0"})
+	if err != nil {
+		t.Fatalf("parseFlags() error = %v", err)
+	}
+	if cfg.MaxClients != 50 {
+		t.Fatalf("MaxClients = %d, want 50", cfg.MaxClients)
+	}
+	if cfg.Port != 0 {
+		t.Fatalf("Port = %d, want 0 (ephemeral allowed)", cfg.Port)
+	}
+}
+
 func TestDefaultIncludesShutdownSnapshotPath(t *testing.T) {
 	cfg := Default()
 

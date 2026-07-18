@@ -149,6 +149,7 @@ From `d:\10_personal\runedb`:
 - `go run ./cmd/runedb --port 6379 --aof appendonly.aof --appendfsync everysec`
 - `go run ./cmd/runedb --port 6379 --rdb dump.rdb --dump dump.rdb`
 - `go run ./cmd/runedb --port 6379 --maxmemory 104857600`
+- `go run ./cmd/runedb --port 6379 --maxclients 1000`
 - `go run ./cmd/runedb --port 6379 --eviction-interval 100ms --eviction-sample-size 20`
 - `go run ./cmd/runedb --port 6379 --slowlog-log-slower-than 10000`
 - `go run ./cmd/runedb --port 6379 --event-loop`
