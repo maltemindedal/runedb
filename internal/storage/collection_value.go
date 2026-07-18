@@ -319,6 +319,13 @@ func (v *ValueObject) setAdd(members [][]byte) (int64, error) {
 			v.SetEncoding = ValueEncodingGeneral
 			return mustAddSetMembers(set, members), nil
 		}
+		if v.IntSet.len() > intSetMaxEntries {
+			// Upgrade a large integer-only set to the hashtable encoding so
+			// subsequent adds/removes stop paying the sorted-slice O(n) cost.
+			v.Set = v.IntSet.generalSet()
+			v.IntSet = nil
+			v.SetEncoding = ValueEncodingGeneral
+		}
 		return added, nil
 	}
 
@@ -431,7 +438,7 @@ func (v *ValueObject) cloneSetValue(expiresAt int64) (*ValueObject, error) {
 }
 
 func newSetValueForMembers(members [][]byte, expiresAt int64) *ValueObject {
-	if set, ok := newIntSet(members); ok {
+	if set, ok := newIntSet(members); ok && set.len() <= intSetMaxEntries {
 		return newIntSetValue(set, expiresAt)
 	}
 

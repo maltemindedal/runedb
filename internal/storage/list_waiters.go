@@ -64,14 +64,19 @@ func (w *listWaiters) notifyOne(key string) {
 	}
 
 	front := queue.order.Front()
-	ch := front.Value.(chan struct{})
+	ch, ok := front.Value.(chan struct{})
 	queue.order.Remove(front)
-	delete(queue.index, ch)
+	if ok {
+		delete(queue.index, ch)
+	}
 	if queue.order.Len() == 0 {
 		delete(w.waiters, key)
 	}
 	w.mu.Unlock()
 
+	if !ok {
+		return
+	}
 	select {
 	case ch <- struct{}{}:
 	default:

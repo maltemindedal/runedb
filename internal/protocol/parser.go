@@ -111,7 +111,7 @@ func (p *Parser) parseBulkString() (Value, error) {
 		return nil, fmt.Errorf("protocol: read bulk string payload: %w", err)
 	}
 	if err := p.expectCRLF(); err != nil {
-		return nil, fmt.Errorf("protocol: bulk string payload missing CRLF terminator")
+		return nil, fmt.Errorf("protocol: bulk string payload missing CRLF terminator: %w", err)
 	}
 
 	return BulkString{Data: payload}, nil
@@ -196,7 +196,7 @@ func (p *Parser) expectCRLF() error {
 		return err
 	}
 	if carriage != '\r' || newline != '\n' {
-		return fmt.Errorf("protocol: line missing CRLF terminator")
+		return ErrMissingCRLF
 	}
 
 	return nil
@@ -204,7 +204,7 @@ func (p *Parser) expectCRLF() error {
 
 func trimCRLF(line []byte) ([]byte, error) {
 	if len(line) < 2 || line[len(line)-2] != '\r' || line[len(line)-1] != '\n' {
-		return nil, fmt.Errorf("protocol: line missing CRLF terminator")
+		return nil, ErrMissingCRLF
 	}
 
 	return line[:len(line)-2], nil

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
 )
@@ -65,8 +64,8 @@ func isRecoverableTruncation(err error) bool {
 		return true
 	}
 
-	// The RESP parser currently normalizes a missing trailing CRLF into a plain
-	// parse error rather than wrapping EOF. Treat that as a recoverable truncated
-	// tail when replaying an append-only file.
-	return strings.Contains(err.Error(), "missing CRLF terminator")
+	// A frame whose final CRLF terminator never arrived is a torn trailing write,
+	// not corruption. The parser reports it with the typed ErrMissingCRLF
+	// sentinel, so match on that rather than the error message text.
+	return errors.Is(err, protocol.ErrMissingCRLF)
 }

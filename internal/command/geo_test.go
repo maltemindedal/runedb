@@ -11,6 +11,25 @@ import (
 	"github.com/maltemindedal/runedb/internal/protocol"
 )
 
+// TestGeoBoundingDeltasUsesPolewardEdge verifies the longitude half-width is
+// evaluated at the box's poleward edge (smaller cosine → wider box), not the
+// center latitude, so a high-latitude GEORADIUS box cannot under-cover and drop
+// in-radius members.
+func TestGeoBoundingDeltasUsesPolewardEdge(t *testing.T) {
+	const latitude = 70.0
+	const radiusMeters = 100000.0
+
+	_, deltaLongitude := geoBoundingDeltas(latitude, radiusMeters)
+
+	// The previous (undersized) width evaluated cos at the center latitude.
+	radiusRadians := radiusMeters / geoEarthRadiusMeters
+	centerWidth := radiansToDegrees(math.Asin(math.Sin(radiusRadians) / math.Cos(degreesToRadians(latitude))))
+
+	if deltaLongitude < centerWidth {
+		t.Fatalf("deltaLongitude = %v, want >= poleward-edge width (>= center-latitude width %v)", deltaLongitude, centerWidth)
+	}
+}
+
 const (
 	palermoLongitude = 13.361389
 	palermoLatitude  = 38.115556

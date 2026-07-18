@@ -85,6 +85,12 @@ func (s *SortedSet) rangeByRank(start, stop int) []ZSetRangeEntry {
 	if start < 0 || stop < start || start >= s.order.length {
 		return nil
 	}
+	if stop >= s.order.length {
+		// Clamp so the forward walk stops at the tail instead of dereferencing
+		// past it. Callers currently pre-clamp, but the compact variant guards
+		// this too; keep the two consistent.
+		stop = s.order.length - 1
+	}
 
 	node := s.order.getByRank(start + 1)
 	if node == nil {

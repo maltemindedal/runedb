@@ -364,6 +364,12 @@ func (l *eventLoop) acceptReady() error {
 			l.srv.logger.Debug("failed to set TCP_NODELAY on accepted connection", "error", err)
 		}
 
+		if l.srv.overConnectionLimit() {
+			l.srv.logger.Warn("connection limit reached; refusing connection", "max_clients", l.srv.cfg.MaxClients)
+			closeIgnoringError(fd)
+			continue
+		}
+
 		l.registerConn(fd, sockaddrTCPAddr(sa))
 	}
 }

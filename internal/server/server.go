@@ -252,6 +252,16 @@ func (s *Server) serve(ctx context.Context, listener net.Listener) error {
 	return s.serveGoroutinePerConnection(ctx, listener)
 }
 
+// acceptBackoffDelay is how long the goroutine-per-connection accept loop pauses
+// after a temporary accept error (e.g. EMFILE/ENFILE fd exhaustion) before
+// retrying, so the condition backs off instead of spinning the CPU and flooding
+// the logs. It mirrors the event-loop path's pause-on-exhaustion behavior.
+const acceptBackoffDelay = 20 * time.Millisecond
+
+// refuseWriteTimeout bounds the best-effort error write to a connection refused
+// for exceeding maxclients, so a slow peer cannot stall the accept loop.
+const refuseWriteTimeout = 200 * time.Millisecond
+
 // serveGoroutinePerConnection runs the blocking accept loop that spawns one
 // handler goroutine per client connection.
 func (s *Server) serveGoroutinePerConnection(ctx context.Context, listener net.Listener) error {
@@ -264,16 +274,55 @@ func (s *Server) serveGoroutinePerConnection(ctx context.Context, listener net.L
 
 			var temporary temporaryError
 			if errors.As(err, &temporary) && temporary.Temporary() {
-				s.logger.Warn("temporary accept error", "error", err)
+				s.logger.Warn("temporary accept error; backing off", "error", err, "delay", acceptBackoffDelay)
+				if !sleepWithContext(ctx, acceptBackoffDelay) {
+					return nil
+				}
 				continue
 			}
 
 			return fmt.Errorf("server: accept connection: %w", err)
 		}
 
+		if s.overConnectionLimit() {
+			s.refuseConnection(conn)
+			continue
+		}
+
 		clientID, _ := s.registerClient(conn)
 		s.handlerWG.Add(1)
 		go s.handleConnection(ctx, clientID, conn)
+	}
+}
+
+// overConnectionLimit reports whether the active connection count has reached
+// the configured maxclients cap. A zero cap disables the limit. The check is a
+// soft bound: a burst may momentarily exceed it within the accept-to-register
+// window, which is harmless.
+func (s *Server) overConnectionLimit() bool {
+	return s.cfg.MaxClients > 0 && s.registry.Count() >= s.cfg.MaxClients
+}
+
+// refuseConnection rejects a connection that would exceed maxclients, sending a
+// best-effort Redis-style error before closing it.
+func (s *Server) refuseConnection(conn net.Conn) {
+	s.logger.Warn("connection limit reached; refusing connection", "max_clients", s.cfg.MaxClients)
+	_ = conn.SetWriteDeadline(time.Now().Add(refuseWriteTimeout))
+	_ = protocol.WriteValue(conn, protocol.ErrorValue{Message: "ERR max number of clients reached"})
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		s.logger.Debug("failed to close refused connection", "error", err)
+	}
+}
+
+// sleepWithContext sleeps for d, returning false if ctx is canceled first.
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

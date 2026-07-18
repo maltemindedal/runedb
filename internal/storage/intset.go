@@ -5,6 +5,13 @@ import (
 	"strconv"
 )
 
+// intSetMaxEntries bounds how many members the compact sorted-slice IntSet
+// encoding holds before the set upgrades to the general hashtable. Past this
+// size, per-member add/remove on the sorted slice (O(n)) and repeated merges
+// (O(n) each, so O(n^2) to build incrementally) cost more than the map. Mirrors
+// Redis' set-max-intset-entries default.
+const intSetMaxEntries = 512
+
 // IntSet stores integer-only set members in sorted int64 order.
 type IntSet struct {
 	values []int64

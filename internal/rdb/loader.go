@@ -113,13 +113,18 @@ func loadReaderAt(reader io.Reader, store *storage.Store, nowMilli func() int64)
 	return loader.stats, nil
 }
 
+// rdbMaxSupportedVersion is the highest RDB format version this loader accepts.
+// Files declaring an older version (REDIS0001..REDIS0011) are still readable, so
+// the header is checked by prefix and version rather than an exact string match.
+const rdbMaxSupportedVersion = 11
+
 func (l *loader) load() error {
 	header := make([]byte, len(fileHeader))
 	if _, err := io.ReadFull(l.reader, header); err != nil {
 		return fmt.Errorf("read header: %w", err)
 	}
-	if string(header) != fileHeader {
-		return fmt.Errorf("%w: got %q want %q", ErrInvalidHeader, string(header), fileHeader)
+	if err := validateHeader(header); err != nil {
+		return err
 	}
 
 	for !l.seenEOF {
@@ -131,6 +136,18 @@ func (l *loader) load() error {
 		if err := l.processMarker(marker); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func validateHeader(header []byte) error {
+	if len(header) != len(fileHeader) || string(header[:5]) != "REDIS" {
+		return fmt.Errorf("%w: got %q", ErrInvalidHeader, string(header))
+	}
+	version, err := strconv.Atoi(string(header[5:]))
+	if err != nil || version < 1 || version > rdbMaxSupportedVersion {
+		return fmt.Errorf("%w: unsupported version in %q", ErrInvalidHeader, string(header))
 	}
 
 	return nil
