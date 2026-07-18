@@ -2347,6 +2347,91 @@ func TestDecodeRequest(t *testing.T) {
 	}
 }
 
+func TestSetRelativeExpiryPropagatesAsPXAT(t *testing.T) {
+	extract := func(v protocol.Value) string {
+		t.Helper()
+		switch typed := v.(type) {
+		case protocol.TextBulkString:
+			return typed.Value
+		case protocol.BulkString:
+			return string(typed.Data)
+		default:
+			t.Fatalf("frame element type = %T, want bulk string", v)
+			return ""
+		}
+	}
+
+	t.Run("EX is rewritten to absolute PXAT for propagation and durability", func(t *testing.T) {
+		executor := newTestExecutor()
+
+		before := time.Now().UnixMilli()
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB", "EX", "100"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		after := time.Now().UnixMilli()
+
+		// The rewritten PXAT must equal the deadline the handler actually stored,
+		// not a value re-derived from a later clock read.
+		storedExpiry := storedExpiryMillis(t, executor, "name")
+
+		for name, frames := range map[string][]protocol.Value{"propagation": result.Propagation, "durability": result.Durability} {
+			if len(frames) != 1 {
+				t.Fatalf("%s frames = %d, want 1", name, len(frames))
+			}
+			array, ok := frames[0].(protocol.Array)
+			if !ok {
+				t.Fatalf("%s frame type = %T, want Array", name, frames[0])
+			}
+			if len(array.Elements) != 5 {
+				t.Fatalf("%s frame arity = %d, want 5 (SET key value PXAT ms)", name, len(array.Elements))
+			}
+			if got := extract(array.Elements[0]); got != "SET" {
+				t.Fatalf("%s frame[0] = %q, want SET", name, got)
+			}
+			if got := extract(array.Elements[3]); got != "PXAT" {
+				t.Fatalf("%s frame[3] = %q, want PXAT (relative EX must not be propagated verbatim)", name, got)
+			}
+			pxat, err := strconv.ParseInt(extract(array.Elements[4]), 10, 64)
+			if err != nil {
+				t.Fatalf("%s PXAT value not an integer: %v", name, err)
+			}
+			if pxat < before+100_000 || pxat > after+100_000 {
+				t.Fatalf("%s PXAT = %d, want within [%d, %d]", name, pxat, before+100_000, after+100_000)
+			}
+			if pxat != storedExpiry {
+				t.Fatalf("%s PXAT = %d, want exactly the stored deadline %d (no clock drift)", name, pxat, storedExpiry)
+			}
+		}
+	})
+
+	t.Run("SET without expiry keeps its verbatim frame", func(t *testing.T) {
+		executor := newTestExecutor()
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed() error = %v", err)
+		}
+		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "RuneDB"))
+		assertPropagationFrames(t, result.Durability, requestValue("SET", "name", "RuneDB"))
+	})
+
+	t.Run("rewritten PXAT frame is accepted on replay and preserves the value", func(t *testing.T) {
+		executor := newTestExecutor()
+		future := strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "k", "v", "PXAT", future))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed(SET PXAT) error = %v", err)
+		}
+		assertValueEqual(t, result.Responses[0], protocol.SimpleString{Value: "OK"})
+
+		got, err := executor.ExecuteDetailed(context.Background(), requestValue("GET", "k"))
+		if err != nil {
+			t.Fatalf("ExecuteDetailed(GET) error = %v", err)
+		}
+		assertValueEqual(t, got.Responses[0], protocol.BulkString{Data: []byte("v")})
+	})
+}
+
 func newTestExecutor() *Executor {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewExecutor(storage.NewStore(), logger)
@@ -2374,6 +2459,18 @@ func newReplicaPeerStateForExecutor(executor *Executor, id uint64, conn net.Conn
 	state.PromoteToReplica()
 	state.BindResponseWriter(bufio.NewWriter(conn))
 	return state
+}
+
+func storedExpiryMillis(t *testing.T, executor *Executor, key string) int64 {
+	t.Helper()
+	entries, _ := executor.store.SnapshotAll()
+	for _, entry := range entries {
+		if entry.Key == key {
+			return entry.ExpiresAt
+		}
+	}
+	t.Fatalf("key %q not found in store snapshot", key)
+	return 0
 }
 
 func requestValue(parts ...string) protocol.Value {

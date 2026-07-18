@@ -1177,7 +1177,7 @@ func isExpired(value *ValueObject, now int64) bool {
 	return value != nil && value.ExpiresAt > 0 && now > value.ExpiresAt
 }
 
-// ParseExpiryMillis parses Redis-style EX/PX arguments into a Unix-millis deadline.
+// ParseExpiryMillis parses Redis-style EX/PX/PXAT arguments into a Unix-millis deadline.
 func ParseExpiryMillis(args [][]byte) (int64, error) {
 	if len(args) == 0 {
 		return 0, nil
@@ -1197,6 +1197,11 @@ func ParseExpiryMillis(args [][]byte) (int64, error) {
 		return now.Add(time.Duration(value) * time.Second).UnixMilli(), nil
 	case "PX":
 		return now.Add(time.Duration(value) * time.Millisecond).UnixMilli(), nil
+	case "PXAT":
+		// Absolute expiry in Unix milliseconds. Used both by clients and by the
+		// frame the executor propagates/persists for SET, so replicas and AOF
+		// replay anchor the TTL to the master's clock instead of restarting it.
+		return value, nil
 	default:
 		return 0, ErrSyntax
 	}

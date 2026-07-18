@@ -194,7 +194,8 @@ Then try:
 
 - command names are case-insensitive on the wire
 - `PING` optionally accepts one payload and returns it as a bulk string
-- `SET` currently supports only `EX` and `PX`
+- `SET` supports the relative `EX`/`PX` and the absolute `PXAT` expiration options
+- relative `EX`/`PX` expirations are normalized to an absolute `PXAT` frame before replication and AOF durability, so replicas and AOF replay anchor the TTL to the master's clock instead of restarting it
 - unsupported `SET` modifiers still return syntax-style errors instead of being ignored
 - `GET` on a missing key returns a null bulk string
 - `SETBIT`, `GETBIT`, and `BITCOUNT` operate on string values and enforce Redis-compatible bitmap offsets up to `2^32 - 1`

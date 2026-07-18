@@ -4,11 +4,61 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maltemindedal/runedb/internal/storage"
 )
+
+// TestLoaderRejectsOversizedString verifies a forged length prefix is rejected
+// against the object-length cap rather than pre-allocating a multi-gigabyte
+// buffer. The loader also runs on RDB payloads received from a replication
+// master, so this closes a network-reachable OOM vector.
+func TestLoaderRejectsOversizedString(t *testing.T) {
+	var payload []byte
+	payload = append(payload, fileHeader...)
+	payload = append(payload, opcodeSelectDB)
+	payload = appendLength(payload, 0)
+	payload = append(payload, valueTypeString)
+	payload = appendString(payload, []byte("key"))
+	// Declare a ~4 GiB value without providing its bytes.
+	payload = appendLength(payload, 4*1024*1024*1024-1)
+
+	_, err := LoadReader(bytes.NewReader(payload), storage.NewStore())
+	if err == nil {
+		t.Fatal("LoadReader() error = nil, want oversized-length rejection")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("LoadReader() error = %v, want object-length-limit rejection", err)
+	}
+}
+
+// TestLoaderRejectsOversizedLZFString verifies the loader rejects a forged LZF
+// uncompressed length against the object-length cap before decompressLZF
+// allocates the output buffer. Like the raw-string path, this is reachable over
+// replication, so the cap closes the same OOM vector for compressed values.
+func TestLoaderRejectsOversizedLZFString(t *testing.T) {
+	var payload []byte
+	payload = append(payload, fileHeader...)
+	payload = append(payload, opcodeSelectDB)
+	payload = appendLength(payload, 0)
+	payload = append(payload, valueTypeString)
+	payload = appendString(payload, []byte("key"))
+	// LZF-encoded value: tiny compressed length, but a ~600 MiB declared
+	// uncompressed length that exceeds the cap before any payload is read.
+	payload = append(payload, 0xC3)
+	payload = appendLength(payload, 1)
+	payload = appendLength(payload, 600*1024*1024)
+
+	_, err := LoadReader(bytes.NewReader(payload), storage.NewStore())
+	if err == nil {
+		t.Fatal("LoadReader() error = nil, want oversized-LZF-length rejection")
+	}
+	if !strings.Contains(err.Error(), "uncompressed length") {
+		t.Fatalf("LoadReader() error = %v, want LZF uncompressed-length rejection", err)
+	}
+}
 
 func TestLoadReader(t *testing.T) {
 	now := time.Now().UnixMilli()
