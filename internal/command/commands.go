@@ -1015,6 +1015,18 @@ func parseIntegerArgument(raw []byte) (int64, error) {
 	return value, nil
 }
 
+// parseIntArgument parses an argument whose destination is an int rather than
+// an int64. Passing bitSize 0 makes ParseInt reject anything that would not fit
+// in an int on this platform, so the narrowing conversion cannot truncate.
+func parseIntArgument(raw []byte) (int, error) {
+	value, err := strconv.ParseInt(string(raw), 10, 0)
+	if err != nil {
+		return 0, ErrValueNotIntegerError()
+	}
+
+	return int(value), nil
+}
+
 func parseBitmapOffsetArgument(raw []byte) (int64, error) {
 	offset, err := parseIntegerArgument(raw)
 	if err != nil {
