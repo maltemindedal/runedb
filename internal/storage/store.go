@@ -1165,9 +1165,18 @@ func normalizeListRange(length int, start, stop int64) (int, int, bool) {
 	return from, to, true
 }
 
+// normalizeListIndex resolves a possibly-negative Redis list index against length.
+// Out-of-range inputs are saturated to -1 (below the list) or length (past its end)
+// so the arithmetic stays in int64 and never truncates on narrow-int platforms.
 func normalizeListIndex(length int, index int64) int {
 	if index < 0 {
-		return length + int(index)
+		index += int64(length)
+	}
+	if index < 0 {
+		return -1
+	}
+	if index >= int64(length) {
+		return length
 	}
 
 	return int(index)

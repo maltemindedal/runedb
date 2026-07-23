@@ -304,7 +304,7 @@ func (e *Executor) handleWait(ctx context.Context, request *Request) (server.Exe
 		"target_offset", targetOffset,
 		"currently_acked", ackedReplicas,
 	)
-	if ackedReplicas >= int(replicas) || timeoutMillis == 0 {
+	if int64(ackedReplicas) >= replicas || timeoutMillis == 0 {
 		return e.finishWaitResult(replicas, ackedReplicas, targetOffset, startedAt, false), nil
 	}
 
@@ -356,7 +356,7 @@ func (e *Executor) waitForReplicaAcknowledgements(ctx context.Context, replicas 
 
 	for {
 		ackedReplicas, notified := e.countReplicasAtOrAboveWithNotify(targetOffset)
-		if ackedReplicas >= int(replicas) {
+		if int64(ackedReplicas) >= replicas {
 			return e.finishWaitResult(replicas, ackedReplicas, targetOffset, startedAt, false), nil
 		}
 

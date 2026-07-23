@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"math"
 	"strings"
 
 	"github.com/maltemindedal/runedb/internal/protocol"
@@ -21,6 +22,9 @@ func (e *Executor) handleSlowlog(_ context.Context, request *Request) (protocol.
 			parsed, err := parseIntegerArgument(request.Args[1])
 			if err != nil || parsed < 0 {
 				return nil, ErrValueNotIntegerError()
+			}
+			if parsed > math.MaxInt {
+				parsed = math.MaxInt
 			}
 			limit = int(parsed)
 		}
