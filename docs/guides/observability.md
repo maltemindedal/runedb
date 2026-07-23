@@ -1,6 +1,6 @@
 # Observability
 
-RuneDB exposes three inspection surfaces: `INFO` for point-in-time stats, `SLOWLOG` for slow command history, and `MONITOR` for a live command stream.
+Stash exposes three inspection surfaces: `INFO` for point-in-time stats, `SLOWLOG` for slow command history, and `MONITOR` for a live command stream.
 
 ## Inspect server state with INFO
 
@@ -55,13 +55,13 @@ The threshold is in **microseconds** and defaults to `10000` (10ms):
 
 ```bash
 # Record commands slower than 1ms
-go run ./cmd/runedb --slowlog-log-slower-than 1000
+go run ./cmd/stash --slowlog-log-slower-than 1000
 
 # Record every command
-go run ./cmd/runedb --slowlog-log-slower-than 0
+go run ./cmd/stash --slowlog-log-slower-than 0
 
 # Disable the slowlog
-go run ./cmd/runedb --slowlog-log-slower-than -1
+go run ./cmd/stash --slowlog-log-slower-than -1
 ```
 
 Query it:
@@ -98,7 +98,7 @@ Two operational notes:
 Logging uses Go's `log/slog` text handler writing to stdout. Set the level with `--log-level` (`debug`, `info`, `warn`, `error`):
 
 ```bash
-go run ./cmd/runedb --log-level debug
+go run ./cmd/stash --log-level debug
 ```
 
 Notable events logged at `info`: listener startup, AOF/RDB load decisions, replica handshakes, replica disconnects, shutdown snapshots, and startup eviction.

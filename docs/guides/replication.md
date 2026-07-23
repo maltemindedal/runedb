@@ -1,6 +1,6 @@
 # Setting up replication
 
-RuneDB supports leader/follower replication over the standard Redis handshake (`REPLCONF`, `PSYNC`). A replica connects to a master, receives a snapshot of current state, then applies a live stream of propagated commands.
+Stash supports leader/follower replication over the standard Redis handshake (`REPLCONF`, `PSYNC`). A replica connects to a master, receives a snapshot of current state, then applies a live stream of propagated commands.
 
 > **Scope:** replication covers the `REPLCONF`, `PSYNC`, and `WAIT` surface. It is not a complete Redis replication implementation — there is no partial resynchronization, no replica chaining, and no automatic failover.
 
@@ -9,13 +9,13 @@ RuneDB supports leader/follower replication over the standard Redis handshake (`
 Run the master on the default port:
 
 ```bash
-go run ./cmd/runedb --port 6379
+go run ./cmd/stash --port 6379
 ```
 
 In a second terminal, start a replica pointed at it:
 
 ```bash
-go run ./cmd/runedb --port 6380 --replicaof 127.0.0.1:6379
+go run ./cmd/stash --port 6380 --replicaof 127.0.0.1:6379
 ```
 
 The replica logs a completed handshake:
@@ -62,10 +62,10 @@ A password-protected master requires the replica to authenticate before `REPLCON
 
 ```bash
 # Master
-go run ./cmd/runedb --port 6379 --requirepass secret
+go run ./cmd/stash --port 6379 --requirepass secret
 
 # Replica
-go run ./cmd/runedb --port 6380 --replicaof 127.0.0.1:6379 --masterauth secret
+go run ./cmd/stash --port 6380 --replicaof 127.0.0.1:6379 --masterauth secret
 ```
 
 An unauthenticated replica handshake against a protected master is rejected.

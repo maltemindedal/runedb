@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strconv"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func (e *Executor) handleLPop(_ context.Context, request *Request) (protocol.Value, error) {

@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/aof"
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/aof"
+	"github.com/maltemindedal/stash/internal/command"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestGenerateRewriteRoundTripsState(t *testing.T) {
 	store := storage.NewStore()
-	store.Set("name", []byte("RuneDB"), 0)
+	store.Set("name", []byte("Stash"), 0)
 	store.Set("expiring", []byte("soon"), time.Now().Add(time.Minute).UnixMilli())
 	if _, err := store.RightPush("letters", [][]byte{[]byte("a"), []byte("b")}); err != nil {
 		t.Fatalf("RightPush() error = %v", err)
@@ -67,8 +67,8 @@ func TestGenerateRewriteRoundTripsState(t *testing.T) {
 
 	if got, ok, err := replayedStore.Get("name"); err != nil {
 		t.Fatalf("Get(name) error = %v", err)
-	} else if !ok || string(got) != "RuneDB" {
-		t.Fatalf("Get(name) = (%q, %v), want (RuneDB, true)", string(got), ok)
+	} else if !ok || string(got) != "Stash" {
+		t.Fatalf("Get(name) = (%q, %v), want (Stash, true)", string(got), ok)
 	}
 	if got, ok, err := replayedStore.Get("expiring"); err != nil {
 		t.Fatalf("Get(expiring) error = %v", err)

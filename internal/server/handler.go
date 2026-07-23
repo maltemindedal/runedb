@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func (s *Server) handleConnection(ctx context.Context, clientID uint64, conn net.Conn) {

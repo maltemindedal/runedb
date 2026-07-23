@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func (e *Executor) handleMonitor(ctx context.Context, request *Request) (protocol.Value, error) {

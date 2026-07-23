@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Config contains the runtime settings for the RuneDB server.
+// Config contains the runtime settings for the Stash server.
 type Config struct {
 	Host                 string
 	Port                 int

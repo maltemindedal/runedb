@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/config"
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/config"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func eventLoopTestConfig() config.Config {

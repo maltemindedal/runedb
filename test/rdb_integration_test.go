@@ -10,25 +10,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/rdb"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/command"
+	stashlogger "github.com/maltemindedal/stash/internal/logger"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/rdb"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestServerLoadsRDBBeforeServingCommands(t *testing.T) {
 	rdbPath := writeTempRDBFile(t, buildTestRDB(
 		selectTestDB(0),
-		testStringEntry([]byte("name"), []byte("RuneDB")),
+		testStringEntry([]byte("name"), []byte("Stash")),
 		testExpiringMillisEntry(uint64(time.Now().Add(-time.Second).UnixMilli()), []byte("stale"), []byte("gone")),
 	))
 
 	cfg := defaultTestConfig()
 	cfg.RDBPath = rdbPath
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -53,7 +53,7 @@ func TestServerLoadsRDBBeforeServingCommands(t *testing.T) {
 	})
 
 	parser := protocol.NewParser(conn)
-	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "stale")
 
 	cancel()
@@ -77,7 +77,7 @@ func TestServerFailsFastOnCorruptRDB(t *testing.T) {
 	cfg := defaultTestConfig()
 	cfg.RDBPath = rdbPath
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)

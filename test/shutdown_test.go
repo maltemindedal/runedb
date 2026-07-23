@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func TestServerShutdownClosesMultipleClients(t *testing.T) {
@@ -102,7 +102,7 @@ func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 	parser := protocol.NewParser(conn)
 
-	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
 
 	cancel()
 	waitForServerStop(t, errCh)
@@ -120,7 +120,7 @@ func TestServerShutdownPersistsSupportedSnapshotToRDB(t *testing.T) {
 	defer func() { _ = restartConn.Close() }()
 	restartParser := protocol.NewParser(restartConn)
 
-	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 
 	restartCancel()
 	waitForServerStop(t, restartErrCh)

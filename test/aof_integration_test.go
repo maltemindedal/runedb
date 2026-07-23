@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/command"
+	"github.com/maltemindedal/stash/internal/config"
+	stashlogger "github.com/maltemindedal/stash/internal/logger"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestServerPersistsAndReplaysAOF(t *testing.T) {
@@ -28,7 +28,7 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 	}
 	parser := protocol.NewParser(conn)
 
-	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "expiring", "soon", "PX", "60000")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "HSET", "profile", "lang", "go")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 2}, "RPUSH", "letters", "a", "b")
@@ -81,7 +81,7 @@ func TestServerPersistsAndReplaysAOF(t *testing.T) {
 	defer closeTestResource(t, restartConn)
 	restartParser := protocol.NewParser(restartConn)
 
-	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("soon")}, "GET", "expiring")
 	assertCommandResponse(t, restartConn, restartParser, protocol.BulkString{Data: []byte("go")}, "HGET", "profile", "lang")
 	assertCommandResponse(t, restartConn, restartParser, protocol.Array{Elements: []protocol.Value{
@@ -194,7 +194,7 @@ func TestServerRejectsInvalidReplicaConfigBeforeOpeningAOF(t *testing.T) {
 	cfg := testAOFConfig(aofPath)
 	cfg.ReplicaOf = "not-a-host-port"
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)

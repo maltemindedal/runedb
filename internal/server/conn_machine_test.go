@@ -9,7 +9,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func echoRunner(t *testing.T) (ConnCommandRunner, *[]protocol.Value) {

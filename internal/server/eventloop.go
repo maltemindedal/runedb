@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 // pollerEventBatch bounds how many readiness events one Wait call returns.

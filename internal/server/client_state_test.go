@@ -12,9 +12,9 @@ import (
 
 	"log/slog"
 
-	"github.com/maltemindedal/runedb/internal/config"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/config"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 type stubExecutor struct{}
@@ -48,7 +48,7 @@ func TestClientStateTransactionLifecycle(t *testing.T) {
 		state := &ClientState{ID: 1, Authenticated: true}
 		state.MarkTransactionFailed()
 		state.MarkTransactionDirty()
-		state.TxQueue = []QueuedCommand{{Name: "SET", Args: [][]byte{[]byte("name"), []byte("RuneDB")}}}
+		state.TxQueue = []QueuedCommand{{Name: "SET", Args: [][]byte{[]byte("name"), []byte("Stash")}}}
 
 		if ok := state.BeginTransaction(); !ok {
 			t.Fatal("BeginTransaction() = false, want true")
@@ -75,7 +75,7 @@ func TestClientStateTransactionLifecycle(t *testing.T) {
 		if ok := state.BeginTransaction(); !ok {
 			t.Fatal("BeginTransaction() = false, want true")
 		}
-		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("RuneDB")})
+		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("Stash")})
 		state.MarkTransactionDirty()
 
 		queued := state.DrainTransaction()
@@ -101,7 +101,7 @@ func TestClientStateTransactionLifecycle(t *testing.T) {
 		if ok := state.BeginTransaction(); !ok {
 			t.Fatal("BeginTransaction() = false, want true")
 		}
-		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("RuneDB")})
+		state.EnqueueCommand("SET", [][]byte{[]byte("name"), []byte("Stash")})
 		state.MarkTransactionDirty()
 		state.MarkTransactionFailed()
 

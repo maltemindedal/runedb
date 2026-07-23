@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 // LoadFile replays RESP-encoded commands from an append-only file.

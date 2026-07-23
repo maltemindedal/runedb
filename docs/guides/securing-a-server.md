@@ -1,17 +1,17 @@
 # Securing a server
 
-RuneDB defaults to a safe posture: it binds loopback and accepts no password. Both of those change the moment you make the server reachable from the network.
+Stash defaults to a safe posture: it binds loopback and accepts no password. Both of those change the moment you make the server reachable from the network.
 
 ## The default binding
 
-`--host` defaults to `127.0.0.1`, so a server started with no flags accepts connections only from the local machine. This is deliberate — an out-of-the-box RuneDB has no authentication, and binding a public interface without a password exposes an unauthenticated datastore.
+`--host` defaults to `127.0.0.1`, so a server started with no flags accepts connections only from the local machine. This is deliberate — an out-of-the-box Stash has no authentication, and binding a public interface without a password exposes an unauthenticated datastore.
 
 ## Require a password
 
 Set `--requirepass` and clients must authenticate before issuing commands:
 
 ```bash
-go run ./cmd/runedb --port 6379 --requirepass "$RUNEDB_PASSWORD"
+go run ./cmd/stash --port 6379 --requirepass "$STASH_PASSWORD"
 ```
 
 ```
@@ -32,7 +32,7 @@ Unauthenticated clients may still issue `PING`. Every other command, including t
 Only after setting a password:
 
 ```bash
-go run ./cmd/runedb --host 0.0.0.0 --port 6379 --requirepass "$RUNEDB_PASSWORD"
+go run ./cmd/stash --host 0.0.0.0 --port 6379 --requirepass "$STASH_PASSWORD"
 ```
 
 An empty `--host` also binds all interfaces.
@@ -42,7 +42,7 @@ An empty `--host` also binds all interfaces.
 A replica of a protected master needs `--masterauth` to complete its handshake:
 
 ```bash
-go run ./cmd/runedb --port 6380 --replicaof 127.0.0.1:6379 --masterauth "$RUNEDB_PASSWORD"
+go run ./cmd/stash --port 6380 --replicaof 127.0.0.1:6379 --masterauth "$STASH_PASSWORD"
 ```
 
 See [Setting up replication](replication.md).
@@ -52,7 +52,7 @@ See [Setting up replication](replication.md).
 `--maxclients` bounds concurrent client connections and defaults to `10000`. Setting it to `0` removes the limit.
 
 ```bash
-go run ./cmd/runedb --maxclients 1000
+go run ./cmd/stash --maxclients 1000
 ```
 
 ## What the slowlog stores
@@ -63,7 +63,7 @@ go run ./cmd/runedb --maxclients 1000
 
 These are properties of the current implementation, not configuration mistakes:
 
-- **No TLS.** All traffic, including `AUTH` passwords, crosses the network in plaintext. Run RuneDB on a trusted network or behind a TLS-terminating proxy.
+- **No TLS.** All traffic, including `AUTH` passwords, crosses the network in plaintext. Run Stash on a trusted network or behind a TLS-terminating proxy.
 - **No ACLs or users.** A single shared password grants full command access.
 - **No rename-command or command-level restrictions.** Any authenticated client can issue any implemented command, including `MONITOR` and `BGREWRITEAOF`.
 

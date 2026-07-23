@@ -12,7 +12,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // syncDir fsyncs the directory containing path so a preceding rename is durable

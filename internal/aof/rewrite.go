@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // GenerateRewrite emits the shortest practical RESP command stream for the supplied snapshot.

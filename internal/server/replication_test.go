@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/config"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/config"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestReplicaRegistryCountReplicasAtOrAboveWithNotify(t *testing.T) {

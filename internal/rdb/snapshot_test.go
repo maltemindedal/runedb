@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestReplaceFileSyncsDirectory(t *testing.T) {
@@ -83,7 +83,7 @@ func TestEmptySnapshotReturnsIndependentCopies(t *testing.T) {
 
 func TestBuildSnapshotRoundTripsThroughLoader(t *testing.T) {
 	entries := []storage.StringSnapshotEntry{
-		{Key: "name", Value: []byte("RuneDB")},
+		{Key: "name", Value: []byte("Stash")},
 		{Key: "binary\x00key", Value: []byte{0x00, 0x01, 0x02}, ExpiresAt: time.Now().Add(time.Minute).UnixMilli()},
 		{Key: "expired", Value: []byte("gone"), ExpiresAt: time.Now().Add(-time.Second).UnixMilli()},
 	}
@@ -112,8 +112,8 @@ func TestBuildSnapshotRoundTripsThroughLoader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get(name) error = %v", err)
 	}
-	if !ok || string(got) != "RuneDB" {
-		t.Fatalf("Get(name) = (%q, %v), want (%q, true)", string(got), ok, "RuneDB")
+	if !ok || string(got) != "Stash" {
+		t.Fatalf("Get(name) = (%q, %v), want (%q, true)", string(got), ok, "Stash")
 	}
 
 	got, ok, err = store.Get("binary\x00key")
@@ -137,7 +137,7 @@ func TestSaveSnapshotReplacesExistingFile(t *testing.T) {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
 	}
 
-	stats, err := SaveSnapshot(path, []storage.StringSnapshotEntry{{Key: "name", Value: []byte("RuneDB")}})
+	stats, err := SaveSnapshot(path, []storage.StringSnapshotEntry{{Key: "name", Value: []byte("Stash")}})
 	if err != nil {
 		t.Fatalf("SaveSnapshot() error = %v", err)
 	}
@@ -153,8 +153,8 @@ func TestSaveSnapshotReplacesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if !ok || string(got) != "RuneDB" {
-		t.Fatalf("Get() = (%q, %v), want (%q, true)", string(got), ok, "RuneDB")
+	if !ok || string(got) != "Stash" {
+		t.Fatalf("Get() = (%q, %v), want (%q, true)", string(got), ok, "Stash")
 	}
 }
 

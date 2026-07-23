@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/aof"
+	"github.com/maltemindedal/stash/internal/aof"
 )
 
 func TestWriterPolicyNoFlushesOnAppend(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // Request is the parsed command sent by a client.

@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/command"
+	stashlogger "github.com/maltemindedal/stash/internal/logger"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestServerHandlesHashSetAndListPopCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)

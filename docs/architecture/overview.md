@@ -19,7 +19,7 @@ flowchart LR
 
 ## Package layout
 
-### `cmd/runedb`
+### `cmd/stash`
 
 Contains the `main` package and the production binary entrypoint. It is responsible for:
 

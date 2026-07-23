@@ -1,6 +1,6 @@
 # Memory limits and eviction
 
-RuneDB has two independent eviction mechanisms: **TTL eviction**, which removes keys whose expiry has passed, and **memory-pressure eviction**, which removes live keys when the keyspace exceeds `--maxmemory`.
+Stash has two independent eviction mechanisms: **TTL eviction**, which removes keys whose expiry has passed, and **memory-pressure eviction**, which removes live keys when the keyspace exceeds `--maxmemory`.
 
 ## TTL eviction
 
@@ -13,7 +13,7 @@ Both are always on; there is no flag to disable them.
 
 ```bash
 # Sample 50 keys every 250ms instead of the default 20 every 100ms
-go run ./cmd/runedb --eviction-interval 250ms --eviction-sample-size 50
+go run ./cmd/stash --eviction-interval 250ms --eviction-sample-size 50
 ```
 
 | Flag | Default | Effect |
@@ -29,7 +29,7 @@ Set `--maxmemory` to a byte count to enable approximate keyspace accounting and 
 
 ```bash
 # 100 MB limit
-go run ./cmd/runedb --maxmemory 104857600
+go run ./cmd/stash --maxmemory 104857600
 ```
 
 `0`, the default, disables the feature entirely and skips the accounting overhead. Negative values are rejected at startup.

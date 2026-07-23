@@ -16,7 +16,7 @@ func TestParseFlagsRejectsInvalidValues(t *testing.T) {
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
-			fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+			fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 			fs.SetOutput(io.Discard)
 			if _, err := parseFlags(fs, args); err == nil {
 				t.Fatalf("parseFlags(%v) error = nil, want validation failure", args)
@@ -26,7 +26,7 @@ func TestParseFlagsRejectsInvalidValues(t *testing.T) {
 }
 
 func TestParseFlagsAcceptsMaxClients(t *testing.T) {
-	fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+	fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 	cfg, err := parseFlags(fs, []string{"--maxclients=50", "--port=0"})
 	if err != nil {
 		t.Fatalf("parseFlags() error = %v", err)
@@ -61,7 +61,7 @@ func TestDefaultIncludesShutdownSnapshotPath(t *testing.T) {
 
 func TestParseFlags(t *testing.T) {
 	t.Run("parses AOF flags", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		cfg, err := parseFlags(fs, []string{"--aof", "appendonly.aof", "--appendfsync", "always", "--dump", "snapshot.rdb", "--maxmemory", "2048"})
@@ -83,7 +83,7 @@ func TestParseFlags(t *testing.T) {
 	})
 
 	t.Run("parses slowlog threshold as microseconds", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		cfg, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "2500"})
@@ -96,7 +96,7 @@ func TestParseFlags(t *testing.T) {
 	})
 
 	t.Run("accepts negative slowlog threshold to disable", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		cfg, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "-1"})
@@ -109,7 +109,7 @@ func TestParseFlags(t *testing.T) {
 	})
 
 	t.Run("rejects non-integer slowlog threshold", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		if _, err := parseFlags(fs, []string{"--slowlog-log-slower-than", "10ms"}); err == nil {
@@ -118,7 +118,7 @@ func TestParseFlags(t *testing.T) {
 	})
 
 	t.Run("rejects invalid appendfsync policy", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		if _, err := parseFlags(fs, []string{"--appendfsync", "sometimes"}); err == nil {
@@ -127,7 +127,7 @@ func TestParseFlags(t *testing.T) {
 	})
 
 	t.Run("rejects negative maxmemory", func(t *testing.T) {
-		fs := flag.NewFlagSet("runedb-test", flag.ContinueOnError)
+		fs := flag.NewFlagSet("stash-test", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 
 		if _, err := parseFlags(fs, []string{"--maxmemory", "-1"}); err == nil {

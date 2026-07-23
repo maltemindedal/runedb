@@ -10,10 +10,10 @@ func TestEncodedLenMatchesEncode(t *testing.T) {
 		{name: "simple string", value: SimpleString{Value: "OK"}},
 		{name: "error", value: ErrorValue{Message: "ERR boom"}},
 		{name: "integer", value: Integer{Value: -42}},
-		{name: "bulk string", value: BulkString{Data: []byte("RuneDB")}},
+		{name: "bulk string", value: BulkString{Data: []byte("Stash")}},
 		{name: "null bulk string", value: BulkString{Null: true}},
 		{name: "text bulk string", value: TextBulkString{Value: "hello"}},
-		{name: "array", value: Array{Elements: []Value{BulkString{Data: []byte("SET")}, BulkString{Data: []byte("name")}, BulkString{Data: []byte("RuneDB")}}}},
+		{name: "array", value: Array{Elements: []Value{BulkString{Data: []byte("SET")}, BulkString{Data: []byte("name")}, BulkString{Data: []byte("Stash")}}}},
 		{name: "nested array", value: Array{Elements: []Value{BulkString{Data: []byte("CMD")}, Array{Elements: []Value{Boolean{Value: true}, Null{}}}}}},
 		{name: "null array", value: Array{Null: true}},
 		{name: "boolean", value: Boolean{Value: true}},
@@ -43,7 +43,7 @@ func TestEncodedValuesLenMatchesEncodeValues(t *testing.T) {
 	values := []Value{
 		SimpleString{Value: "OK"},
 		Integer{Value: 7},
-		BulkString{Data: []byte("RuneDB")},
+		BulkString{Data: []byte("Stash")},
 		Array{Elements: []Value{Boolean{Value: false}, Null{}}},
 	}
 

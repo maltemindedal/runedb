@@ -1,2 +1,2 @@
-// Package rdb loads Redis RDB snapshots into the RuneDB in-memory store.
+// Package rdb loads Redis RDB snapshots into the Stash in-memory store.
 package rdb

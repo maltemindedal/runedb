@@ -1,21 +1,21 @@
-# RuneDB
+# Stash
 
 A Redis-compatible key-value store written from scratch in Go, for people who want to read a database implementation rather than depend on one.
 
-RuneDB speaks RESP over TCP, so `redis-cli` and any RESP client connect to it unchanged. It implements strings, bitmaps, HyperLogLog, hashes, lists, sets, sorted sets, geospatial queries, and streams on top of a sharded in-memory store, with append-only-file durability, RDB snapshots, leader/follower replication, transactions, and pub/sub. It has no external dependencies — the entire server builds from the Go standard library.
+Stash speaks RESP over TCP, so `redis-cli` and any RESP client connect to it unchanged. It implements strings, bitmaps, HyperLogLog, hashes, lists, sets, sorted sets, geospatial queries, and streams on top of a sharded in-memory store, with append-only-file durability, RDB snapshots, leader/follower replication, transactions, and pub/sub. It has no external dependencies — the entire server builds from the Go standard library.
 
 ## Quick start
 
 **Prerequisite:** Go 1.21 or newer.
 
 ```bash
-git clone https://github.com/maltemindedal/runedb.git
-cd runedb
-go run ./cmd/runedb --port 6379
+git clone https://github.com/maltemindedal/stash.git
+cd stash
+go run ./cmd/stash --port 6379
 ```
 
 ```
-time=2026-07-23T12:00:00.000+02:00 level=INFO msg="RuneDB listening" address=127.0.0.1:6379
+time=2026-07-23T12:00:00.000+02:00 level=INFO msg="Stash listening" address=127.0.0.1:6379
 ```
 
 The server binds `127.0.0.1` by default and requires no password, so it is not reachable from the network until you set `--host`. Read [Securing a server](docs/guides/securing-a-server.md) before you do.
@@ -26,10 +26,10 @@ Connect with `redis-cli` or any RESP-capable client:
 
 ```
 $ redis-cli -p 6379
-127.0.0.1:6379> SET name RuneDB
+127.0.0.1:6379> SET name Stash
 OK
 127.0.0.1:6379> GET name
-"RuneDB"
+"Stash"
 127.0.0.1:6379> SET session token EX 60
 OK
 127.0.0.1:6379> ZADD scores 10 alice 20 bob
@@ -44,9 +44,9 @@ OK
 Run with durability and a password:
 
 ```bash
-go run ./cmd/runedb --port 6379 \
+go run ./cmd/stash --port 6379 \
   --aof appendonly.aof --appendfsync everysec \
-  --requirepass "$RUNEDB_PASSWORD"
+  --requirepass "$STASH_PASSWORD"
 ```
 
 ## Documentation
@@ -64,7 +64,7 @@ The full index is at [`docs/README.md`](docs/README.md).
 ## Project structure
 
 ```
-cmd/runedb/         application entrypoint
+cmd/stash/         application entrypoint
 internal/
   config/           runtime configuration and flag parsing
   logger/           shared log/slog setup
@@ -80,7 +80,7 @@ docs/               project documentation
 
 ## Current boundaries
 
-RuneDB is an implementation exercise, not a production datastore. The notable gaps:
+Stash is an implementation exercise, not a production datastore. The notable gaps:
 
 - **No TLS and no ACLs.** A single `--requirepass` password, sent in plaintext.
 - **RESP2-centric.** RESP3 support exists in the protocol layer (booleans, nulls) but command behavior is RESP2.

@@ -334,7 +334,7 @@ func TestStoreAccessTracking(t *testing.T) {
 			name: "Get refreshes string last accessed",
 			run: func(t *testing.T, store *Store, key string) {
 				t.Helper()
-				store.Set(key, []byte("RuneDB"), 0)
+				store.Set(key, []byte("Stash"), 0)
 
 				before := store.lastAccessedAtForTest(key)
 				time.Sleep(2 * time.Millisecond)
@@ -476,7 +476,7 @@ func TestStoreMaxMemoryAccountingOnLegacyMutators(t *testing.T) {
 			name: "Set updates approximate usage",
 			mutate: func(t *testing.T, store *Store) {
 				t.Helper()
-				store.Set("name", []byte("RuneDB"), 0)
+				store.Set("name", []byte("Stash"), 0)
 			},
 		},
 		{
@@ -785,7 +785,7 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 
 func TestStoreKeyStatsTracksMutations(t *testing.T) {
 	store := NewStore()
-	store.Set("name", []byte("RuneDB"), 0)
+	store.Set("name", []byte("Stash"), 0)
 	if _, err := store.RightPush("jobs", [][]byte{[]byte("build")}); err != nil {
 		t.Fatalf("RightPush() error = %v", err)
 	}
@@ -877,7 +877,7 @@ func assertKeyStats(t *testing.T, store *Store, total int, byKind map[ValueKind]
 func TestStoreSnapshotStrings(t *testing.T) {
 	t.Run("returns defensive copies for supported string keys", func(t *testing.T) {
 		store := NewStore()
-		store.Set("name", []byte("RuneDB"), 0)
+		store.Set("name", []byte("Stash"), 0)
 
 		entries, stats := store.SnapshotStrings()
 		if stats.TotalKeys != 1 {
@@ -898,8 +898,8 @@ func TestStoreSnapshotStrings(t *testing.T) {
 		if !ok {
 			t.Fatal("Get() ok = false, want true")
 		}
-		if string(got) != "RuneDB" {
-			t.Fatalf("Get() value = %q, want %q", string(got), "RuneDB")
+		if string(got) != "Stash" {
+			t.Fatalf("Get() value = %q, want %q", string(got), "Stash")
 		}
 	})
 

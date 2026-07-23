@@ -115,7 +115,7 @@ type SnapshotStats struct {
 	SkippedExpiredKeys int
 }
 
-// ValueObject is the internal representation of an item stored in RuneDB.
+// ValueObject is the internal representation of an item stored in Stash.
 //
 // The type is a tagged union: Kind selects which payload field is valid.
 // ExpiresAt is stored as a Unix timestamp in milliseconds; 0 means no TTL.

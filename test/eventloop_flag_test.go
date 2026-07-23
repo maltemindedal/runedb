@@ -4,7 +4,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 // TestEventLoopFlagServesClientsOnEveryPlatform verifies the event-loop

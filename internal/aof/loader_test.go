@@ -7,15 +7,15 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/aof"
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/aof"
+	"github.com/maltemindedal/stash/internal/command"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 func TestLoadFile(t *testing.T) {
 	t.Run("replays valid RESP commands", func(t *testing.T) {
 		path := writeTempAOF(t, mustEncodeValues(t,
-			request("SET", "name", "RuneDB"),
+			request("SET", "name", "Stash"),
 			request("INCR", "counter"),
 		))
 
@@ -44,7 +44,7 @@ func TestLoadFile(t *testing.T) {
 
 	t.Run("treats truncated tail as recoverable", func(t *testing.T) {
 		full := mustEncodeValues(t,
-			request("SET", "name", "RuneDB"),
+			request("SET", "name", "Stash"),
 			request("INCR", "counter"),
 		)
 		path := writeTempAOF(t, full[:len(full)-3])
@@ -77,7 +77,7 @@ func TestLoadFile(t *testing.T) {
 	})
 
 	t.Run("honors canceled context", func(t *testing.T) {
-		path := writeTempAOF(t, mustEncodeValues(t, request("SET", "name", "RuneDB")))
+		path := writeTempAOF(t, mustEncodeValues(t, request("SET", "name", "Stash")))
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 

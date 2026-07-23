@@ -1,3 +1,3 @@
-module github.com/maltemindedal/runedb
+module github.com/maltemindedal/stash
 
 go 1.21

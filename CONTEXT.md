@@ -1,10 +1,10 @@
-# RuneDB Context
+# Stash Context
 
-RuneDB is a Go implementation of a Redis-compatible TCP key/value server. The project is intentionally implementation-led: each feature should preserve Redis wire compatibility where supported while keeping package boundaries small and explicit.
+Stash is a Go implementation of a Redis-compatible TCP key/value server. The project is intentionally implementation-led: each feature should preserve Redis wire compatibility where supported while keeping package boundaries small and explicit.
 
 ## Domain Glossary
 
-- RuneDB: the server binary and codebase for the Redis-compatible store.
+- Stash: the server binary and codebase for the Redis-compatible store.
 - RESP: the Redis Serialization Protocol used on client, persistence, and replication command streams.
 - Command executor: the `internal/command` component that decodes RESP arrays, validates commands, applies connection state rules, executes handlers, and returns RESP values.
 - Store: the `internal/storage` in-memory key/value engine.

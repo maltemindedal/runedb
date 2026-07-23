@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // Geospatial commands encode longitude/latitude pairs into 52-bit interleaved

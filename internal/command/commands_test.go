@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestExecutorExecute(t *testing.T) {
@@ -65,7 +65,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "GET returns stored value",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "RuneDB")); err != nil {
+				if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "Stash")); err != nil {
 					t.Fatalf("SET error = %v", err)
 				}
 			},
@@ -75,7 +75,7 @@ func TestExecutorExecute(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Execute() error = %v", err)
 				}
-				assertValueEqual(t, value, protocol.BulkString{Data: []byte("RuneDB")})
+				assertValueEqual(t, value, protocol.BulkString{Data: []byte("Stash")})
 			},
 		},
 		{
@@ -703,7 +703,7 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 	t.Run("SET returns propagation frame", func(t *testing.T) {
 		executor := newTestExecutor()
 
-		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB"))
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("ExecuteDetailed() error = %v", err)
 		}
@@ -712,7 +712,7 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 		}
 
 		assertValueEqual(t, result.Responses[0], protocol.SimpleString{Value: "OK"})
-		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "RuneDB"))
+		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "Stash"))
 	})
 
 	t.Run("INCR returns propagation frame", func(t *testing.T) {
@@ -811,7 +811,7 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 		if _, err := executor.Execute(ctx, requestValue("MULTI")); err != nil {
 			t.Fatalf("MULTI error = %v", err)
 		}
-		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); err != nil {
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "Stash")); err != nil {
 			t.Fatalf("queued SET error = %v", err)
 		}
 		if _, err := executor.Execute(ctx, requestValue("DEL", "missing")); err != nil {
@@ -831,11 +831,11 @@ func TestExecutorDetailedPropagation(t *testing.T) {
 			protocol.Integer{Value: 0},
 		}})
 		assertPropagationFrames(t, result.Propagation,
-			requestValue("SET", "name", "RuneDB"),
+			requestValue("SET", "name", "Stash"),
 			requestValue("DEL", "missing"),
 		)
 		assertPropagationFrames(t, result.Durability,
-			requestValue("SET", "name", "RuneDB"),
+			requestValue("SET", "name", "Stash"),
 			requestValue("DEL", "missing"),
 		)
 	})
@@ -973,7 +973,7 @@ func TestExecutorMaxMemory(t *testing.T) {
 
 func TestExecutorInfo(t *testing.T) {
 	executor := newTestExecutor()
-	if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "RuneDB")); err != nil {
+	if _, err := executor.Execute(context.Background(), requestValue("SET", "name", "Stash")); err != nil {
 		t.Fatalf("SET error = %v", err)
 	}
 	if _, err := executor.Execute(context.Background(), requestValue("LPUSH", "letters", "a")); err != nil {
@@ -1065,7 +1065,7 @@ func TestExecutorSlowlog(t *testing.T) {
 		executor.SetSlowlogConfig(registry, 0)
 		ctx := withUnauthenticatedClientStateForExecutor(context.Background(), executor, 77)
 
-		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); !errors.Is(err, ErrNoAuth) {
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "Stash")); !errors.Is(err, ErrNoAuth) {
 			t.Fatalf("SET unauthenticated error = %v, want ErrNoAuth", err)
 		}
 		if got := registry.Len(); got != 0 {
@@ -1267,7 +1267,7 @@ func TestExecutorAuth(t *testing.T) {
 		}
 		assertValueEqual(t, echoed, protocol.BulkString{Data: []byte("hello")})
 
-		if _, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB")); !errors.Is(err, ErrNoAuth) {
+		if _, err := executor.Execute(ctx, requestValue("SET", "name", "Stash")); !errors.Is(err, ErrNoAuth) {
 			t.Fatalf("SET error = %v, want ErrNoAuth", err)
 		}
 		if state.InTransactionActive() {
@@ -1307,7 +1307,7 @@ func TestExecutorAuth(t *testing.T) {
 			t.Fatal("IsAuthenticated() = false after successful AUTH, want true")
 		}
 
-		value, err = executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
+		value, err = executor.Execute(ctx, requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("SET after AUTH error = %v", err)
 		}
@@ -1317,7 +1317,7 @@ func TestExecutorAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET after AUTH error = %v", err)
 		}
-		assertValueEqual(t, value, protocol.BulkString{Data: []byte("RuneDB")})
+		assertValueEqual(t, value, protocol.BulkString{Data: []byte("Stash")})
 	})
 
 	t.Run("AUTH failure keeps the client blocked", func(t *testing.T) {
@@ -1360,7 +1360,7 @@ func TestExecutorAuth(t *testing.T) {
 			t.Fatal("IsAuthenticated() = false after failed re-auth, want true")
 		}
 
-		value, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
+		value, err := executor.Execute(ctx, requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("SET after failed re-auth error = %v", err)
 		}
@@ -1552,7 +1552,7 @@ func TestExecutorTransactions(t *testing.T) {
 		}
 		assertValueEqual(t, value, protocol.SimpleString{Value: "OK"})
 
-		value, err = executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
+		value, err = executor.Execute(ctx, requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("queued SET error = %v", err)
 		}
@@ -1570,7 +1570,7 @@ func TestExecutorTransactions(t *testing.T) {
 		}
 		assertValueEqual(t, value, protocol.Array{Elements: []protocol.Value{
 			protocol.SimpleString{Value: "OK"},
-			protocol.BulkString{Data: []byte("RuneDB")},
+			protocol.BulkString{Data: []byte("Stash")},
 		}})
 	})
 
@@ -1948,7 +1948,7 @@ func TestExecutorTransactions(t *testing.T) {
 		if _, err := executor.Execute(ctx, requestValue("NOPE")); err == nil || err.Error() != "unknown command \"NOPE\"" {
 			t.Fatalf("unknown command error = %v, want unknown command \"NOPE\"", err)
 		}
-		value, err := executor.Execute(ctx, requestValue("SET", "name", "RuneDB"))
+		value, err := executor.Execute(ctx, requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("queued SET after invalid command error = %v", err)
 		}
@@ -2248,7 +2248,7 @@ func BenchmarkExecutorPublish(b *testing.B) {
 
 func BenchmarkExecutorDetailedPropagation(b *testing.B) {
 	executor := newTestExecutor()
-	request := requestValue("SET", "name", "RuneDB")
+	request := requestValue("SET", "name", "Stash")
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -2273,8 +2273,8 @@ func TestDecodeRequest(t *testing.T) {
 	}{
 		{
 			name:  "bulk string command",
-			value: requestValue("SET", "name", "RuneDB"),
-			want:  &Request{Name: "SET", Args: [][]byte{[]byte("name"), []byte("RuneDB")}},
+			value: requestValue("SET", "name", "Stash"),
+			want:  &Request{Name: "SET", Args: [][]byte{[]byte("name"), []byte("Stash")}},
 			assert: func(t *testing.T, err error) {
 				t.Helper()
 				if err != nil {
@@ -2365,7 +2365,7 @@ func TestSetRelativeExpiryPropagatesAsPXAT(t *testing.T) {
 		executor := newTestExecutor()
 
 		before := time.Now().UnixMilli()
-		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB", "EX", "100"))
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "Stash", "EX", "100"))
 		if err != nil {
 			t.Fatalf("ExecuteDetailed() error = %v", err)
 		}
@@ -2407,12 +2407,12 @@ func TestSetRelativeExpiryPropagatesAsPXAT(t *testing.T) {
 
 	t.Run("SET without expiry keeps its verbatim frame", func(t *testing.T) {
 		executor := newTestExecutor()
-		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "RuneDB"))
+		result, err := executor.ExecuteDetailed(context.Background(), requestValue("SET", "name", "Stash"))
 		if err != nil {
 			t.Fatalf("ExecuteDetailed() error = %v", err)
 		}
-		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "RuneDB"))
-		assertPropagationFrames(t, result.Durability, requestValue("SET", "name", "RuneDB"))
+		assertPropagationFrames(t, result.Propagation, requestValue("SET", "name", "Stash"))
+		assertPropagationFrames(t, result.Durability, requestValue("SET", "name", "Stash"))
 	})
 
 	t.Run("rewritten PXAT frame is accepted on replay and preserves the value", func(t *testing.T) {

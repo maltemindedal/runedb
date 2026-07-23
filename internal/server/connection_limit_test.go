@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/config"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/config"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // TestOverConnectionLimit verifies the maxclients soft cap: it trips once the

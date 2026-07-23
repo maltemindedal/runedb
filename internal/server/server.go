@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/aof"
-	"github.com/maltemindedal/runedb/internal/config"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/rdb"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/aof"
+	"github.com/maltemindedal/stash/internal/config"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/rdb"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 type executor interface {
@@ -172,7 +172,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	s.setListener(listener)
 	defer s.shutdown()
 
-	s.logger.Info("RuneDB listening", "address", listener.Addr().String())
+	s.logger.Info("Stash listening", "address", listener.Addr().String())
 	s.store.StartEviction(ctx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize)
 	if s.cfg.IsReplica() {
 		s.handlerWG.Add(1)
@@ -210,7 +210,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return errors.Join(errs...)
 	}
 
-	s.logger.Info("RuneDB stopped")
+	s.logger.Info("Stash stopped")
 	return nil
 }
 

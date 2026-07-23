@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/command"
+	"github.com/maltemindedal/stash/internal/config"
+	stashlogger "github.com/maltemindedal/stash/internal/logger"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func defaultTestConfig() config.Config {
@@ -29,7 +29,7 @@ func defaultTestConfig() config.Config {
 
 func startTestServer(t *testing.T, cfg config.Config) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -66,7 +66,7 @@ func closeTestResource(t *testing.T, resource io.Closer) {
 func TestServerHandlesPhaseOneCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -94,8 +94,8 @@ func TestServerHandlesPhaseOneCommands(t *testing.T) {
 
 	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "PONG"}, "PING")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("hello")}, "ECHO", "hello")
-	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
-	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
+	assertCommandResponse(t, conn, parser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "DEL", "name")
 	assertCommandResponse(t, conn, parser, protocol.BulkString{Null: true}, "GET", "name")
 	assertCommandResponse(t, conn, parser, protocol.Integer{Value: 1}, "INCR", "counter")
@@ -129,7 +129,7 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 	cfg := defaultTestConfig()
 	cfg.RequirePass = "secret"
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -159,17 +159,17 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 
 	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "PONG"}, "PING")
 	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("hello")}, "PING", "hello")
-	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "SET", "name", "Stash")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "MULTI")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "SUBSCRIBE", "news")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "WRONGPASS invalid username-password pair or user is disabled."}, "AUTH", "wrong")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
 	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "OK"}, "AUTH", "secret")
-	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
-	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, authedConn, authedParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
+	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 	assertCommandResponse(t, authedConn, authedParser, protocol.ErrorValue{Message: "WRONGPASS invalid username-password pair or user is disabled."}, "AUTH", "wrong")
-	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("RuneDB")}, "GET", "name")
+	assertCommandResponse(t, authedConn, authedParser, protocol.BulkString{Data: []byte("Stash")}, "GET", "name")
 	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "REPLCONF", "listening-port", "6380")
 	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "PSYNC", "?", "-1")
 	assertCommandResponse(t, blockedConn, blockedParser, protocol.ErrorValue{Message: "NOAUTH Authentication required."}, "GET", "name")
@@ -188,7 +188,7 @@ func TestServerRequiresAuthWhenConfigured(t *testing.T) {
 func TestServerHandlesListCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -277,7 +277,7 @@ func TestServerHandlesListCommands(t *testing.T) {
 func TestServerHandlesSortedSetCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -340,7 +340,7 @@ func TestServerHandlesSortedSetCommands(t *testing.T) {
 func TestServerHandlesStreamCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -415,7 +415,7 @@ func TestServerHandlesStreamCommands(t *testing.T) {
 func TestServerHandlesTransactionCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -481,7 +481,7 @@ func TestServerHandlesTransactionCommands(t *testing.T) {
 func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -540,7 +540,7 @@ func TestServerHandlesWatchOptimisticLocking(t *testing.T) {
 func TestServerHandlesPubSubCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -625,7 +625,7 @@ func TestServerHandlesPubSubCommands(t *testing.T) {
 func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -707,7 +707,7 @@ func TestServerPubSubPublishesToEverySubscriber(t *testing.T) {
 func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -754,7 +754,7 @@ func TestServerSubscribedClientsRejectTransactionCommands(t *testing.T) {
 func TestServerPubSubDisconnectCleanup(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -828,7 +828,7 @@ func TestServerPubSubDisconnectCleanup(t *testing.T) {
 func TestServerMonitorStreamsCommands(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -886,7 +886,7 @@ func TestServerMonitorStreamsCommands(t *testing.T) {
 func TestServerRejectsEmptyPubSubChannelNames(t *testing.T) {
 	cfg := defaultTestConfig()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)

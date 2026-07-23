@@ -1,34 +1,34 @@
 # Getting started
 
-This tutorial takes you from a fresh clone to a running RuneDB server with data in it. It should take under 15 minutes.
+This tutorial takes you from a fresh clone to a running Stash server with data in it. It should take under 15 minutes.
 
 ## Prerequisites
 
 - **Go 1.21 or newer** — the version is pinned in [`go.mod`](../go.mod). Check yours with `go version`.
 - **A RESP client.** `redis-cli` is the easiest. Any RESP-capable TCP client works.
 
-RuneDB has no external dependencies — no database, no package downloads, no `go.sum`.
+Stash has no external dependencies — no database, no package downloads, no `go.sum`.
 
 ## 1. Clone and build
 
 ```bash
-git clone https://github.com/maltemindedal/runedb.git
-cd runedb
-go build ./cmd/runedb
+git clone https://github.com/maltemindedal/stash.git
+cd stash
+go build ./cmd/stash
 ```
 
-The build produces a `runedb` binary (`runedb.exe` on Windows) in the repository root.
+The build produces a `stash` binary (`stash.exe` on Windows) in the repository root.
 
 ## 2. Start the server
 
 ```bash
-go run ./cmd/runedb --port 6379
+go run ./cmd/stash --port 6379
 ```
 
 You should see structured log output confirming the listener is up:
 
 ```
-time=2026-07-23T12:00:00.000+02:00 level=INFO msg="RuneDB listening" address=127.0.0.1:6379
+time=2026-07-23T12:00:00.000+02:00 level=INFO msg="Stash listening" address=127.0.0.1:6379
 ```
 
 The server binds `127.0.0.1` by default, so it is not reachable from the network until you set `--host` explicitly. Leave it running and open a second terminal.
@@ -44,10 +44,10 @@ Work through these to confirm the basics:
 ```
 127.0.0.1:6379> PING
 PONG
-127.0.0.1:6379> SET name RuneDB
+127.0.0.1:6379> SET name Stash
 OK
 127.0.0.1:6379> GET name
-"RuneDB"
+"Stash"
 127.0.0.1:6379> INCR counter
 (integer) 1
 127.0.0.1:6379> INCR counter
@@ -100,7 +100,7 @@ TTLs are enforced both passively (on read) and actively (by a background loop ru
 
 ## 6. See how errors behave
 
-RuneDB returns Redis-compatible error prefixes rather than silently accepting bad input:
+Stash returns Redis-compatible error prefixes rather than silently accepting bad input:
 
 ```
 127.0.0.1:6379> SET bad hello
@@ -118,7 +118,7 @@ Press `Ctrl+C` in the server terminal. The server stops accepting connections, d
 Restart it with that snapshot to confirm your data survived:
 
 ```bash
-go run ./cmd/runedb --port 6379 --rdb dump.rdb
+go run ./cmd/stash --port 6379 --rdb dump.rdb
 ```
 
 > **Note:** RDB support covers string keys only, in both directions. The shutdown snapshot exports string values and logs a warning for every key of another type it skips; startup loading restores DB `0` string keys. For full-fidelity durability across all data types, use the [append-only file](guides/persistence.md) instead.

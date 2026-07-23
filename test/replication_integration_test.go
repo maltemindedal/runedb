@@ -13,20 +13,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/command"
-	"github.com/maltemindedal/runedb/internal/config"
-	runedblogger "github.com/maltemindedal/runedb/internal/logger"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/rdb"
-	"github.com/maltemindedal/runedb/internal/server"
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/command"
+	"github.com/maltemindedal/stash/internal/config"
+	stashlogger "github.com/maltemindedal/stash/internal/logger"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/rdb"
+	"github.com/maltemindedal/stash/internal/server"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 func TestServerHandlesMasterReplicaHandshake(t *testing.T) {
 	cfg := defaultTestConfig()
 	cfg.RequirePass = "secret"
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -180,7 +180,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg := defaultTestConfig()
 		cfg.ReplicaOf = masterListener.Addr().String()
 
-		logger := runedblogger.New(cfg.LogLevel)
+		logger := stashlogger.New(cfg.LogLevel)
 		store := storage.NewStore()
 		executor := command.NewExecutor(store, logger)
 		srv := server.New(cfg, logger, store, executor)
@@ -332,7 +332,7 @@ func TestServerReplicaModeInitiatesHandshake(t *testing.T) {
 		cfg.ReplicaOf = masterListener.Addr().String()
 		cfg.MasterAuth = "secret"
 
-		logger := runedblogger.New(cfg.LogLevel)
+		logger := stashlogger.New(cfg.LogLevel)
 		store := storage.NewStore()
 		executor := command.NewExecutor(store, logger)
 		srv := server.New(cfg, logger, store, executor)
@@ -727,7 +727,7 @@ func TestServerReplicaFullResyncReplacesExistingData(t *testing.T) {
 	cfg.RDBPath = rdbPath
 	cfg.ReplicaOf = masterListener.Addr().String()
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -861,7 +861,7 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	masterCfg.EvictionSampleSize = 10
 	masterCfg.DumpPath = ""
 
-	logger := runedblogger.New(masterCfg.LogLevel)
+	logger := stashlogger.New(masterCfg.LogLevel)
 
 	masterStore := storage.NewStore()
 	masterExecutor := command.NewExecutor(masterStore, logger)
@@ -925,8 +925,8 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	defer closeTestResource(t, replicaConn)
 	replicaParser := protocol.NewParser(replicaConn)
 
-	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
-	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("RuneDB")}, 2*time.Second, "GET", "name")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("Stash")}, 2*time.Second, "GET", "name")
 
 	assertCommandResponse(t, masterConn, masterParser, protocol.Integer{Value: 1}, "DEL", "name")
 	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Null: true}, 2*time.Second, "GET", "name")
@@ -1002,7 +1002,7 @@ func TestPublishPropagatesToReplicaSubscribers(t *testing.T) {
 	masterCfg.EvictionSampleSize = 10
 	masterCfg.DumpPath = ""
 
-	logger := runedblogger.New(masterCfg.LogLevel)
+	logger := stashlogger.New(masterCfg.LogLevel)
 
 	masterStore := storage.NewStore()
 	masterExecutor := command.NewExecutor(masterStore, logger)
@@ -1155,7 +1155,7 @@ func TestWaitReturnsReplicaAcknowledgements(t *testing.T) {
 	masterCfg.EvictionSampleSize = 10
 	masterCfg.DumpPath = ""
 
-	logger := runedblogger.New(masterCfg.LogLevel)
+	logger := stashlogger.New(masterCfg.LogLevel)
 
 	masterStore := storage.NewStore()
 	masterExecutor := command.NewExecutor(masterStore, logger)
@@ -1314,9 +1314,9 @@ func TestReplicationStructuredLogs(t *testing.T) {
 	defer closeTestResource(t, replicaConn)
 	replicaParser := protocol.NewParser(replicaConn)
 
-	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "RuneDB")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "name", "Stash")
 	assertCommandResponse(t, masterConn, masterParser, protocol.Integer{Value: 1}, "WAIT", "1", "1000")
-	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("RuneDB")}, 2*time.Second, "GET", "name")
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("Stash")}, 2*time.Second, "GET", "name")
 
 	cancelReplica()
 	select {
@@ -1362,7 +1362,7 @@ func TestWaitTimesOutWithoutReplicas(t *testing.T) {
 	cfg.EvictionSampleSize = 10
 	cfg.DumpPath = ""
 
-	logger := runedblogger.New(cfg.LogLevel)
+	logger := stashlogger.New(cfg.LogLevel)
 	store := storage.NewStore()
 	executor := command.NewExecutor(store, logger)
 	srv := server.New(cfg, logger, store, executor)
@@ -1406,7 +1406,7 @@ func TestWaitUsesPerClientReplicationOffset(t *testing.T) {
 	masterCfg.EvictionSampleSize = 10
 	masterCfg.DumpPath = ""
 
-	logger := runedblogger.New(masterCfg.LogLevel)
+	logger := stashlogger.New(masterCfg.LogLevel)
 
 	masterStore := storage.NewStore()
 	masterExecutor := command.NewExecutor(masterStore, logger)

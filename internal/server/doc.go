@@ -1,2 +1,2 @@
-// Package server owns the RuneDB TCP listener, connection lifecycle, and request loop.
+// Package server owns the Stash TCP listener, connection lifecycle, and request loop.
 package server

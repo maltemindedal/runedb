@@ -1,6 +1,6 @@
 # Configuration reference
 
-RuneDB is configured entirely through command-line flags. There is no configuration file and no environment-variable support.
+Stash is configured entirely through command-line flags. There is no configuration file and no environment-variable support.
 
 Source of truth: [`internal/config/config.go`](../../internal/config/config.go).
 
@@ -41,7 +41,7 @@ The unit is microseconds, not milliseconds. `0` logs every command; any negative
 
 ```bash
 # Log commands slower than 5ms
-go run ./cmd/runedb --slowlog-log-slower-than 5000
+go run ./cmd/stash --slowlog-log-slower-than 5000
 ```
 
 ### `--appendfsync`

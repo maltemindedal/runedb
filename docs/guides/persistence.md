@@ -1,6 +1,6 @@
 # Persistence
 
-RuneDB offers two persistence mechanisms with different coverage. Choose based on which data types you need to survive a restart.
+Stash offers two persistence mechanisms with different coverage. Choose based on which data types you need to survive a restart.
 
 | | Append-only file (AOF) | RDB snapshot |
 | --- | --- | --- |
@@ -14,10 +14,10 @@ The AOF is the durable option. RDB is useful for a fast string-only snapshot and
 ## Enable the append-only file
 
 ```bash
-go run ./cmd/runedb --port 6379 --aof appendonly.aof --appendfsync everysec
+go run ./cmd/stash --port 6379 --aof appendonly.aof --appendfsync everysec
 ```
 
-Every successful mutating command is appended as a RESP frame. On the next startup, RuneDB replays the file before opening the listener, so no client can observe a partially restored keyspace.
+Every successful mutating command is appended as a RESP frame. On the next startup, Stash replays the file before opening the listener, so no client can observe a partially restored keyspace.
 
 ## Choose a fsync policy
 
@@ -54,13 +54,13 @@ A shutdown snapshot is written by default to `dump.rdb`:
 
 ```bash
 # Write the snapshot elsewhere
-go run ./cmd/runedb --dump /var/lib/runedb/dump.rdb
+go run ./cmd/stash --dump /var/lib/stash/dump.rdb
 
 # Load a snapshot at startup
-go run ./cmd/runedb --rdb /var/lib/runedb/dump.rdb
+go run ./cmd/stash --rdb /var/lib/stash/dump.rdb
 
 # Disable shutdown snapshots
-go run ./cmd/runedb --dump ""
+go run ./cmd/stash --dump ""
 ```
 
 Snapshots are written only on **graceful** shutdown (`SIGINT` or `SIGTERM`). A `SIGKILL` or a crash produces no snapshot — another reason to run with `--aof` if the data matters.

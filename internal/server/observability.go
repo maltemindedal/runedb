@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 const monitorWriteTimeout = 100 * time.Millisecond

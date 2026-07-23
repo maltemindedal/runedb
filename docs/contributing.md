@@ -2,12 +2,12 @@
 
 ## Development setup
 
-Install **Go 1.21 or newer** — the version is pinned in [`go.mod`](../go.mod). Nothing else is required: RuneDB has no external module dependencies.
+Install **Go 1.21 or newer** — the version is pinned in [`go.mod`](../go.mod). Nothing else is required: Stash has no external module dependencies.
 
 ```bash
-git clone https://github.com/maltemindedal/runedb.git
-cd runedb
-go build ./cmd/runedb
+git clone https://github.com/maltemindedal/stash.git
+cd stash
+go build ./cmd/stash
 ```
 
 For linting locally you also need [`golangci-lint`](https://golangci-lint.run/) **v2.11**, the version CI runs.
@@ -18,7 +18,7 @@ These are the checks CI runs, in order. Run them before opening a pull request.
 
 ```bash
 gofmt -s -l .          # must print nothing
-go build ./cmd/runedb
+go build ./cmd/stash
 go vet ./...
 go test ./...
 golangci-lint run
@@ -62,6 +62,6 @@ The integration suite covers AOF replay, RDB loading, replication, event-loop mo
 
 ## Issues and pull requests
 
-Issues are tracked in [GitHub Issues](https://github.com/maltemindedal/runedb/issues). Triage uses five canonical labels — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` — described in [`docs/agents/triage-labels.md`](agents/triage-labels.md).
+Issues are tracked in [GitHub Issues](https://github.com/maltemindedal/stash/issues). Triage uses five canonical labels — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix` — described in [`docs/agents/triage-labels.md`](agents/triage-labels.md).
 
 Pull requests run the `validate` job on every push; `main` additionally runs race tests.

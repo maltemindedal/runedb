@@ -1,6 +1,6 @@
 # Command reference
 
-Every command RuneDB implements. Anything not listed here is unsupported and returns an unknown-command error.
+Every command Stash implements. Anything not listed here is unsupported and returns an unknown-command error.
 
 Source of truth: the command table at [`internal/command/types.go`](../../internal/command/types.go) (`commandSpecs`).
 

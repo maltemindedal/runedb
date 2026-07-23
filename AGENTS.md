@@ -69,7 +69,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues for `maltemindedal/runedb`. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues for `maltemindedal/stash`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

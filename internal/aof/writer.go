@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 var (

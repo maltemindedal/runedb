@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 // ConnMachineState identifies the lifecycle phase of a connection state machine.

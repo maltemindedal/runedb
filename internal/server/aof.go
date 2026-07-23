@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/aof"
-	"github.com/maltemindedal/runedb/internal/protocol"
-	"github.com/maltemindedal/runedb/internal/rdb"
+	"github.com/maltemindedal/stash/internal/aof"
+	"github.com/maltemindedal/stash/internal/protocol"
+	"github.com/maltemindedal/stash/internal/rdb"
 )
 
 func (s *Server) initializePersistence(ctx context.Context) error {

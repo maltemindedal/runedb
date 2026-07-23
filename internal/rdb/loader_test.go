@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/runedb/internal/storage"
+	"github.com/maltemindedal/stash/internal/storage"
 )
 
 // TestLoaderRejectsOversizedString verifies a forged length prefix is rejected
@@ -96,7 +96,7 @@ func TestLoadReader(t *testing.T) {
 				auxField([]byte("redis-ver"), []byte("7.2.0")),
 				selectDB(0),
 				resizeDB(2, 1),
-				stringEntry(rawString([]byte("name")), rawString([]byte("RuneDB"))),
+				stringEntry(rawString([]byte("name")), rawString([]byte("Stash"))),
 			),
 			now: 1,
 			assert: func(t *testing.T, store *storage.Store, stats Stats) {
@@ -104,7 +104,7 @@ func TestLoadReader(t *testing.T) {
 				if stats.LoadedKeys != 1 || stats.SkippedExpiredKeys != 0 {
 					t.Fatalf("stats = %#v, want 1 loaded and 0 skipped", stats)
 				}
-				assertStoredString(t, store, "name", "RuneDB")
+				assertStoredString(t, store, "name", "Stash")
 			},
 		},
 		{

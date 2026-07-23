@@ -9,7 +9,7 @@ import (
 func TestSlowlogRegistry(t *testing.T) {
 	t.Run("retains entries newest first and clones commands", func(t *testing.T) {
 		registry := NewSlowlogRegistry()
-		command := []string{"SET", "name", "RuneDB"}
+		command := []string{"SET", "name", "Stash"}
 		registry.Record(SlowlogEntry{Timestamp: time.Unix(1, 0), Duration: time.Millisecond, Command: command})
 		command[1] = "mutated"
 

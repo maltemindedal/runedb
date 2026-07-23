@@ -1,2 +1,2 @@
-// Package config defines runtime configuration for the RuneDB server.
+// Package config defines runtime configuration for the Stash server.
 package config

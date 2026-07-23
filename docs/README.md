@@ -1,10 +1,10 @@
-# RuneDB documentation
+# Stash documentation
 
-Everything documented here is verified against the code. When the two disagree, the code wins — [open an issue](https://github.com/maltemindedal/runedb/issues) or fix the doc.
+Everything documented here is verified against the code. When the two disagree, the code wins — [open an issue](https://github.com/maltemindedal/stash/issues) or fix the doc.
 
 ## Tutorial
 
-Start here if you have never run RuneDB.
+Start here if you have never run Stash.
 
 | Document | What it covers |
 | --- | --- |

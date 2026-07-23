@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/maltemindedal/runedb/internal/protocol"
+	"github.com/maltemindedal/stash/internal/protocol"
 )
 
 // TestGeoBoundingDeltasUsesPolewardEdge verifies the longitude half-width is
