@@ -1,6 +1,21 @@
-# RuneDB Architecture
+# Architecture overview
 
 This repository is structured as a phase-by-phase implementation of a Redis-compatible TCP server in Go. The codebase now covers the raw TCP server, RESP parsing/encoding, sharded in-memory storage, transactions, pub/sub, replication, RDB snapshots, append-only-file durability, memory-pressure eviction, and basic operational observability while still keeping clear package seams for later phases.
+
+For domain vocabulary, see [`CONTEXT.md`](../../CONTEXT.md) at the repository root.
+
+## Request flow
+
+```mermaid
+flowchart LR
+    C[Client] -->|RESP bytes| S[internal/server]
+    S -->|frames| P[internal/protocol]
+    P -->|Request| X[internal/command]
+    X -->|read/write| ST[internal/storage]
+    X -->|durable frames| A[internal/aof]
+    X -->|propagated frames| R[Replicas]
+    ST -->|snapshot| D[internal/rdb]
+```
 
 ## Package layout
 
@@ -14,7 +29,7 @@ Contains the `main` package and the production binary entrypoint. It is responsi
 
 ### `internal/config`
 
-Holds startup configuration such as host, port, log level, TTL eviction settings, persistence paths, replication/auth settings, `maxmemory`, and slowlog threshold.
+Holds startup configuration such as host, port, log level, TTL eviction settings, persistence paths, replication/auth settings, `maxmemory`, and slowlog threshold. Every flag is documented in the [configuration reference](../reference/configuration.md).
 
 ### `internal/logger`
 
@@ -61,7 +76,7 @@ Current responsibilities:
 
 Translates RESP arrays into executable requests and dispatches them to handlers.
 
-Current command surface includes strings, hashes, lists, sets, sorted sets, streams, transactions, pub/sub, replication handshakes, `WAIT`, `BGREWRITEAOF`, `INFO`, `SLOWLOG`, and `MONITOR`.
+Current command surface includes strings, bitmaps, HyperLogLog, hashes, lists, sets, sorted sets, geospatial commands, streams, transactions, pub/sub, replication handshakes, `WAIT`, `BGREWRITEAOF`, `INFO`, `SLOWLOG`, and `MONITOR`. Each command is registered in a single `commandSpecs` table carrying its handler, argument validator, and replication/durability flags; the [command reference](../reference/commands.md) is the reader-facing view of that table.
 
 ### `internal/server`
 

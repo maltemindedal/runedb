@@ -1,0 +1,75 @@
+# Persistence
+
+RuneDB offers two persistence mechanisms with different coverage. Choose based on which data types you need to survive a restart.
+
+| | Append-only file (AOF) | RDB snapshot |
+| --- | --- | --- |
+| Data types covered | All supported types | **String keys only** |
+| Written | On every durable command | At graceful shutdown |
+| Read | At startup | At startup, DB `0` only |
+| Flags | `--aof`, `--appendfsync` | `--dump`, `--rdb` |
+
+The AOF is the durable option. RDB is useful for a fast string-only snapshot and for the replication handshake, but it silently omits lists, hashes, sets, sorted sets, and streams — it logs a warning naming the count of skipped keys.
+
+## Enable the append-only file
+
+```bash
+go run ./cmd/runedb --port 6379 --aof appendonly.aof --appendfsync everysec
+```
+
+Every successful mutating command is appended as a RESP frame. On the next startup, RuneDB replays the file before opening the listener, so no client can observe a partially restored keyspace.
+
+## Choose a fsync policy
+
+| `--appendfsync` | Behavior | Trade-off |
+| --- | --- | --- |
+| `always` | Fsync after every write | Strongest durability, slowest |
+| `everysec` | Fsync once per second (default) | Loses at most ~1s of writes |
+| `no` | Leave flushing to the OS | Fastest, weakest guarantee |
+
+## Compact the file
+
+The AOF grows without bound as commands accumulate. `BGREWRITEAOF` compacts it:
+
+```
+127.0.0.1:6379> BGREWRITEAOF
+Background append only file rewriting started
+```
+
+The rewrite runs in the background: it snapshots live durable state, writes a minimal equivalent command stream, and atomically swaps the new file into place. Writes continue during the rewrite.
+
+## Understand the AOF/RDB precedence
+
+When both `--aof` and `--rdb` are set and the AOF file exists and is non-empty, the AOF wins and RDB loading is skipped. The server logs this decision:
+
+```
+level=INFO msg="AOF detected, skipping RDB startup load" aof_path=appendonly.aof rdb_path=dump.rdb
+```
+
+This avoids replaying a stale snapshot over a newer command log.
+
+## Configure RDB snapshots
+
+A shutdown snapshot is written by default to `dump.rdb`:
+
+```bash
+# Write the snapshot elsewhere
+go run ./cmd/runedb --dump /var/lib/runedb/dump.rdb
+
+# Load a snapshot at startup
+go run ./cmd/runedb --rdb /var/lib/runedb/dump.rdb
+
+# Disable shutdown snapshots
+go run ./cmd/runedb --dump ""
+```
+
+Snapshots are written only on **graceful** shutdown (`SIGINT` or `SIGTERM`). A `SIGKILL` or a crash produces no snapshot — another reason to run with `--aof` if the data matters.
+
+## What TTLs do across a restart
+
+Relative expirations (`SET key value EX 60`) are rewritten to an absolute `PXAT` frame before being written to the AOF. Replay therefore anchors the TTL to the original clock rather than restarting the countdown, and keys that expired while the server was down are dropped instead of being resurrected with a fresh lease.
+
+## Related
+
+- [Configuration reference](../reference/configuration.md) — flag defaults and validation
+- [Replication](replication.md) — how replicas use the RDB snapshot during handshake
