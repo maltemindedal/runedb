@@ -5,7 +5,7 @@ import "fmt"
 // integerFromLine constructs a RESP integer value from a line body. A single
 // optional leading sign is permitted, matching Redis integer frames.
 func integerFromLine(line []byte) (Value, error) {
-	value, err := parseIntBytes(line, 10, 64)
+	value, err := parseIntBytes(line)
 	if err != nil {
 		return nil, fmt.Errorf("protocol: parse integer: %w", err)
 	}

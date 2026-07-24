@@ -59,6 +59,7 @@ type ProtocolError struct {
 	message string
 }
 
+// Error returns the protocol validation message.
 func (e ProtocolError) Error() string {
 	return e.message
 }
@@ -74,14 +75,17 @@ type prefixedError struct {
 	cause   error
 }
 
+// Error returns the wire message without its RESP error prefix.
 func (e *prefixedError) Error() string {
 	return e.message
 }
 
+// Unwrap exposes the underlying cause to errors.Is and errors.As.
 func (e *prefixedError) Unwrap() error {
 	return e.cause
 }
 
+// RESPErrorPrefix returns the wire prefix this error is reported under.
 func (e *prefixedError) RESPErrorPrefix() string {
 	return e.prefix
 }

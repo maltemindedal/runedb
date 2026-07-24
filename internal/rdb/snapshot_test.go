@@ -14,49 +14,56 @@ import (
 	"github.com/maltemindedal/stash/internal/storage"
 )
 
-func TestReplaceFileSyncsDirectory(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "dump.rdb")
-	temp := filepath.Join(dir, "dump.rdb.tmp")
-	if err := os.WriteFile(temp, []byte("payload"), 0o600); err != nil {
-		t.Fatalf("write temp: %v", err)
+// TestReplaceFileDirectorySync covers the durability step: a rename is not on
+// disk until the containing directory is fsynced, so replaceFile must call
+// syncDir for the target and must not report success when that sync fails.
+func TestReplaceFileDirectorySync(t *testing.T) {
+	newTempAndTarget := func(t *testing.T) (string, string) {
+		t.Helper()
+
+		dir := t.TempDir()
+		target := filepath.Join(dir, "dump.rdb")
+		temp := filepath.Join(dir, "dump.rdb.tmp")
+		if err := os.WriteFile(temp, []byte("payload"), 0o600); err != nil {
+			t.Fatalf("write temp: %v", err)
+		}
+		return temp, target
 	}
 
-	var syncedDir string
-	original := syncDir
-	syncDir = func(path string) error {
-		syncedDir = path
-		return original(path)
-	}
-	defer func() { syncDir = original }()
+	t.Run("syncs the target directory", func(t *testing.T) {
+		temp, target := newTempAndTarget(t)
 
-	if err := replaceFile(temp, target); err != nil {
-		t.Fatalf("replaceFile() error = %v", err)
-	}
-	if syncedDir != target {
-		t.Fatalf("syncDir path = %q, want %q", syncedDir, target)
-	}
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("target missing after replace: %v", err)
-	}
-}
+		var syncedDir string
+		original := syncDir
+		syncDir = func(path string) error {
+			syncedDir = path
+			return original(path)
+		}
+		defer func() { syncDir = original }()
 
-func TestReplaceFilePropagatesSyncError(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "dump.rdb")
-	temp := filepath.Join(dir, "dump.rdb.tmp")
-	if err := os.WriteFile(temp, []byte("payload"), 0o600); err != nil {
-		t.Fatalf("write temp: %v", err)
-	}
+		if err := replaceFile(temp, target); err != nil {
+			t.Fatalf("replaceFile() error = %v", err)
+		}
+		if syncedDir != target {
+			t.Fatalf("syncDir path = %q, want %q", syncedDir, target)
+		}
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("target missing after replace: %v", err)
+		}
+	})
 
-	sentinel := errors.New("sync failed")
-	original := syncDir
-	syncDir = func(string) error { return sentinel }
-	defer func() { syncDir = original }()
+	t.Run("propagates a sync failure", func(t *testing.T) {
+		temp, target := newTempAndTarget(t)
 
-	if err := replaceFile(temp, target); !errors.Is(err, sentinel) {
-		t.Fatalf("replaceFile() error = %v, want wrapped %v", err, sentinel)
-	}
+		sentinel := errors.New("sync failed")
+		original := syncDir
+		syncDir = func(string) error { return sentinel }
+		defer func() { syncDir = original }()
+
+		if err := replaceFile(temp, target); !errors.Is(err, sentinel) {
+			t.Fatalf("replaceFile() error = %v, want wrapped %v", err, sentinel)
+		}
+	})
 }
 
 func TestEmptySnapshotReturnsIndependentCopies(t *testing.T) {
@@ -158,62 +165,57 @@ func TestSaveSnapshotReplacesExistingFile(t *testing.T) {
 	}
 }
 
+// TestReplaceFileRetriesAfterExistConflict covers the Windows path where rename
+// onto an existing target fails: replaceFile must remove the target once and
+// retry. The conflict reaches it in more than one shape depending on the
+// platform, so every shape must be recognised.
 func TestReplaceFileRetriesAfterExistConflict(t *testing.T) {
-	tempPath, targetPath, originalRename, originalRemove := replaceFileTestFixture(t)
-
-	renameCalls := 0
-	removeCalls := 0
-	renameFile = func(oldpath string, newpath string) error {
-		renameCalls++
-		if renameCalls == 1 {
-			return fs.ErrExist
-		}
-		return originalRename(oldpath, newpath)
-	}
-	removeFile = func(name string) error {
-		removeCalls++
-		return originalRemove(name)
-	}
-
-	if err := replaceFile(tempPath, targetPath); err != nil {
-		t.Fatalf("replaceFile() error = %v", err)
-	}
-	if renameCalls != 2 {
-		t.Fatalf("rename calls = %d, want 2", renameCalls)
-	}
-	if removeCalls != 1 {
-		t.Fatalf("remove calls = %d, want 1", removeCalls)
-	}
-	assertFileContents(t, targetPath, "new")
-}
-
-func TestReplaceFileRetriesAfterWrappedRenameExistConflict(t *testing.T) {
-	tempPath, targetPath, originalRename, originalRemove := replaceFileTestFixture(t)
-
-	renameCalls := 0
-	removeCalls := 0
-	renameFile = func(oldpath string, newpath string) error {
-		renameCalls++
-		if renameCalls == 1 {
-			return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EEXIST}
-		}
-		return originalRename(oldpath, newpath)
-	}
-	removeFile = func(name string) error {
-		removeCalls++
-		return originalRemove(name)
+	tests := []struct {
+		name     string
+		conflict func(oldpath, newpath string) error
+	}{
+		{
+			name:     "bare fs.ErrExist",
+			conflict: func(_, _ string) error { return fs.ErrExist },
+		},
+		{
+			name: "LinkError wrapping EEXIST",
+			conflict: func(oldpath, newpath string) error {
+				return &os.LinkError{Op: "rename", Old: oldpath, New: newpath, Err: syscall.EEXIST}
+			},
+		},
 	}
 
-	if err := replaceFile(tempPath, targetPath); err != nil {
-		t.Fatalf("replaceFile() error = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tempPath, targetPath, originalRename, originalRemove := replaceFileTestFixture(t)
+
+			renameCalls := 0
+			removeCalls := 0
+			renameFile = func(oldpath string, newpath string) error {
+				renameCalls++
+				if renameCalls == 1 {
+					return tt.conflict(oldpath, newpath)
+				}
+				return originalRename(oldpath, newpath)
+			}
+			removeFile = func(name string) error {
+				removeCalls++
+				return originalRemove(name)
+			}
+
+			if err := replaceFile(tempPath, targetPath); err != nil {
+				t.Fatalf("replaceFile() error = %v", err)
+			}
+			if renameCalls != 2 {
+				t.Fatalf("rename calls = %d, want 2", renameCalls)
+			}
+			if removeCalls != 1 {
+				t.Fatalf("remove calls = %d, want 1", removeCalls)
+			}
+			assertFileContents(t, targetPath, "new")
+		})
 	}
-	if renameCalls != 2 {
-		t.Fatalf("rename calls = %d, want 2", renameCalls)
-	}
-	if removeCalls != 1 {
-		t.Fatalf("remove calls = %d, want 1", removeCalls)
-	}
-	assertFileContents(t, targetPath, "new")
 }
 
 func TestReplaceFilePreservesExistingFileOnUnexpectedRenameFailure(t *testing.T) {

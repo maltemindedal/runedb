@@ -26,8 +26,11 @@ type IncompleteError struct {
 	Need int
 }
 
+// Error reports the same message as the bare ErrIncomplete sentinel, so the
+// byte hint stays an implementation detail of the error value.
 func (e *IncompleteError) Error() string { return ErrIncomplete.Error() }
 
+// Unwrap returns ErrIncomplete so errors.Is matches both error shapes.
 func (e *IncompleteError) Unwrap() error { return ErrIncomplete }
 
 // incompleteNeed returns an incomplete-frame error carrying a total-bytes hint,

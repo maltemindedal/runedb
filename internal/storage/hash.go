@@ -67,12 +67,7 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return nil, false, nil
 	}
 	raw, exists, err := value.hashGet(field)
@@ -153,12 +148,7 @@ func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return []HashFieldValue{}, nil
 	}
 	entries, err := value.hashEntries()

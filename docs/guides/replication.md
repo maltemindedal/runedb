@@ -1,8 +1,10 @@
 # Setting up replication
 
-Stash supports leader/follower replication over the standard Redis handshake (`REPLCONF`, `PSYNC`). A replica connects to a master, receives a snapshot of current state, then applies a live stream of propagated commands.
+Stash supports leader/follower replication over the standard Redis handshake (`REPLCONF`, `PSYNC`). A replica connects to a master, receives an RDB snapshot of current state, then applies a live stream of propagated commands. As in Redis, a full resync *replaces* the replica's dataset: whatever the replica loaded from its own AOF or RDB is discarded in favour of the master's snapshot.
 
 > **Scope:** replication covers the `REPLCONF`, `PSYNC`, and `WAIT` surface. It is not a complete Redis replication implementation — there is no partial resynchronization, no replica chaining, and no automatic failover.
+
+> **Snapshot fidelity:** the full-resync snapshot uses the same RDB encoder as shutdown snapshots, so it carries DB `0` string keys only. Collections that exist on the master before a replica attaches (hashes, lists, sets, sorted sets, streams) are *not* transferred by the handshake; the master logs a warning naming how many keys it skipped. Writes propagated after the handshake cover every type. To bring a replica fully into sync for collection keys, write them after the replica has attached.
 
 ## Start a master and a replica
 

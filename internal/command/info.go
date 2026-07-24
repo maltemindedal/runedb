@@ -102,7 +102,7 @@ func (e *Executor) appendInfoReplication(buf *bytes.Buffer) {
 	appendInfoField(buf, "slave_repl_offset", stats.ReplicaOffset)
 	appendInfoField(buf, "connected_slaves", len(stats.Replicas))
 
-	replicas := append([]serverReplicaInfo(nil), stats.Replicas...)
+	replicas := append([]server.ReplicaInfo(nil), stats.Replicas...)
 	sort.Slice(replicas, func(i, j int) bool { return replicas[i].ID < replicas[j].ID })
 	for i, replica := range replicas {
 		appendInfoField(buf, fmt.Sprintf("slave%d", i), fmt.Sprintf("id=%d,port=%d,offset=%d", replica.ID, replica.ListeningPort, replica.AckOffset))
@@ -118,46 +118,12 @@ func (e *Executor) appendInfoClients(buf *bytes.Buffer) {
 	appendInfoField(buf, "total_commands_processed", stats.CommandsProcessed)
 }
 
-func (e *Executor) serverStats() commandServerStats {
+func (e *Executor) serverStats() server.Stats {
 	if e.serverStatsProvider == nil {
-		return commandServerStats{Role: "master"}
+		return server.Stats{Role: "master"}
 	}
-	stats := e.serverStatsProvider()
-	return commandServerStats{
-		ConnectedClients:    stats.ConnectedClients,
-		MonitoringClients:   stats.MonitoringClients,
-		CommandsProcessed:   stats.CommandsProcessed,
-		Role:                stats.Role,
-		MasterReplicationID: stats.MasterReplicationID,
-		MasterOffset:        stats.MasterOffset,
-		ReplicaOffset:       stats.ReplicaOffset,
-		Replicas:            toCommandReplicaInfo(stats.Replicas),
-	}
-}
 
-type commandServerStats struct {
-	ConnectedClients    int
-	MonitoringClients   int
-	CommandsProcessed   int64
-	Role                string
-	MasterReplicationID string
-	MasterOffset        int64
-	ReplicaOffset       int64
-	Replicas            []serverReplicaInfo
-}
-
-type serverReplicaInfo struct {
-	ID            uint64
-	ListeningPort int
-	AckOffset     int64
-}
-
-func toCommandReplicaInfo(replicas []server.ReplicaInfo) []serverReplicaInfo {
-	converted := make([]serverReplicaInfo, 0, len(replicas))
-	for _, replica := range replicas {
-		converted = append(converted, serverReplicaInfo{ID: replica.ID, ListeningPort: replica.ListeningPort, AckOffset: replica.AckOffset})
-	}
-	return converted
+	return e.serverStatsProvider()
 }
 
 func appendInfoField(buf *bytes.Buffer, name string, value any) {

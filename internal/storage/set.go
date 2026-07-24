@@ -67,12 +67,7 @@ func (s *Store) SIsMember(key string, member []byte) (bool, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return false, nil
 	}
 	exists, err := value.setContains(member)
@@ -149,12 +144,7 @@ func (s *Store) SMembers(key string) ([][]byte, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return [][]byte{}, nil
 	}
 	members, err := value.setMembers()

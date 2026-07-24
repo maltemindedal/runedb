@@ -69,7 +69,7 @@ type Server struct {
 	logger            *slog.Logger
 	store             *storage.Store
 	executor          executor
-	registry          *Registry
+	registry          *ClientRegistry
 	replicaPeers      *ReplicaRegistry
 	watchRegistry     *WatchRegistry
 	pubSubRegistry    *PubSubRegistry
@@ -99,7 +99,7 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 		logger:          logger,
 		store:           store,
 		executor:        executor,
-		registry:        NewRegistry(),
+		registry:        NewClientRegistry(),
 		replicaPeers:    NewReplicaRegistry(),
 		monitorRegistry: NewMonitorRegistry(),
 		slowlogRegistry: NewSlowlogRegistry(),

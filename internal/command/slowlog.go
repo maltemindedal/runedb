@@ -9,10 +9,6 @@ import (
 )
 
 func (e *Executor) handleSlowlog(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) == 0 {
-		return nil, wrongNumberOfArgumentsError("SLOWLOG")
-	}
-
 	subcommand := strings.ToUpper(string(request.Args[0]))
 	switch subcommand {
 	case "GET":
