@@ -19,6 +19,7 @@ Source of truth: [`internal/config/config.go`](../../internal/config/config.go).
 | `--appendfsync` | string | `everysec` | Fsync policy: `always`, `everysec`, or `no`. Rejected at startup if the value is anything else. |
 | `--maxmemory` | int64 | `0` | Approximate keyspace memory limit in bytes. `0` disables memory-pressure eviction. Negative values are rejected. |
 | `--maxclients` | int | `10000` | Maximum concurrent client connections. `0` disables the limit. Negative values are rejected. |
+| `--slowlog-log-slower-than` | int | `10000` | Slowlog threshold in **microseconds**. `0` logs every command; any negative value disables the slowlog. See the [note below](#--slowlog-log-slower-than). |
 | `--replicaof` | string | *(empty)* | Upstream master address in `host:port` form. Setting it puts the server in replica mode. |
 | `--masterauth` | string | *(empty)* | Password the replica uses to `AUTH` against a password-protected master. |
 | `--requirepass` | string | *(empty)* | Password clients must supply via `AUTH`. Empty disables authentication. |

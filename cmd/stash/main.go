@@ -1,3 +1,8 @@
+// Command stash runs the Redis-compatible TCP key/value server.
+//
+// It parses command-line configuration, wires the storage engine, command
+// executor, and TCP server together, and serves clients until a shutdown
+// signal arrives. See docs/reference/configuration.md for the flag surface.
 package main
 
 import (

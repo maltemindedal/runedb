@@ -40,7 +40,7 @@ Stash is a Go implementation of a Redis-compatible TCP key/value server. The pro
 ## Boundaries
 
 - RESP3 support is limited to protocol-layer boolean/null parsing, encoding, and coercion; command behavior remains RESP2-centric.
-- RDB loading is limited to DB `0` string keys.
+- RDB loading supports DB `0` string keys only, and rejects rather than skips: a file selecting another database, carrying a non-string value type, or using an opcode the loader does not implement fails startup instead of loading partially. Snapshot *writing* is asymmetric — it warns and skips unsupported keys, because it can enumerate what it cannot encode, while the loader cannot skip a value whose encoding it cannot parse.
 - Memory accounting is approximate keyspace accounting, not exact process RSS accounting.
 - Replication supports the current `REPLCONF`, `PSYNC`, and `WAIT` surface but is not a complete Redis replication implementation.
 - Redis compatibility is scoped to commands explicitly implemented in `internal/command`; unsupported modifiers should fail explicitly rather than being silently accepted.
@@ -52,4 +52,4 @@ Stash is a Go implementation of a Redis-compatible TCP key/value server. The pro
 
 - Use the glossary terms above when naming issues, tests, refactors, and architecture notes.
 - Update this file when a new domain concept becomes stable in the codebase.
-- Use `docs/ARCHITECTURE.md` for package responsibility details and design rationale.
+- Use `docs/architecture/overview.md` for package responsibility details and design rationale.

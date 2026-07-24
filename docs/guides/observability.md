@@ -74,7 +74,7 @@ Query it:
 OK
 ```
 
-`SLOWLOG GET` takes an optional non-negative count; without one it returns all buffered entries. Each entry carries an ID, a Unix timestamp, a duration in microseconds, and the command arguments.
+`SLOWLOG GET` takes an optional non-negative count; without one it returns all buffered entries. Each entry is a six-element array, matching the Redis reply shape: an ID, a Unix timestamp, a duration in microseconds, the command arguments, the client address, and a client name. Stash does not implement `CLIENT SETNAME`, so the client-name field is always an empty string.
 
 `AUTH` arguments are redacted before storage. Other arguments are stored verbatim.
 

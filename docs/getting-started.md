@@ -121,7 +121,7 @@ Restart it with that snapshot to confirm your data survived:
 go run ./cmd/stash --port 6379 --rdb dump.rdb
 ```
 
-> **Note:** RDB support covers string keys only, in both directions. The shutdown snapshot exports string values and logs a warning for every key of another type it skips; startup loading restores DB `0` string keys. For full-fidelity durability across all data types, use the [append-only file](guides/persistence.md) instead.
+> **Note:** RDB support covers string keys only, in both directions, but the two directions differ in strictness. The shutdown snapshot exports string values and logs a warning for every key of another type it skips. Startup loading restores DB `0` string keys and *refuses to start* if the file selects another database, holds a non-string value, or uses an unimplemented opcode — an unparseable value cannot be skipped without losing the rest of the stream, so loading a foreign Redis dump fails loudly rather than silently dropping data. For full-fidelity durability across all data types, use the [append-only file](guides/persistence.md) instead.
 
 ## Where to go next
 

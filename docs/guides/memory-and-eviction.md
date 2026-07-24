@@ -61,6 +61,16 @@ maxmemory_human:100.00M
 
 `mem_fragmentation_ratio` in that output is a hardcoded placeholder, not a measurement. See [Observability](observability.md).
 
+### Evictions are replicated and made durable
+
+An eviction is a keyspace mutation, so it is not confined to the server that performed it. When memory pressure evicts keys, the server synthesises a `DEL` frame naming them and treats it like any other write:
+
+- it is **propagated** to attached replicas, so a replica does not keep serving a key the master has dropped;
+- it is **appended to the AOF**, so replaying the log does not resurrect the key;
+- it **invalidates `WATCH`** on the evicted keys, so a transaction guarding one aborts.
+
+A replica enforces its own `--maxmemory` and can therefore evict on its own, but an eviction that happens while applying a replicated command is not sent back upstream or onward — only recorded in the replica's own AOF. Set `--maxmemory` no lower on a replica than on its master, or the replica will drop keys the master still holds.
+
 ## Compact encodings
 
 Small collections use compact internal encodings that store entries in a flat structure rather than a map, reducing per-key overhead for the common case:
