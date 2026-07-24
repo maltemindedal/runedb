@@ -56,20 +56,26 @@ func epollEventBits(readable, writable bool) uint32 {
 	return events
 }
 
+// Add registers fd with the epoll set for read readiness.
 func (p *epollPoller) Add(fd int) error {
 	event := syscall.EpollEvent{Events: epollEventBits(true, false), Fd: int32(fd)}
 	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_ADD, fd, &event)
 }
 
+// Set rewrites fd's epoll interest mask via EPOLL_CTL_MOD.
 func (p *epollPoller) Set(fd int, readable, writable bool) error {
 	event := syscall.EpollEvent{Events: epollEventBits(readable, writable), Fd: int32(fd)}
 	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_MOD, fd, &event)
 }
 
+// Remove deregisters fd via EPOLL_CTL_DEL.
 func (p *epollPoller) Remove(fd int) error {
 	return syscall.EpollCtl(p.epfd, syscall.EPOLL_CTL_DEL, fd, nil)
 }
 
+// Wait blocks in epoll_wait, retrying on EINTR, and translates the returned
+// epoll events into pollEvent entries. Wakeup-pipe readiness is drained and
+// not reported to the caller.
 func (p *epollPoller) Wait(events []pollEvent) (int, error) {
 	for {
 		n, err := syscall.EpollWait(p.epfd, p.epEvents, -1)
@@ -102,10 +108,12 @@ func (p *epollPoller) Wait(events []pollEvent) (int, error) {
 	}
 }
 
+// Wake writes to the wakeup pipe so a blocked Wait returns.
 func (p *epollPoller) Wake() error {
 	return p.wake.wake()
 }
 
+// Close releases the wakeup pipe and the epoll descriptor.
 func (p *epollPoller) Close() error {
 	p.wake.close()
 	return syscall.Close(p.epfd)

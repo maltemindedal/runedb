@@ -76,10 +76,12 @@ func (p *kqueuePoller) setFilter(fd int, filter int16, enable bool) error {
 	return err
 }
 
+// Add registers fd with the kqueue for read readiness.
 func (p *kqueuePoller) Add(fd int) error {
 	return p.change(fd, syscall.EVFILT_READ, syscall.EV_ADD)
 }
 
+// Set rewrites fd's kqueue filters to match the requested interest set.
 func (p *kqueuePoller) Set(fd int, readable, writable bool) error {
 	if err := p.setFilter(fd, syscall.EVFILT_READ, readable); err != nil {
 		return err
@@ -87,6 +89,7 @@ func (p *kqueuePoller) Set(fd int, readable, writable bool) error {
 	return p.setFilter(fd, syscall.EVFILT_WRITE, writable)
 }
 
+// Remove deletes fd's read and write filters from the kqueue.
 func (p *kqueuePoller) Remove(fd int) error {
 	readErr := p.setFilter(fd, syscall.EVFILT_READ, false)
 	writeErr := p.setFilter(fd, syscall.EVFILT_WRITE, false)
@@ -96,6 +99,9 @@ func (p *kqueuePoller) Remove(fd int) error {
 	return writeErr
 }
 
+// Wait blocks in kevent, retrying on EINTR, and translates the returned
+// kevents into pollEvent entries. Wakeup-pipe readiness is drained and not
+// reported to the caller.
 func (p *kqueuePoller) Wait(events []pollEvent) (int, error) {
 	for {
 		n, err := syscall.Kevent(p.kq, nil, p.kqEvents, nil)
@@ -128,10 +134,12 @@ func (p *kqueuePoller) Wait(events []pollEvent) (int, error) {
 	}
 }
 
+// Wake writes to the wakeup pipe so a blocked Wait returns.
 func (p *kqueuePoller) Wake() error {
 	return p.wake.wake()
 }
 
+// Close releases the wakeup pipe and the kqueue descriptor.
 func (p *kqueuePoller) Close() error {
 	p.wake.close()
 	return syscall.Close(p.kq)

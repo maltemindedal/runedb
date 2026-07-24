@@ -476,6 +476,16 @@ func (l *eventLoop) connReadable(conn *eventConn) {
 // readiness interest. Execution pauses while output is backed up and resumes
 // from writable events once the socket drains.
 func (l *eventLoop) processConn(conn *eventConn) {
+	// On the goroutine path a panic costs one connection (see handleConnection).
+	// Every client shares this goroutine, so without the same recovery here a
+	// single malformed frame would take down every connected client at once.
+	defer func() {
+		if r := recover(); r != nil {
+			conn.logger.Error("recovered from panic in event loop connection", "panic", r)
+			l.closeConn(conn, fmt.Errorf("server: panic processing connection: %v", r))
+		}
+	}()
+
 	for conn.machine.State() != ConnStateClosed {
 		if conn.machine.PendingOutputBytes() > eventLoopOutputHighWater {
 			if !l.flushOnce(conn) {
@@ -594,6 +604,8 @@ type fdWriter struct {
 	fd int
 }
 
+// Write pushes p to the socket, retrying short writes and EINTR. It reports
+// errEventLoopWouldBlock with a partial count when the kernel send buffer fills.
 func (w fdWriter) Write(p []byte) (int, error) {
 	total := 0
 	for total < len(p) {
@@ -623,6 +635,8 @@ type eventConnPushWriter struct {
 	conn *eventConn
 }
 
+// Write queues p for the loop goroutine to flush. It is safe to call from any
+// goroutine; the bytes are not on the wire when it returns.
 func (w *eventConnPushWriter) Write(p []byte) (int, error) {
 	return w.loop.queuePush(w.conn, p)
 }
@@ -636,11 +650,14 @@ type eventConnHandle struct {
 	conn *eventConn
 }
 
+// Close asks the loop goroutine to tear the connection down and returns
+// immediately; the socket is still open when it returns.
 func (h *eventConnHandle) Close() error {
 	h.loop.requestClose(h.conn)
 	return nil
 }
 
+// RemoteAddr returns the peer address captured when the connection was accepted.
 func (h *eventConnHandle) RemoteAddr() net.Addr { return h.conn.remoteAddr }
 
 func sockaddrTCPAddr(sa syscall.Sockaddr) net.Addr {

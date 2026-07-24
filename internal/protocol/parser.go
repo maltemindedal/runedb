@@ -41,6 +41,10 @@ func NewParser(reader io.Reader) *Parser {
 
 // Parse reads the next RESP value from the underlying reader.
 func (p *Parser) Parse() (Value, error) {
+	return p.parse(0)
+}
+
+func (p *Parser) parse(depth int) (Value, error) {
 	prefix, err := p.reader.ReadByte()
 	if err != nil {
 		return nil, err
@@ -68,7 +72,7 @@ func (p *Parser) Parse() (Value, error) {
 	case '$':
 		return p.parseBulkString()
 	case '*':
-		return p.parseArray()
+		return p.parseArray(depth)
 	case '#':
 		line, err := p.readLineBytes()
 		if err != nil {
@@ -117,7 +121,15 @@ func (p *Parser) parseBulkString() (Value, error) {
 	return BulkString{Data: payload}, nil
 }
 
-func (p *Parser) parseArray() (Value, error) {
+func (p *Parser) parseArray(depth int) (Value, error) {
+	// Parse recurses per nesting level, so an unbounded chain of "*1\r\n"
+	// headers would grow this goroutine's stack until the runtime's stack
+	// limit aborts the process — a fatal error no recover can catch. Decode
+	// bounds the buffered path the same way with the same constant.
+	if depth >= maxNestingDepth {
+		return nil, fmt.Errorf("protocol: array nesting exceeds %d levels", maxNestingDepth)
+	}
+
 	line, err := p.readLineBytes()
 	if err != nil {
 		return nil, err
@@ -139,7 +151,7 @@ func (p *Parser) parseArray() (Value, error) {
 
 	elements := make([]Value, 0, min(count, 64))
 	for i := 0; i < count; i++ {
-		element, err := p.Parse()
+		element, err := p.parse(depth + 1)
 		if err != nil {
 			return nil, fmt.Errorf("protocol: parse array element %d: %w", i, err)
 		}
@@ -211,7 +223,7 @@ func trimCRLF(line []byte) ([]byte, error) {
 }
 
 func parseDecimalInt(raw []byte) (int, error) {
-	value, err := parseIntBytes(raw, 10, 64)
+	value, err := parseIntBytes(raw)
 	if err != nil {
 		return 0, err
 	}
@@ -225,15 +237,11 @@ func parseDecimalInt(raw []byte) (int, error) {
 	return int(value), nil
 }
 
-func parseIntBytes(raw []byte, base, bitSize int) (int64, error) {
+// parseIntBytes parses a base-10 signed 64-bit integer directly from raw,
+// avoiding the string allocation strconv.ParseInt would require.
+func parseIntBytes(raw []byte) (int64, error) {
 	if len(raw) == 0 {
 		return 0, strconv.ErrSyntax
-	}
-	if base != 10 {
-		return 0, fmt.Errorf("unsupported base %d", base)
-	}
-	if bitSize <= 0 || bitSize > 64 {
-		return 0, fmt.Errorf("unsupported bit size %d", bitSize)
 	}
 
 	negative := false
@@ -245,14 +253,15 @@ func parseIntBytes(raw []byte, base, bitSize int) (int64, error) {
 		}
 	}
 
-	maxAbs := uint64(1) << (bitSize - 1)
-	maxPositive := maxAbs - 1
-	limit := maxPositive
+	// The negative range extends one past the positive range, so -9223372036854775808
+	// parses while 9223372036854775808 does not.
+	const maxAbs = uint64(1) << 63
+	limit := maxAbs - 1
 	if negative {
 		limit = maxAbs
 	}
-	cutoff := limit / uint64(base)
-	cutlim := limit % uint64(base)
+	cutoff := limit / 10
+	cutlim := limit % 10
 
 	var value uint64
 	for _, digit := range raw {
@@ -263,11 +272,11 @@ func parseIntBytes(raw []byte, base, bitSize int) (int64, error) {
 		if value > cutoff || (value == cutoff && parsed > cutlim) {
 			return 0, strconv.ErrRange
 		}
-		value = value*uint64(base) + parsed
+		value = value*10 + parsed
 	}
 
 	if negative {
-		if bitSize == 64 && value == maxAbs {
+		if value == maxAbs {
 			return math.MinInt64, nil
 		}
 		return -int64(value), nil

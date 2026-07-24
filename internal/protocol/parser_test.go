@@ -214,3 +214,35 @@ func assertBulkString(t *testing.T, value Value, want string) {
 		t.Fatalf("bulk string = %q, want %q", string(bulk.Data), want)
 	}
 }
+
+// TestParserAndDecodeShareNestingBound pins the streaming Parser and the
+// buffered Decode to the same nesting limit. Parser recurses per level, so
+// without this bound a chain of "*1\r\n" headers grows the goroutine stack
+// until the runtime aborts the process, which recover cannot intercept.
+func TestParserAndDecodeShareNestingBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		depth   int
+		wantErr bool
+	}{
+		{name: "at the limit", depth: maxNestingDepth - 1, wantErr: false},
+		{name: "past the limit", depth: maxNestingDepth + 1, wantErr: true},
+		{name: "far past the limit", depth: 100_000, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := append(bytes.Repeat([]byte("*1\r\n"), tt.depth), []byte("+ok\r\n")...)
+
+			_, parserErr := NewParser(bytes.NewReader(frame)).Parse()
+			if (parserErr != nil) != tt.wantErr {
+				t.Fatalf("Parser.Parse() error = %v, wantErr %v", parserErr, tt.wantErr)
+			}
+
+			_, _, decodeErr := Decode(frame)
+			if (decodeErr != nil) != tt.wantErr {
+				t.Fatalf("Decode() error = %v, wantErr %v", decodeErr, tt.wantErr)
+			}
+		})
+	}
+}

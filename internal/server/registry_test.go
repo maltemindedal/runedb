@@ -7,7 +7,7 @@ import (
 )
 
 func TestRegistryCloseAllReturnsJoinedErrors(t *testing.T) {
-	registry := NewRegistry()
+	registry := NewClientRegistry()
 	registry.Add(&stubConn{closeErr: errors.New("close one")})
 	registry.Add(&stubConn{closeErr: errors.New("close two")})
 

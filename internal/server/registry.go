@@ -16,20 +16,20 @@ type ClientConn interface {
 	RemoteAddr() net.Addr
 }
 
-// Registry tracks active client connections.
-type Registry struct {
+// ClientRegistry tracks active client connections.
+type ClientRegistry struct {
 	mu      sync.RWMutex
 	nextID  uint64
 	clients map[uint64]ClientConn
 }
 
-// NewRegistry creates an empty client registry.
-func NewRegistry() *Registry {
-	return &Registry{clients: make(map[uint64]ClientConn)}
+// NewClientRegistry creates an empty client registry.
+func NewClientRegistry() *ClientRegistry {
+	return &ClientRegistry{clients: make(map[uint64]ClientConn)}
 }
 
 // Add registers a new client connection and returns its unique ID.
-func (r *Registry) Add(conn ClientConn) uint64 {
+func (r *ClientRegistry) Add(conn ClientConn) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -39,7 +39,7 @@ func (r *Registry) Add(conn ClientConn) uint64 {
 }
 
 // Remove removes a client connection from the registry.
-func (r *Registry) Remove(id uint64) {
+func (r *ClientRegistry) Remove(id uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -47,7 +47,7 @@ func (r *Registry) Remove(id uint64) {
 }
 
 // Count returns the number of active client connections.
-func (r *Registry) Count() int {
+func (r *ClientRegistry) Count() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -55,7 +55,7 @@ func (r *Registry) Count() int {
 }
 
 // CloseAll closes every tracked client connection.
-func (r *Registry) CloseAll() error {
+func (r *ClientRegistry) CloseAll() error {
 	r.mu.Lock()
 	clients := make([]ClientConn, 0, len(r.clients))
 	for id, conn := range r.clients {

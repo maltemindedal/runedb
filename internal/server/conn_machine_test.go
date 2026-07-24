@@ -208,76 +208,78 @@ func TestConnMachineProtocolErrorClosesAfterOrderedReplies(t *testing.T) {
 	}
 }
 
-func TestConnMachineFeedSurvivesHugeBulkLength(t *testing.T) {
-	// A near-MaxInt bulk length must buffer as an incomplete frame, not panic
-	// the driving loop through an out-of-range index in the decoder.
-	machine := NewConnMachine(nil)
+// TestConnMachineFeedRejectsHostileFrames covers the frames a malicious peer can
+// send to make the machine allocate or recurse without bound. Feed itself always
+// succeeds — a hostile frame is reported by moving the machine to ConnStateClosing
+// with a recorded error, never by panicking or by buffering without limit.
+func TestConnMachineFeedRejectsHostileFrames(t *testing.T) {
+	deeplyNested := func() []byte {
+		var frame []byte
+		for i := 0; i < 4096; i++ {
+			frame = append(frame, "*1\r\n"...)
+		}
+		return append(frame, ":1\r\n"...)
+	}
 
-	if err := machine.Feed([]byte("$9223372036854775807\r\n")); err != nil {
-		t.Fatalf("Feed() error = %v", err)
+	tests := []struct {
+		name          string
+		maxReadBuffer int
+		frame         []byte
+		wantState     ConnMachineState
+		reason        string
+	}{
+		{
+			name:      "near-MaxInt bulk length buffers as incomplete",
+			frame:     []byte("$9223372036854775807\r\n"),
+			wantState: ConnStateActive,
+			reason:    "a huge declared length must not index out of range in the decoder",
+		},
+		{
+			name:      "deeply nested array",
+			frame:     deeplyNested(),
+			wantState: ConnStateClosing,
+			reason:    "deep nesting must surface as a protocol error, not a stack overflow",
+		},
+		{
+			name:          "buffered bytes exceed the read limit",
+			maxReadBuffer: 16,
+			frame:         []byte("$100\r\nabcdefghijklmnop"),
+			wantState:     ConnStateClosing,
+			reason:        "an incomplete frame must not be buffered without bound",
+		},
+		{
+			name:          "declared length far past the read limit",
+			maxReadBuffer: 1024,
+			frame:         []byte("$1000000\r\n"),
+			wantState:     ConnStateClosing,
+			reason:        "the decoder's byte hint must reject before the payload is buffered",
+		},
 	}
-	if machine.PendingRequests() != 0 {
-		t.Fatalf("PendingRequests() = %d, want 0 for incomplete frame", machine.PendingRequests())
-	}
-	if machine.State() != ConnStateActive {
-		t.Fatalf("State() = %d, want ConnStateActive", machine.State())
-	}
-}
 
-func TestConnMachineFeedRejectsDeeplyNestedArray(t *testing.T) {
-	// Deep nesting must surface as a protocol error that closes the connection,
-	// not a stack overflow.
-	machine := NewConnMachine(nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			machine := NewConnMachine(nil)
+			if tt.maxReadBuffer > 0 {
+				machine.maxReadBuffer = tt.maxReadBuffer
+			}
 
-	var frame []byte
-	for i := 0; i < 4096; i++ {
-		frame = append(frame, "*1\r\n"...)
-	}
-	frame = append(frame, ":1\r\n"...)
+			if err := machine.Feed(tt.frame); err != nil {
+				t.Fatalf("Feed() error = %v", err)
+			}
+			if machine.State() != tt.wantState {
+				t.Fatalf("State() = %d, want %d (%s)", machine.State(), tt.wantState, tt.reason)
+			}
 
-	if err := machine.Feed(frame); err != nil {
-		t.Fatalf("Feed() error = %v", err)
-	}
-	if machine.State() != ConnStateClosing {
-		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
-	}
-	if machine.Err() == nil {
-		t.Fatal("Err() = nil, want recorded protocol error")
-	}
-}
-
-func TestConnMachineRejectsOversizedFrame(t *testing.T) {
-	// A single incomplete frame whose buffered bytes exceed the read-buffer
-	// limit must be rejected as a protocol error rather than buffered without
-	// bound.
-	machine := NewConnMachine(nil)
-	machine.maxReadBuffer = 16
-
-	if err := machine.Feed([]byte("$100\r\nabcdefghijklmnop")); err != nil {
-		t.Fatalf("Feed() error = %v", err)
-	}
-	if machine.State() != ConnStateClosing {
-		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
-	}
-	if machine.Err() == nil {
-		t.Fatal("Err() = nil, want recorded protocol error for oversized frame")
-	}
-}
-
-func TestConnMachineRejectsAbsurdDeclaredLength(t *testing.T) {
-	// A bulk string declaring a length far past the limit must be rejected up
-	// front, before its payload is buffered, via the decoder's byte hint.
-	machine := NewConnMachine(nil)
-	machine.maxReadBuffer = 1024
-
-	if err := machine.Feed([]byte("$1000000\r\n")); err != nil {
-		t.Fatalf("Feed() error = %v", err)
-	}
-	if machine.State() != ConnStateClosing {
-		t.Fatalf("State() = %d, want ConnStateClosing", machine.State())
-	}
-	if machine.Err() == nil {
-		t.Fatal("Err() = nil, want recorded protocol error for absurd length")
+			if tt.wantState == ConnStateClosing {
+				if machine.Err() == nil {
+					t.Fatalf("Err() = nil, want recorded protocol error (%s)", tt.reason)
+				}
+				return
+			}
+			if machine.PendingRequests() != 0 {
+				t.Fatalf("PendingRequests() = %d, want 0 for incomplete frame", machine.PendingRequests())
+			}
+		})
 	}
 }
 
