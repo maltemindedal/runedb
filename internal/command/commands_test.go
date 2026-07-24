@@ -2585,3 +2585,23 @@ func assertPropagationFrames(t *testing.T, got []protocol.Value, want ...protoco
 		assertValueEqual(t, got[i], want[i])
 	}
 }
+
+// TestCommandSpecsAlwaysValidate locks the invariant the handlers rely on:
+// ExecuteDetailed runs spec.validate before spec.handler/spec.detailed, so an
+// executable command must register a validator. Handlers may then read their
+// arguments without repeating the arity check. A new command registered with a
+// handler but no validate would reach that handler unvalidated.
+func TestCommandSpecsAlwaysValidate(t *testing.T) {
+	executor := NewExecutor(storage.NewStore(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	for name, spec := range executor.commands {
+		t.Run(name, func(t *testing.T) {
+			if spec.handler == nil && spec.detailed == nil {
+				t.Skip("command has no executable handler")
+			}
+			if spec.validate == nil {
+				t.Errorf("command %q registers a handler but no validate function", name)
+			}
+		})
+	}
+}

@@ -993,6 +993,101 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 	}
 }
 
+func TestMasterFullResyncTransfersExistingKeyspace(t *testing.T) {
+	masterCfg := config.Default()
+	masterCfg.Host = "127.0.0.1"
+	masterCfg.Port = 0
+	masterCfg.LogLevel = "error"
+	masterCfg.EvictionInterval = 5 * time.Millisecond
+	masterCfg.EvictionSampleSize = 10
+	masterCfg.DumpPath = ""
+
+	logger := stashlogger.New(masterCfg.LogLevel)
+
+	masterStore := storage.NewStore()
+	masterExecutor := command.NewExecutor(masterStore, logger)
+	master := server.New(masterCfg, logger, masterStore, masterExecutor)
+
+	masterCtx, cancelMaster := context.WithCancel(context.Background())
+	defer cancelMaster()
+
+	masterErrCh := make(chan error, 1)
+	go func() {
+		masterErrCh <- master.ListenAndServe(masterCtx)
+	}()
+
+	masterAddr := waitForAddr(t, master)
+
+	masterConn, err := net.Dial("tcp", masterAddr)
+	if err != nil {
+		t.Fatalf("Dial(%q) master error = %v", masterAddr, err)
+	}
+	defer closeTestResource(t, masterConn)
+	masterParser := protocol.NewParser(masterConn)
+
+	// Populate the master before any replica exists, so these keys can only
+	// reach the replica through the full resync snapshot.
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "preexisting", "value")
+	assertCommandResponse(t, masterConn, masterParser, protocol.SimpleString{Value: "OK"}, "SET", "second", "another")
+	// RDB support is scoped to string keys; a collection on the master must not
+	// break the handshake, it is simply absent from the snapshot.
+	assertCommandResponse(t, masterConn, masterParser, protocol.Integer{Value: 1}, "HSET", "collection", "field", "value")
+
+	replicaCfg := config.Default()
+	replicaCfg.Host = "127.0.0.1"
+	replicaCfg.Port = 0
+	replicaCfg.LogLevel = "error"
+	replicaCfg.EvictionInterval = 5 * time.Millisecond
+	replicaCfg.EvictionSampleSize = 10
+	replicaCfg.DumpPath = ""
+	replicaCfg.ReplicaOf = masterAddr
+
+	replicaStore := storage.NewStore()
+	replicaExecutor := command.NewExecutor(replicaStore, logger)
+	replica := server.New(replicaCfg, logger, replicaStore, replicaExecutor)
+
+	replicaCtx, cancelReplica := context.WithCancel(context.Background())
+	defer cancelReplica()
+
+	replicaErrCh := make(chan error, 1)
+	go func() {
+		replicaErrCh <- replica.ListenAndServe(replicaCtx)
+	}()
+
+	replicaAddr := waitForAddr(t, replica)
+
+	replicaConn, err := net.Dial("tcp", replicaAddr)
+	if err != nil {
+		t.Fatalf("Dial(%q) replica error = %v", replicaAddr, err)
+	}
+	defer closeTestResource(t, replicaConn)
+	replicaParser := protocol.NewParser(replicaConn)
+
+	assertEventuallyCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("value")}, 2*time.Second, "GET", "preexisting")
+	assertCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Data: []byte("another")}, "GET", "second")
+	assertCommandResponse(t, replicaConn, replicaParser, protocol.BulkString{Null: true}, "HGET", "collection", "field")
+
+	cancelReplica()
+	select {
+	case err := <-replicaErrCh:
+		if err != nil {
+			t.Fatalf("replica ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replica did not stop within timeout")
+	}
+
+	cancelMaster()
+	select {
+	case err := <-masterErrCh:
+		if err != nil {
+			t.Fatalf("master ListenAndServe() error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("master did not stop within timeout")
+	}
+}
+
 func TestPublishPropagatesToReplicaSubscribers(t *testing.T) {
 	masterCfg := config.Default()
 	masterCfg.Host = "127.0.0.1"

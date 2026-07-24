@@ -32,10 +32,6 @@ const (
 )
 
 func (e *Executor) handleGeoAdd(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 4 || (len(request.Args)-1)%3 != 0 {
-		return nil, wrongNumberOfArgumentsError("GEOADD")
-	}
-
 	entries := make([]storage.ZSetEntry, 0, (len(request.Args)-1)/3)
 	for i := 1; i < len(request.Args); i += 3 {
 		longitude, latitude, err := parseGeoCoordinates(request.Args[i], request.Args[i+1])
@@ -60,10 +56,6 @@ func (e *Executor) handleGeoAdd(ctx context.Context, request *Request) (protocol
 }
 
 func (e *Executor) handleGeoDist(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 3 && len(request.Args) != 4 {
-		return nil, wrongNumberOfArgumentsError("GEODIST")
-	}
-
 	unitMeters := 1.0
 	if len(request.Args) == 4 {
 		var err error

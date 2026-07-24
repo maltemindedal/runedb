@@ -48,10 +48,6 @@ func putPooledPubSubSubscribers(subscribers *[]*server.ClientState) {
 }
 
 func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) == 0 {
-		return nil, wrongNumberOfArgumentsError("WATCH")
-	}
-
 	state, err := clientStateFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -70,10 +66,6 @@ func (e *Executor) handleWatch(ctx context.Context, request *Request) (protocol.
 }
 
 func (e *Executor) handleSubscribe(ctx context.Context, request *Request) (server.ExecuteResult, error) {
-	if err := validateSubscribeRequest(request); err != nil {
-		return server.ExecuteResult{}, err
-	}
-
 	state, err := clientStateFromContext(ctx)
 	if err != nil {
 		return server.ExecuteResult{}, err
@@ -93,10 +85,6 @@ func (e *Executor) handleSubscribe(ctx context.Context, request *Request) (serve
 }
 
 func (e *Executor) handleUnsubscribe(ctx context.Context, request *Request) (server.ExecuteResult, error) {
-	if err := validateUnsubscribeRequest(request); err != nil {
-		return server.ExecuteResult{}, err
-	}
-
 	state, err := clientStateFromContext(ctx)
 	if err != nil {
 		return server.ExecuteResult{}, err
@@ -212,9 +200,10 @@ func (e *Executor) handleBGRewriteAOF(ctx context.Context, request *Request) (pr
 }
 
 func (e *Executor) handleReplConf(ctx context.Context, request *Request) (server.ExecuteResult, error) {
-	if len(request.Args) != 2 {
-		return server.ExecuteResult{}, wrongNumberOfArgumentsError("REPLCONF")
-	}
+	// validateReplConfRequest has already checked the arity, rejected unknown
+	// subcommands, and confirmed each subcommand's argument parses. What remains
+	// here is the context-dependent work it cannot do: applying the parsed value
+	// and checking who is asking.
 	subcommand := strings.ToUpper(string(request.Args[0]))
 
 	switch subcommand {
@@ -230,7 +219,9 @@ func (e *Executor) handleReplConf(ctx context.Context, request *Request) (server
 
 		return server.SingleResponse(protocol.SimpleString{Value: "OK"}), nil
 	case "GETACK":
-		if !server.IsReplicationOrigin(ctx) || string(request.Args[1]) != "*" {
+		// The "*" argument is validated upstream; only the caller's origin,
+		// which the validator has no context for, is checked here.
+		if !server.IsReplicationOrigin(ctx) {
 			return server.ExecuteResult{}, ErrSyntaxError()
 		}
 
@@ -274,14 +265,32 @@ func (e *Executor) handlePSync(ctx context.Context, request *Request) (server.Ex
 		return server.ExecuteResult{}, fmt.Errorf("replication state unavailable")
 	}
 
+	entries, snapshotStats := e.store.SnapshotStrings()
+	payload, writeStats := rdb.BuildSnapshot(entries)
+	if snapshotStats.SkippedUnsupportedKeys > 0 {
+		// RDB support is scoped to DB 0 string keys, so a master holding
+		// collections transfers only its string keyspace on full resync.
+		e.logger.Warn(
+			"full resync snapshot skipped unsupported value types",
+			"skipped_unsupported_keys", snapshotStats.SkippedUnsupportedKeys,
+			"exported_keys", snapshotStats.ExportedKeys,
+		)
+	}
+
 	if state, ok := server.ClientStateFromContext(ctx); ok && state != nil {
 		state.PromoteToReplica()
-		e.logger.Info("serving full resync to replica", "replica_id", state.ID, "master_replid", e.replication.MasterReplicationID)
+		e.logger.Info(
+			"serving full resync to replica",
+			"replica_id", state.ID,
+			"master_replid", e.replication.MasterReplicationID,
+			"snapshot_size_bytes", len(payload),
+			"snapshot_keys", writeStats.WrittenKeys,
+		)
 	}
 
 	result := server.MultiResponse(
 		protocol.SimpleString{Value: fmt.Sprintf("FULLRESYNC %s 0", e.replication.MasterReplicationID)},
-		protocol.BulkString{Data: rdb.EmptySnapshot()},
+		protocol.BulkString{Data: payload},
 	)
 	result.RegisterReplica = true
 	return result, nil
@@ -450,9 +459,6 @@ func (e *Executor) handleEcho(_ context.Context, request *Request) (protocol.Val
 }
 
 func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.Value, error) {
-	if err := validatePublishRequest(request); err != nil {
-		return nil, err
-	}
 	if e.pubSubRegistry == nil {
 		return protocol.Integer{Value: 0}, nil
 	}
@@ -480,10 +486,6 @@ func (e *Executor) handlePublish(_ context.Context, request *Request) (protocol.
 }
 
 func (e *Executor) handleSet(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 2 {
-		return nil, wrongNumberOfArgumentsError("SET")
-	}
-
 	expiresAt, err := storage.ParseExpiryMillis(request.Args[2:])
 	if err != nil {
 		switch {
@@ -533,10 +535,6 @@ func (e *Executor) handleGet(_ context.Context, request *Request) (protocol.Valu
 }
 
 func (e *Executor) handleSetBit(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 3 {
-		return nil, wrongNumberOfArgumentsError("SETBIT")
-	}
-
 	offset, err := parseBitmapOffsetArgument(request.Args[1])
 	if err != nil {
 		return nil, err
@@ -557,10 +555,6 @@ func (e *Executor) handleSetBit(ctx context.Context, request *Request) (protocol
 }
 
 func (e *Executor) handleGetBit(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 2 {
-		return nil, wrongNumberOfArgumentsError("GETBIT")
-	}
-
 	offset, err := parseBitmapOffsetArgument(request.Args[1])
 	if err != nil {
 		return nil, err
@@ -575,10 +569,6 @@ func (e *Executor) handleGetBit(_ context.Context, request *Request) (protocol.V
 }
 
 func (e *Executor) handleBitCount(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 1 && len(request.Args) != 3 {
-		return nil, wrongNumberOfArgumentsError("BITCOUNT")
-	}
-
 	var start *int64
 	var end *int64
 	if len(request.Args) == 3 {
@@ -680,107 +670,7 @@ func (e *Executor) handleIncr(ctx context.Context, request *Request) (protocol.V
 	return protocol.Integer{Value: value}, nil
 }
 
-func (e *Executor) handleLPush(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 2 {
-		return nil, wrongNumberOfArgumentsError("LPUSH")
-	}
-
-	key := string(request.Args[0])
-	length, evicted, err := e.store.LeftPushWithEviction(key, request.Args[1:])
-	if err != nil {
-		return nil, storageCommandError(err)
-	}
-
-	e.recordWriteEffects(ctx, key, evicted)
-	return protocol.Integer{Value: length}, nil
-}
-
-func (e *Executor) handleRPush(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 2 {
-		return nil, wrongNumberOfArgumentsError("RPUSH")
-	}
-
-	key := string(request.Args[0])
-	length, evicted, err := e.store.RightPushWithEviction(key, request.Args[1:])
-	if err != nil {
-		return nil, storageCommandError(err)
-	}
-
-	e.recordWriteEffects(ctx, key, evicted)
-	return protocol.Integer{Value: length}, nil
-}
-
-func (e *Executor) handleLRange(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 3 {
-		return nil, wrongNumberOfArgumentsError("LRANGE")
-	}
-
-	start, stop, err := parseRangeBounds(request.Args[1:3])
-	if err != nil {
-		return nil, err
-	}
-
-	key := string(request.Args[0])
-	values, err := e.store.ListRange(key, start, stop)
-	if err != nil {
-		if errors.Is(err, storage.ErrWrongType) {
-			return nil, ErrWrongTypeError()
-		}
-		return nil, err
-	}
-
-	return listResponse(values), nil
-}
-
-func (e *Executor) handleBLPop(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 1 {
-		return nil, wrongNumberOfArgumentsError("BLPOP")
-	}
-
-	key := string(request.Args[0])
-	for {
-		waiter := e.store.SubscribeListPush(key)
-
-		value, ok, err := e.store.LeftPop(key)
-		if err != nil {
-			e.store.UnsubscribeListPush(key, waiter)
-			if errors.Is(err, storage.ErrWrongType) {
-				return nil, ErrWrongTypeError()
-			}
-			return nil, err
-		}
-		if ok {
-			e.store.UnsubscribeListPush(key, waiter)
-			e.touchWatchKeys(key)
-			return protocol.Array{Elements: []protocol.Value{
-				protocol.BulkString{Data: clone(request.Args[0])},
-				protocol.BulkString{Data: value},
-			}}, nil
-		}
-
-		// On the event loop, blocking would deadlock the whole server: the
-		// LPUSH that fires the waiter can only execute on the loop goroutine
-		// this command is blocking.
-		if server.IsInlineExecution(ctx) {
-			e.store.UnsubscribeListPush(key, waiter)
-			return nil, blockingNotSupportedError("BLPOP")
-		}
-
-		select {
-		case <-waiter:
-			e.store.UnsubscribeListPush(key, waiter)
-		case <-ctx.Done():
-			e.store.UnsubscribeListPush(key, waiter)
-			return nil, ctx.Err()
-		}
-	}
-}
-
 func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 3 || len(request.Args)%2 == 0 {
-		return nil, wrongNumberOfArgumentsError("ZADD")
-	}
-
 	entries := make([]storage.ZSetEntry, 0, (len(request.Args)-1)/2)
 	for i := 1; i < len(request.Args); i += 2 {
 		score, err := parseFloatArgument(request.Args[i])
@@ -805,10 +695,6 @@ func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.V
 }
 
 func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) != 3 && len(request.Args) != 4 {
-		return nil, wrongNumberOfArgumentsError("ZRANGE")
-	}
-
 	withScores := false
 	if len(request.Args) == 4 {
 		if !strings.EqualFold(string(request.Args[3]), "WITHSCORES") {
@@ -835,10 +721,6 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 }
 
 func (e *Executor) handleXAdd(ctx context.Context, request *Request) (protocol.Value, error) {
-	if len(request.Args) < 4 || len(request.Args)%2 != 0 {
-		return nil, wrongNumberOfArgumentsError("XADD")
-	}
-
 	key := string(request.Args[0])
 	id, evicted, err := e.store.XAddWithEviction(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {

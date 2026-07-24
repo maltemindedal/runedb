@@ -665,14 +665,14 @@ func (e *Executor) validateAuthContext(ctx context.Context, request *Request) er
 	if state.IsAuthenticated() {
 		return nil
 	}
-	if isAllowedUnauthenticatedCommand(ctx, state, request) {
+	if isAllowedUnauthenticatedCommand(ctx, request) {
 		return nil
 	}
 
 	return ErrNoAuthError()
 }
 
-func isAllowedUnauthenticatedCommand(ctx context.Context, state *server.ClientState, request *Request) bool {
+func isAllowedUnauthenticatedCommand(ctx context.Context, request *Request) bool {
 	if server.IsReplicationOrigin(ctx) {
 		return true
 	}
@@ -681,7 +681,6 @@ func isAllowedUnauthenticatedCommand(ctx context.Context, state *server.ClientSt
 	case "AUTH", "PING":
 		return true
 	default:
-		_ = state
 		return false
 	}
 }

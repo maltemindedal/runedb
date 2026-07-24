@@ -3,93 +3,12 @@ package command
 import (
 	"context"
 	"errors"
-	"strconv"
 
 	"github.com/maltemindedal/stash/internal/protocol"
 	"github.com/maltemindedal/stash/internal/storage"
 )
 
-func (e *Executor) handleLPop(_ context.Context, request *Request) (protocol.Value, error) {
-	return e.popList(request, "LPOP", true)
-}
-
-func (e *Executor) handleRPop(_ context.Context, request *Request) (protocol.Value, error) {
-	return e.popList(request, "RPOP", false)
-}
-
-func (e *Executor) popList(request *Request, name string, left bool) (protocol.Value, error) {
-	if len(request.Args) != 1 && len(request.Args) != 2 {
-		return nil, wrongNumberOfArgumentsError(name)
-	}
-
-	key := string(request.Args[0])
-
-	if len(request.Args) == 1 {
-		var (
-			value []byte
-			ok    bool
-			err   error
-		)
-		if left {
-			value, ok, err = e.store.LeftPop(key)
-		} else {
-			value, ok, err = e.store.RightPop(key)
-		}
-		if err != nil {
-			if errors.Is(err, storage.ErrWrongType) {
-				return nil, ErrWrongTypeError()
-			}
-			return nil, err
-		}
-		if !ok {
-			return protocol.BulkString{Null: true}, nil
-		}
-
-		e.touchWatchKeys(key)
-		return protocol.BulkString{Data: value}, nil
-	}
-
-	count, err := parseIntegerArgument(request.Args[1])
-	if err != nil {
-		return nil, err
-	}
-	if count < 0 {
-		return nil, newRESPMessageError("ERR", "value is out of range, must be positive")
-	}
-
-	var (
-		values [][]byte
-		ok     bool
-	)
-	if left {
-		values, ok, err = e.store.LeftPopN(key, count)
-	} else {
-		values, ok, err = e.store.RightPopN(key, count)
-	}
-	if err != nil {
-		if errors.Is(err, storage.ErrWrongType) {
-			return nil, ErrWrongTypeError()
-		}
-		if errors.Is(err, storage.ErrSyntax) {
-			return nil, ErrSyntaxError()
-		}
-		return nil, err
-	}
-	if !ok {
-		return protocol.Array{Null: true}, nil
-	}
-
-	if count > 0 && len(values) > 0 {
-		e.touchWatchKeys(key)
-	}
-	return listResponse(values), nil
-}
-
 func (e *Executor) handleHSet(ctx context.Context, request *Request) (protocol.Value, error) {
-	if err := validateHSetRequest(request); err != nil {
-		return nil, err
-	}
-
 	key := string(request.Args[0])
 	pairs := make([]storage.HashFieldValue, 0, (len(request.Args)-1)/2)
 	for i := 1; i < len(request.Args); i += 2 {
@@ -259,30 +178,6 @@ func (e *Executor) handleSMembers(_ context.Context, request *Request) (protocol
 func validateHSetRequest(request *Request) error {
 	if len(request.Args) < 3 || len(request.Args)%2 == 0 {
 		return wrongNumberOfArgumentsError("HSET")
-	}
-	return nil
-}
-
-func validateLPopRequest(request *Request) error {
-	return validatePopRequest(request, "LPOP")
-}
-
-func validateRPopRequest(request *Request) error {
-	return validatePopRequest(request, "RPOP")
-}
-
-func validatePopRequest(request *Request, name string) error {
-	if len(request.Args) != 1 && len(request.Args) != 2 {
-		return wrongNumberOfArgumentsError(name)
-	}
-	if len(request.Args) == 2 {
-		count, err := strconv.ParseInt(string(request.Args[1]), 10, 64)
-		if err != nil {
-			return ErrValueNotIntegerError()
-		}
-		if count < 0 {
-			return newRESPMessageError("ERR", "value is out of range, must be positive")
-		}
 	}
 	return nil
 }
