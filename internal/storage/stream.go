@@ -17,6 +17,9 @@ type streamRecord struct {
 	values [][]byte
 }
 
+// StreamValue holds the entries of a single stream key in ascending ID order,
+// along with the highest ID admitted so far so XADD can reject non-monotonic
+// explicit IDs.
 type StreamValue struct {
 	entries    []streamRecord
 	lastID     streamID
@@ -138,6 +141,7 @@ func (s *StreamValue) nextAutoID(nowMillis int64) streamID {
 	return streamID{milliseconds: nowMillis, sequence: 0}
 }
 
+// String renders the ID in the Redis <milliseconds>-<sequence> wire form.
 func (id streamID) String() string {
 	return strconv.FormatInt(id.milliseconds, 10) + "-" + strconv.FormatInt(id.sequence, 10)
 }

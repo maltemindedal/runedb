@@ -77,6 +77,9 @@ func (s *Store) EnforceMaxMemory() ([]string, error) {
 	return s.evictUntilMemoryAtOrBelowLocked(limit, nil)
 }
 
+// SetWithEviction stores a string value, first freeing space under the
+// configured maxmemory limit. It returns the keys evicted to make room. With
+// maxmemory disabled it degrades to a plain Set and evicts nothing.
 func (s *Store) SetWithEviction(key string, value []byte, expiresAt int64) ([]string, error) {
 	if !s.maxMemoryEnabled() {
 		s.Set(key, value, expiresAt)
@@ -102,6 +105,9 @@ func (s *Store) SetWithEviction(key string, value []byte, expiresAt int64) ([]st
 	return evicted, nil
 }
 
+// IncrementWithEviction applies INCR to key, first freeing space under the
+// configured maxmemory limit. It returns the new counter value and the keys
+// evicted to make room.
 func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 	if !s.maxMemoryEnabled() {
 		value, err := s.Increment(key)
@@ -151,14 +157,23 @@ func (s *Store) IncrementWithEviction(key string) (int64, []string, error) {
 	return parsed, evicted, nil
 }
 
+// LeftPushWithEviction prepends values to a list, first freeing space under the
+// configured maxmemory limit. It returns the resulting list length and the keys
+// evicted to make room.
 func (s *Store) LeftPushWithEviction(key string, values [][]byte) (int64, []string, error) {
 	return s.pushListWithEviction(key, values, true)
 }
 
+// RightPushWithEviction appends values to a list, first freeing space under the
+// configured maxmemory limit. It returns the resulting list length and the keys
+// evicted to make room.
 func (s *Store) RightPushWithEviction(key string, values [][]byte) (int64, []string, error) {
 	return s.pushListWithEviction(key, values, false)
 }
 
+// ZAddWithEviction adds scored members to a sorted set, first freeing space
+// under the configured maxmemory limit. It returns the number of newly added
+// members and the keys evicted to make room.
 func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []string, error) {
 	if !s.maxMemoryEnabled() {
 		added, err := s.ZAdd(key, entries)
@@ -203,6 +218,9 @@ func (s *Store) ZAddWithEviction(key string, entries []ZSetEntry) (int64, []stri
 	return added, evicted, nil
 }
 
+// XAddWithEviction appends an entry to a stream, first freeing space under the
+// configured maxmemory limit. It returns the assigned entry ID and the keys
+// evicted to make room.
 func (s *Store) XAddWithEviction(key, rawID string, values [][]byte) (string, []string, error) {
 	if !s.maxMemoryEnabled() {
 		id, err := s.XAdd(key, rawID, values)
@@ -247,6 +265,9 @@ func (s *Store) XAddWithEviction(key, rawID string, values [][]byte) (string, []
 	return id, evicted, nil
 }
 
+// HSetWithEviction writes hash field/value pairs, first freeing space under the
+// configured maxmemory limit. It returns the number of newly created fields and
+// the keys evicted to make room.
 func (s *Store) HSetWithEviction(key string, pairs []HashFieldValue) (int64, []string, error) {
 	if !s.maxMemoryEnabled() {
 		added, err := s.HSet(key, pairs)
@@ -291,6 +312,9 @@ func (s *Store) HSetWithEviction(key string, pairs []HashFieldValue) (int64, []s
 	return added, evicted, nil
 }
 
+// SAddWithEviction adds members to a set, first freeing space under the
+// configured maxmemory limit. It returns the number of newly added members and
+// the keys evicted to make room.
 func (s *Store) SAddWithEviction(key string, members [][]byte) (int64, []string, error) {
 	if !s.maxMemoryEnabled() {
 		added, err := s.SAdd(key, members)
@@ -640,6 +664,24 @@ func (s *Store) deleteKeyWithSizeLocked(shard *Shard, key string, size int64) bo
 	}
 	s.removeKeyLocked(shard, key)
 	return true
+}
+
+// dropIfStillExpired reclaims a key a reader found expired. The caller must
+// have released its read lock first: the write lock is a separate acquisition,
+// so another goroutine may have deleted, rewritten, or renewed the key in
+// between. The expiry is therefore rechecked under the write lock rather than
+// carried over from the read, and against a fresh clock reading.
+func (s *Store) dropIfStillExpired(shard *Shard, key string) {
+	if shard == nil {
+		return
+	}
+
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if value, ok := shard.data[key]; ok && isExpired(value, time.Now().UnixMilli()) {
+		s.deleteKeyLocked(shard, key)
+	}
 }
 
 func (s *Store) deleteKeyLocked(shard *Shard, key string) bool {

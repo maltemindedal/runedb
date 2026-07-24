@@ -113,12 +113,7 @@ func (s *Store) withStringValue(key string, fn func(data []byte) error) (bool, e
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return false, nil
 	}
 	data, err := value.StringValue()
@@ -426,12 +421,7 @@ func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return [][]byte{}, nil
 	}
 	list, err := value.ListValue()
@@ -523,12 +513,7 @@ func (s *Store) ZScores(key string, members [][]byte) ([]float64, []bool, error)
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return scores, found, nil
 	}
 	for i, member := range members {
@@ -560,12 +545,7 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return []ZSetRangeEntry{}, nil
 	}
 	setLen, err := value.zsetLen()
@@ -609,12 +589,7 @@ func (s *Store) ZRangeByScores(key string, scoreRanges ...ScoreRange) ([]ZSetRan
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return []ZSetRangeEntry{}, nil
 	}
 
@@ -700,12 +675,7 @@ func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return []StreamEntry{}, nil
 	}
 	stream, err := value.StreamValue()

@@ -9,6 +9,10 @@ const (
 	zsetP        = 0.25
 )
 
+// SortedSet is the map-backed sorted set encoding: index gives O(1) score
+// lookup by member, and order is a skip list keyed by (score, member) so range
+// and rank queries stay logarithmic. Small sorted sets use the flat encoding
+// instead and promote here when they outgrow it.
 type SortedSet struct {
 	index map[string]float64
 	order *zsetSkipList

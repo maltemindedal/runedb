@@ -26,12 +26,7 @@ func (s *Store) GetBit(key string, offset int64) (int64, bool, error) {
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return 0, false, nil
 	}
 	data, err := value.StringValue()
@@ -194,12 +189,7 @@ func (s *Store) BitCount(key string, start *int64, end *int64) (int64, bool, err
 	if isExpired(value, now) {
 		shard.mu.RUnlock()
 
-		shard.mu.Lock()
-		value, ok = shard.data[key]
-		if ok && isExpired(value, time.Now().UnixMilli()) {
-			s.deleteKeyLocked(shard, key)
-		}
-		shard.mu.Unlock()
+		s.dropIfStillExpired(shard, key)
 		return 0, false, nil
 	}
 	data, err := value.StringValue()
