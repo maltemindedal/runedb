@@ -60,7 +60,9 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 	s.logger = logger
 }
 
-// Set stores a byte slice under the provided key.
+// Set stores a byte slice under the provided key. When maxmemory is configured
+// it first frees space and reports the keys evicted to make room; otherwise it
+// evicts nothing.
 func (s *Store) Set(key string, value []byte, expiresAt int64) ([]string, error) {
 	now := time.Now().UnixMilli()
 	if s.maxMemoryEnabled() {
@@ -1035,7 +1037,7 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, []strin
 		return 0, nil, ErrSyntax
 	}
 
-	length, evicted, err := s.pushListLocking(key, values, left)
+	length, evicted, err := s.lockAndPushList(key, values, left)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1047,7 +1049,7 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, []strin
 	return length, evicted, nil
 }
 
-func (s *Store) pushListLocking(key string, values [][]byte, left bool) (int64, []string, error) {
+func (s *Store) lockAndPushList(key string, values [][]byte, left bool) (int64, []string, error) {
 	now := time.Now().UnixMilli()
 	if s.maxMemoryEnabled() {
 		s.writeLockAllShards()

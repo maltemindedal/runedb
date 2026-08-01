@@ -81,7 +81,7 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 		exists bool
 	}
 
-	found, _, err := readKey(s, key, func(value *ValueObject) (hashField, error) {
+	result, _, err := readKey(s, key, func(value *ValueObject) (hashField, error) {
 		raw, exists, err := value.hashGet(field)
 		if err != nil || !exists {
 			return hashField{}, err
@@ -91,7 +91,7 @@ func (s *Store) HGet(key, field string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	return found.value, found.exists, nil
+	return result.value, result.exists, nil
 }
 
 // HDel removes the named fields from the hash stored at key and returns the
