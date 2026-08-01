@@ -11,64 +11,43 @@ func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, []string, error
 		return 0, nil, ErrSyntax
 	}
 
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.hashSetLocked(key, pairs, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.hashSetLocked(key, pairs, now, false)
-}
-
-// hashSetLocked requires the caller to hold the key's shard write lock, or all
-// shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) hashSetLocked(key string, pairs []HashFieldValue, now int64, accounting bool) (int64, []string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-
-	var (
-		newValue *ValueObject
-		added    int64
-		err      error
-	)
-	if current != nil {
-		newValue = current
-		if accounting {
-			// Size the write against the pre-write value, and leave the hash
-			// untouched if it turns out to breach maxmemory, by mutating a copy
-			// rather than the value still stored under the key.
-			newValue, err = current.cloneHashValue(current.ExpiresAt)
+	return writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		var (
+			newValue *ValueObject
+			added    int64
+			err      error
+		)
+		if w.current != nil {
+			newValue = w.current
+			if w.accounting {
+				// Size the write against the pre-write value, and leave the hash
+				// untouched if it turns out to breach maxmemory, by mutating a copy
+				// rather than the value still stored under the key.
+				newValue, err = w.current.cloneHashValue(w.current.ExpiresAt)
+				if err != nil {
+					return 0, nil, err
+				}
+			}
+			added, err = newValue.hashSet(pairs)
 			if err != nil {
 				return 0, nil, err
 			}
+		} else {
+			newValue = newHashValueForPairs(pairs, 0)
+			newLen, lenErr := newValue.hashLen()
+			if lenErr != nil {
+				return 0, nil, lenErr
+			}
+			added = int64(newLen)
 		}
-		added, err = newValue.hashSet(pairs)
-		if err != nil {
-			return 0, nil, err
-		}
-	} else {
-		newValue = newHashValueForPairs(pairs, 0)
-		newLen, lenErr := newValue.hashLen()
-		if lenErr != nil {
-			return 0, nil, lenErr
-		}
-		added = int64(newLen)
-	}
-	newValue.touch(now)
+		newValue.touch(w.now)
 
-	if accounting {
-		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
+		evicted, err := w.commit(newValue)
 		if err != nil {
 			return 0, nil, err
 		}
 		return added, evicted, nil
-	}
-
-	s.setKeyLocked(shard, key, newValue)
-	return added, nil, nil
+	})
 }
 
 // HGet returns the value of the supplied field on the hash stored at key.

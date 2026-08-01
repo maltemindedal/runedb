@@ -5,7 +5,6 @@ import (
 	"hash/fnv"
 	"math"
 	"math/bits"
-	"time"
 )
 
 // HyperLogLog values are stored as string values with a fixed dense layout:
@@ -42,54 +41,35 @@ var hllRankReciprocal = func() [hllMaxRank + 1]float64 {
 // cardinality estimate changed. When maxmemory is configured it first frees
 // space and reports the keys evicted to make room; otherwise it evicts nothing.
 func (s *Store) PFAdd(key string, elements [][]byte) (int64, []string, error) {
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.pfAddLocked(key, elements, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.pfAddLocked(key, elements, now, false)
-}
-
-// pfAddLocked requires the caller to hold the key's shard write lock, or all
-// shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) pfAddLocked(key string, elements [][]byte, now int64, accounting bool) (int64, []string, error) {
-	shard, value := s.prepareExistingValueLocked(key, now)
-
-	if value == nil {
-		payload := newHyperLogLogPayload()
-		var evicted []string
-		if accounting {
-			newSize := s.approximateStringValueObjectSize(key, len(payload), 0)
-			var err error
-			evicted, err = s.ensureMemoryAvailableLocked(newSize, protectedKeys(key))
+	return writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		if w.current == nil {
+			payload := newHyperLogLogPayload()
+			updateHyperLogLogRegisters(payload[hllHeaderSize:], elements)
+			newValue := newOwnedStringValue(payload, 0)
+			newValue.touch(w.now)
+			evicted, err := w.commit(newValue)
 			if err != nil {
 				return 0, nil, err
 			}
-			s.usedMemory.Add(newSize)
+			return 1, evicted, nil
 		}
-		updateHyperLogLogRegisters(payload[hllHeaderSize:], elements)
-		newValue := newOwnedStringValue(payload, 0)
-		newValue.touch(now)
-		s.setKeyLocked(shard, key, newValue)
-		return 1, evicted, nil
-	}
 
-	data, err := value.StringValue()
-	if err != nil {
-		return 0, nil, err
-	}
-	registers, err := hyperLogLogRegisters(data)
-	if err != nil {
-		return 0, nil, err
-	}
-	changed := updateHyperLogLogRegisters(registers, elements)
-	value.touch(now)
-	return changed, nil, nil
+		data, err := w.current.StringValue()
+		if err != nil {
+			return 0, nil, err
+		}
+		registers, err := hyperLogLogRegisters(data)
+		if err != nil {
+			return 0, nil, err
+		}
+		// Registers are updated where they lie, even while accounting: the
+		// layout is fixed at creation and hyperLogLogRegisters rejects any
+		// payload of another length, so this write cannot change the key's size
+		// and has nothing for commit to weigh.
+		changed := updateHyperLogLogRegisters(registers, elements)
+		w.current.touch(w.now)
+		return changed, nil, nil
+	})
 }
 
 // PFCount returns the approximate cardinality of one HyperLogLog key or of

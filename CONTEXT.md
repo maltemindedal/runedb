@@ -10,7 +10,7 @@ Stash is a Go implementation of a Redis-compatible TCP key/value server. The pro
 - Store: the `internal/storage` in-memory key/value engine.
 - Shard: one fixed partition of the store guarded by a shard-local lock.
 - Value kind: the logical Redis data type stored for a key: string, hash, list, set, sorted set, or stream.
-- TTL: an expiry timestamp stored in Unix milliseconds and enforced by passive reads and active eviction.
+- TTL: an expiry timestamp stored in Unix milliseconds and enforced by passive reads and active eviction. An active eviction is published as a `DEL` to replicas, the AOF, and `WATCH`; a passive one stays local to the server whose read noticed the deadline.
 - AOF: append-only-file durability, stored as replayable RESP command frames.
 - AOF rewrite: background compaction that snapshots live durable state into a replacement append-only file.
 - RDB snapshot: Redis database file support used for startup loading and graceful-shutdown snapshots.

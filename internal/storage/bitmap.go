@@ -1,9 +1,6 @@
 package storage
 
-import (
-	"math/bits"
-	"time"
-)
+import "math/bits"
 
 // MaxBitmapOffset is the largest supported Redis-compatible bitmap bit offset.
 const MaxBitmapOffset = (1 << 32) - 1
@@ -31,92 +28,45 @@ func (s *Store) SetBit(key string, offset int64, bit int64) (int64, []string, er
 		return 0, nil, err
 	}
 
-	return s.setBit(key, offset, bit)
-}
+	return writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		var (
+			data      []byte
+			expiresAt int64
+		)
+		if w.current != nil {
+			current, err := w.current.StringValue()
+			if err != nil {
+				return 0, nil, err
+			}
+			data = current
+			expiresAt = w.current.ExpiresAt
+		}
 
-func (s *Store) setBit(key string, offset int64, bit int64) (int64, []string, error) {
-	now := time.Now().UnixMilli()
-	// Decide the locking mode and accounting mode from a single read of the
-	// maxmemory flag. Reading it again under a narrower lock would be a TOCTOU:
-	// if accounting turned on in between, this call would take only one shard
-	// lock yet enter the cross-shard recalculation path and touch other shards'
-	// maps without holding their locks.
-	accounting := s.maxMemoryEnabled()
-	if accounting {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.setBitLocked(key, offset, bit, now, accounting)
-	}
+		previous := bitAt(data, offset)
+		byteIndex := int(offset / 8)
+		mask := byte(1 << uint(7-(offset%8)))
+		if byteIndex < len(data) && !w.accounting {
+			// The payload already reaches the offset, so the bit can be flipped
+			// where it lies. While accounting the write still goes through commit
+			// below, which sizes it against the stored value and therefore needs
+			// that value intact.
+			setBitInByte(&data[byteIndex], mask, bit)
+			w.current.touch(w.now)
+			return previous, nil, nil
+		}
 
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.setBitInShardLocked(shard, key, offset, bit, now, accounting)
-}
+		payload := make([]byte, max(byteIndex+1, len(data)))
+		copy(payload, data)
+		setBitInByte(&payload[byteIndex], mask, bit)
+		newValue := newOwnedStringValue(payload, expiresAt)
+		newValue.touch(w.now)
 
-func (s *Store) setBitLocked(key string, offset int64, bit int64, now int64, accounting bool) (int64, []string, error) {
-	shard := s.shardForKey(key)
-	return s.setBitInShardLocked(shard, key, offset, bit, now, accounting)
-}
-
-func (s *Store) setBitInShardLocked(shard *Shard, key string, offset int64, bit int64, now int64, accounting bool) (int64, []string, error) {
-	value, ok := shard.data[key]
-	if ok && isExpired(value, now) {
-		s.deleteKeyLocked(shard, key)
-		ok = false
-		value = nil
-	}
-
-	var oldSize int64
-	if accounting {
-		oldSize = s.approximateValueObjectSize(key, value)
-	}
-	var data []byte
-	var expiresAt int64
-	if ok {
-		current, err := value.StringValue()
+		evicted, err := w.commit(newValue)
 		if err != nil {
 			return 0, nil, err
 		}
-		data = current
-		expiresAt = value.ExpiresAt
-	}
-
-	previous := bitAt(data, offset)
-	byteIndex := int(offset / 8)
-	mask := byte(1 << uint(7-(offset%8)))
-	if ok && byteIndex < len(data) {
-		setBitInByte(&value.String[byteIndex], mask, bit)
-		value.touch(now)
-		return previous, nil, nil
-	}
-
-	if accounting {
-		newSize := s.approximateStringValueObjectSize(key, byteIndex+1, expiresAt)
-		evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
-		if err != nil {
-			return 0, nil, err
-		}
-
-		extended := make([]byte, byteIndex+1)
-		copy(extended, data)
-		setBitInByte(&extended[byteIndex], mask, bit)
-		newValue := newOwnedStringValue(extended, expiresAt)
-		newValue.touch(now)
-		s.setKeyLocked(shard, key, newValue)
-		s.usedMemory.Add(newSize - oldSize)
 		return previous, evicted, nil
-	}
-
-	extended := make([]byte, byteIndex+1)
-	copy(extended, data)
-	data = extended
-	setBitInByte(&data[byteIndex], mask, bit)
-
-	newValue := newOwnedStringValue(data, expiresAt)
-	newValue.touch(now)
-	s.setKeyLocked(shard, key, newValue)
-	return previous, nil, nil
+	})
 }
 
 func validateBitmapArguments(offset int64, bit int64) error {

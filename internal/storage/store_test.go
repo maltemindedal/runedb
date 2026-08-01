@@ -299,6 +299,33 @@ func TestStoreValueBehavior(t *testing.T) {
 			},
 		},
 		{
+			name: "SetBit leaves the stored payload intact while accounting",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.Set("bitmap", []byte{0x00}, 0); err != nil {
+					t.Fatalf("Set() error = %v", err)
+				}
+				store.ConfigureMaxMemory(1<<20, 16)
+				stored := store.valueObjectForTest("bitmap").String
+
+				if _, _, err := store.SetBit("bitmap", 0, 1); err != nil {
+					t.Fatalf("SetBit() error = %v", err)
+				}
+
+				// Accounting sizes a write against the value already under the
+				// key, so an in-range SETBIT must commit a replacement rather
+				// than edit that value where it lies.
+				if stored[0] != 0x00 {
+					t.Fatalf("pre-write payload = %#x, want 0x00 untouched", stored[0])
+				}
+				if got, _, err := store.Get("bitmap"); err != nil {
+					t.Fatalf("Get() error = %v", err)
+				} else if got[0] != 0x80 {
+					t.Fatalf("Get() = %#x, want 0x80", got[0])
+				}
+			},
+		},
+		{
 			name: "SetBit checks memory before sparse allocation",
 			run: func(t *testing.T, store *Store) {
 				t.Helper()
@@ -987,7 +1014,7 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store.StartEviction(ctx, 5*time.Millisecond, 10)
+	store.StartEviction(ctx, 5*time.Millisecond, 10, nil)
 
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -998,6 +1025,32 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	}
 
 	t.Fatalf("Len() = %d, want 0 after active eviction", store.Len())
+}
+
+// TestStoreActiveEvictionReportsExpiredKeys pins that the background loop names
+// the keys it removed rather than only counting them: the caller turns them into
+// the DEL that reaches replicas, the AOF, and WATCH.
+func TestStoreActiveEvictionReportsExpiredKeys(t *testing.T) {
+	store := NewStore()
+	_, _ = store.Set("gone", []byte("1"), time.Now().Add(-time.Millisecond).UnixMilli())
+	_, _ = store.Set("kept", []byte("2"), 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reported := make(chan []string, 8)
+	store.StartEviction(ctx, 5*time.Millisecond, 10, func(keys []string) {
+		reported <- keys
+	})
+
+	select {
+	case keys := <-reported:
+		if len(keys) != 1 || keys[0] != "gone" {
+			t.Fatalf("expired keys = %v, want [gone]", keys)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("active eviction did not report the expired key")
+	}
 }
 
 func TestStoreKeyStatsTracksMutations(t *testing.T) {

@@ -144,7 +144,7 @@ func BenchmarkStore(b *testing.B) {
 		store := NewStore()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		store.StartEviction(ctx, time.Millisecond, 32)
+		store.StartEviction(ctx, time.Millisecond, 32, nil)
 		b.ReportAllocs()
 
 		var counter atomic.Uint64

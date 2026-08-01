@@ -549,7 +549,7 @@ func (s *Server) startReplicaLink(ctx context.Context, listenerAddr string) {
 			s.logger.Warn("replication stream command failed", "master_addr", masterAddr, "error", execErr)
 			return
 		}
-		if err := s.persistReplicaDurability(result.Durability); err != nil {
+		if err := s.persistDurabilityFrames(result.Durability); err != nil {
 			s.logger.Error("failed to append replicated command to AOF", "master_addr", masterAddr, "error", err)
 			return
 		}

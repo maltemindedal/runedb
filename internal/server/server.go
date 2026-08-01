@@ -173,7 +173,12 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	defer s.shutdown()
 
 	s.logger.Info("Stash listening", "address", listener.Addr().String())
-	s.store.StartEviction(ctx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize)
+	// The eviction loop runs on its own context so it can be stopped before the
+	// durability teardown below, on the path where serve fails without ctx ever
+	// being cancelled as much as on the ordinary one.
+	evictionCtx, stopEviction := context.WithCancel(ctx)
+	defer stopEviction()
+	evictionDone := s.store.StartEviction(evictionCtx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize, s.recordExpiredKeys)
 	if s.cfg.IsReplica() {
 		s.handlerWG.Add(1)
 		go s.startReplicaLink(ctx, listener.Addr().String())
@@ -195,6 +200,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// persistSnapshot writes the shutdown RDB. Skipping them on the error path
 	// would leak the goroutine and silently drop unflushed writes.
 	s.handlerWG.Wait()
+	// The eviction loop reports expired keys into the same AOF writer and
+	// replica connections, so it has to be finished before they are torn down.
+	stopEviction()
+	<-evictionDone
 
 	var errs []error
 	if serveErr != nil {
