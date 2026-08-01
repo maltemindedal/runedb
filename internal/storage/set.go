@@ -72,30 +72,10 @@ func (s *Store) setAddLocked(key string, members [][]byte, now int64, accounting
 
 // SIsMember reports whether the supplied member is contained in the set stored at key.
 func (s *Store) SIsMember(key string, member []byte) (bool, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return false, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return false, nil
-	}
-	exists, err := value.setContains(member)
-	if err != nil {
-		shard.mu.RUnlock()
-		return false, err
-	}
-	value.touch(now)
-	shard.mu.RUnlock()
-
-	return exists, nil
+	exists, _, err := readKey(s, key, func(value *ValueObject) (bool, error) {
+		return value.setContains(member)
+	})
+	return exists, err
 }
 
 // SRem removes the supplied members from the set stored at key and returns the
@@ -149,28 +129,14 @@ func (s *Store) SRem(key string, members [][]byte) (int64, error) {
 // SMembers returns every member of the set stored at key. Order is not
 // guaranteed and mirrors Redis semantics.
 func (s *Store) SMembers(key string) ([][]byte, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return [][]byte{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return [][]byte{}, nil
-	}
-	members, err := value.setMembers()
+	members, found, err := readKey(s, key, func(value *ValueObject) ([][]byte, error) {
+		return value.setMembers()
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, err
 	}
-	value.touch(now)
-	shard.mu.RUnlock()
-
+	if !found {
+		return [][]byte{}, nil
+	}
 	return members, nil
 }

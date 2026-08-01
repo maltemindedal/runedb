@@ -108,31 +108,14 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 // reports whether a live value was found; fn must not retain data beyond the
 // call.
 func (s *Store) withStringValue(key string, fn func(data []byte) error) (bool, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return false, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return false, nil
-	}
-	data, err := value.StringValue()
-	if err != nil {
-		shard.mu.RUnlock()
-		return true, err
-	}
-	value.touch(now)
-	err = fn(data)
-	shard.mu.RUnlock()
-
-	return true, err
+	_, found, err := readKey(s, key, func(value *ValueObject) (struct{}, error) {
+		data, err := value.StringValue()
+		if err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, fn(data)
+	})
+	return found, err
 }
 
 // Delete removes a key from the store.
@@ -443,39 +426,25 @@ func (s *Store) popN(key string, count int64, left bool) ([][]byte, bool, error)
 
 // ListRange returns an inclusive range of values from the list stored at key.
 func (s *Store) ListRange(key string, start, stop int64) ([][]byte, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
+	values, found, err := readKey(s, key, func(value *ValueObject) ([][]byte, error) {
+		list, err := value.ListValue()
+		if err != nil {
+			return nil, err
+		}
 
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return [][]byte{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return [][]byte{}, nil
-	}
-	list, err := value.ListValue()
+		from, to, ok := normalizeListRange(len(list), start, stop)
+		if !ok {
+			return [][]byte{}, nil
+		}
+		return cloneList(list[from : to+1]), nil
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, err
 	}
-	value.touch(now)
-
-	from, to, ok := normalizeListRange(len(list), start, stop)
-	if !ok {
-		shard.mu.RUnlock()
+	if !found {
 		return [][]byte{}, nil
 	}
-
-	snapshot := make([][]byte, to-from+1)
-	copy(snapshot, list[from:to+1])
-	shard.mu.RUnlock()
-
-	return cloneList(snapshot), nil
+	return values, nil
 }
 
 // ZAdd inserts or updates one or more sorted-set members and returns the number
@@ -552,73 +521,44 @@ func (s *Store) ZScores(key string, members [][]byte) ([]float64, []bool, error)
 	scores := make([]float64, len(members))
 	found := make([]bool, len(members))
 
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return scores, found, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return scores, found, nil
-	}
-	for i, member := range members {
-		score, exists, err := value.zsetScore(member)
-		if err != nil {
-			shard.mu.RUnlock()
-			return nil, nil, err
+	_, _, err := readKey(s, key, func(value *ValueObject) (struct{}, error) {
+		for i, member := range members {
+			score, exists, err := value.zsetScore(member)
+			if err != nil {
+				return struct{}{}, err
+			}
+			scores[i] = score
+			found[i] = exists
 		}
-		scores[i] = score
-		found[i] = exists
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return nil, nil, err
 	}
-	value.touch(now)
-	shard.mu.RUnlock()
 
 	return scores, found, nil
 }
 
 // ZRange returns an inclusive rank range from the sorted set stored at key.
 func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
+	entries, found, err := readKey(s, key, func(value *ValueObject) ([]ZSetRangeEntry, error) {
+		setLen, err := value.zsetLen()
+		if err != nil {
+			return nil, err
+		}
 
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return []ZSetRangeEntry{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return []ZSetRangeEntry{}, nil
-	}
-	setLen, err := value.zsetLen()
+		from, to, ok := normalizeListRange(setLen, start, stop)
+		if !ok {
+			return []ZSetRangeEntry{}, nil
+		}
+		return value.zsetRangeByRank(from, to)
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, err
 	}
-	value.touch(now)
-
-	from, to, ok := normalizeListRange(setLen, start, stop)
-	if !ok {
-		shard.mu.RUnlock()
+	if !found {
 		return []ZSetRangeEntry{}, nil
 	}
-
-	entries, err := value.zsetRangeByRank(from, to)
-	if err != nil {
-		shard.mu.RUnlock()
-		return nil, err
-	}
-	shard.mu.RUnlock()
-
 	return entries, nil
 }
 
@@ -628,34 +568,23 @@ func (s *Store) ZRange(key string, start, stop int64) ([]ZSetRangeEntry, error) 
 // score then member. All ranges are scanned under a single lock acquisition,
 // so the result reflects one consistent snapshot of the set.
 func (s *Store) ZRangeByScores(key string, scoreRanges ...ScoreRange) ([]ZSetRangeEntry, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return []ZSetRangeEntry{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return []ZSetRangeEntry{}, nil
-	}
-
-	var entries []ZSetRangeEntry
-	for _, scoreRange := range scoreRanges {
-		ranged, err := value.zsetRangeByScore(scoreRange)
-		if err != nil {
-			shard.mu.RUnlock()
-			return nil, err
+	entries, found, err := readKey(s, key, func(value *ValueObject) ([]ZSetRangeEntry, error) {
+		var entries []ZSetRangeEntry
+		for _, scoreRange := range scoreRanges {
+			ranged, err := value.zsetRangeByScore(scoreRange)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, ranged...)
 		}
-		entries = append(entries, ranged...)
+		return entries, nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	value.touch(now)
-	shard.mu.RUnlock()
-
+	if !found {
+		return []ZSetRangeEntry{}, nil
+	}
 	return entries, nil
 }
 
@@ -728,34 +657,19 @@ func (s *Store) streamAddLocked(key, rawID string, values [][]byte, now int64, a
 
 // XRead returns stream entries whose IDs are greater than the supplied ID.
 func (s *Store) XRead(key, rawID string) ([]StreamEntry, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return []StreamEntry{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return []StreamEntry{}, nil
-	}
-	stream, err := value.StreamValue()
-	if err != nil {
-		shard.mu.RUnlock()
-		return nil, err
-	}
-	value.touch(now)
-
-	entries, err := stream.entriesAfter(rawID)
-	shard.mu.RUnlock()
+	entries, found, err := readKey(s, key, func(value *ValueObject) ([]StreamEntry, error) {
+		stream, err := value.StreamValue()
+		if err != nil {
+			return nil, err
+		}
+		return stream.entriesAfter(rawID)
+	})
 	if err != nil {
 		return nil, err
 	}
-
+	if !found {
+		return []StreamEntry{}, nil
+	}
 	return entries, nil
 }
 

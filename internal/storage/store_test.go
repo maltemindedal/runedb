@@ -571,6 +571,113 @@ func TestStoreMaxMemoryAccountingReclaimsExpiredBytesOnLegacyWrite(t *testing.T)
 	}
 }
 
+func TestStoreDropIfStillExpired(t *testing.T) {
+	// dropIfStillExpired runs after a reader saw the key expired and released
+	// its read lock. Taking the write lock is a separate acquisition, so the
+	// key may have been deleted, rewritten or renewed in between and the
+	// decision has to be remade from a fresh read rather than trusting the
+	// reader. Each case below is one thing that can have happened in that gap.
+	tests := []struct {
+		name      string
+		setup     func(*testing.T, *Store)
+		wantFound bool
+		wantValue string
+	}{
+		{
+			name: "reclaims a key that is still expired",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				_, _ = store.Set("key", []byte("stale"), time.Now().Add(-time.Millisecond).UnixMilli())
+			},
+			wantFound: false,
+		},
+		{
+			name: "keeps a key rewritten without an expiry",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				_, _ = store.Set("key", []byte("fresh"), 0)
+			},
+			wantFound: true,
+			wantValue: "fresh",
+		},
+		{
+			name: "keeps a key whose expiry moved into the future",
+			setup: func(t *testing.T, store *Store) {
+				t.Helper()
+				_, _ = store.Set("key", []byte("renewed"), time.Now().Add(time.Hour).UnixMilli())
+			},
+			wantFound: true,
+			wantValue: "renewed",
+		},
+		{
+			name:      "tolerates a key already deleted",
+			setup:     func(t *testing.T, store *Store) { t.Helper() },
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewStore()
+			store.ConfigureMaxMemory(1<<30, 16)
+			tt.setup(t, store)
+
+			store.dropIfStillExpired(store.shardForKey("key"), "key")
+
+			value, found, err := store.Get("key")
+			if err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			if found != tt.wantFound {
+				t.Fatalf("Get() found = %v, want %v", found, tt.wantFound)
+			}
+			if found && string(value) != tt.wantValue {
+				t.Fatalf("Get() = %q, want %q", value, tt.wantValue)
+			}
+
+			if tt.wantFound {
+				return
+			}
+			// A reclaim must leave no accounting or key-kind residue behind.
+			if used := store.UsedMemory(); used != 0 {
+				t.Fatalf("UsedMemory() after reclaim = %d, want 0", used)
+			}
+			if total := store.KeyStats().TotalKeys; total != 0 {
+				t.Fatalf("KeyStats().TotalKeys after reclaim = %d, want 0", total)
+			}
+		})
+	}
+}
+
+func TestStoreDropIfStillExpiredNeverReclaimsALiveKey(t *testing.T) {
+	store := NewStore()
+	shard := store.shardForKey("key")
+
+	// Every write below stores a live value, so a correct reclaim can never
+	// remove the key no matter how the two goroutines interleave. Run under
+	// -race, this also exercises the read-then-write-lock handoff.
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 2000; i++ {
+			_, _ = store.Set("key", []byte("live"), 0)
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		for i := 0; i < 2000; i++ {
+			store.dropIfStillExpired(shard, "key")
+		}
+	}()
+	workers.Wait()
+
+	if _, found, err := store.Get("key"); err != nil || !found {
+		t.Fatalf("Get() found = %v, err = %v, want true, nil", found, err)
+	}
+}
+
 func TestStoreMaxMemoryAccountingAfterExpiredKeyOverwrite(t *testing.T) {
 	// Overwriting an expired key must leave exactly the memory the same write
 	// would use on an empty Store. A mutator that sizes the expired value after

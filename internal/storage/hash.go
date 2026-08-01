@@ -73,35 +73,25 @@ func (s *Store) hashSetLocked(key string, pairs []HashFieldValue, now int64, acc
 
 // HGet returns the value of the supplied field on the hash stored at key.
 func (s *Store) HGet(key, field string) ([]byte, bool, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return nil, false, nil
+	// A missing field and a missing key are both reported as not found, but only
+	// the field case can carry a zero-length value, so the two travel together
+	// rather than relying on a nil payload to mean absent.
+	type hashField struct {
+		value  []byte
+		exists bool
 	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
 
-		s.dropIfStillExpired(shard, key)
-		return nil, false, nil
-	}
-	raw, exists, err := value.hashGet(field)
+	found, _, err := readKey(s, key, func(value *ValueObject) (hashField, error) {
+		raw, exists, err := value.hashGet(field)
+		if err != nil || !exists {
+			return hashField{}, err
+		}
+		return hashField{value: cloneBytes(raw), exists: true}, nil
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, false, err
 	}
-	value.touch(now)
-	if !exists {
-		shard.mu.RUnlock()
-		return nil, false, nil
-	}
-	cloned := cloneBytes(raw)
-	shard.mu.RUnlock()
-
-	return cloned, true, nil
+	return found.value, found.exists, nil
 }
 
 // HDel removes the named fields from the hash stored at key and returns the
@@ -154,31 +144,21 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 // HGetAll returns every field/value pair on the hash stored at key. Order is
 // not guaranteed and mirrors Redis semantics.
 func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return []HashFieldValue{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return []HashFieldValue{}, nil
-	}
-	entries, err := value.hashEntries()
+	entries, found, err := readKey(s, key, func(value *ValueObject) ([]HashFieldValue, error) {
+		entries, err := value.hashEntries()
+		if err != nil {
+			return nil, err
+		}
+		for i := range entries {
+			entries[i].Value = cloneBytes(entries[i].Value)
+		}
+		return entries, nil
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, err
 	}
-	value.touch(now)
-	for i := range entries {
-		entries[i].Value = cloneBytes(entries[i].Value)
+	if !found {
+		return []HashFieldValue{}, nil
 	}
-	shard.mu.RUnlock()
-
 	return entries, nil
 }

@@ -14,31 +14,13 @@ func (s *Store) GetBit(key string, offset int64) (int64, bool, error) {
 		return 0, false, err
 	}
 
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return 0, false, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return 0, false, nil
-	}
-	data, err := value.StringValue()
-	if err != nil {
-		shard.mu.RUnlock()
-		return 0, true, err
-	}
-	value.touch(now)
-	bit := bitAt(data, offset)
-	shard.mu.RUnlock()
-
-	return bit, true, nil
+	return readKey(s, key, func(value *ValueObject) (int64, error) {
+		data, err := value.StringValue()
+		if err != nil {
+			return 0, err
+		}
+		return bitAt(data, offset), nil
+	})
 }
 
 // SetBit sets the bit stored at offset for a string value and returns the
@@ -164,31 +146,13 @@ func setBitInByte(dst *byte, mask byte, bit int64) {
 
 // BitCount counts set bits in a string value, optionally over an inclusive byte range.
 func (s *Store) BitCount(key string, start *int64, end *int64) (int64, bool, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return 0, false, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return 0, false, nil
-	}
-	data, err := value.StringValue()
-	if err != nil {
-		shard.mu.RUnlock()
-		return 0, true, err
-	}
-	value.touch(now)
-	count := countBits(data, start, end)
-	shard.mu.RUnlock()
-
-	return count, true, nil
+	return readKey(s, key, func(value *ValueObject) (int64, error) {
+		data, err := value.StringValue()
+		if err != nil {
+			return 0, err
+		}
+		return countBits(data, start, end), nil
+	})
 }
 
 func bitAt(data []byte, offset int64) int64 {
