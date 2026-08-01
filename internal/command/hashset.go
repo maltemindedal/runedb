@@ -18,7 +18,7 @@ func (e *Executor) handleHSet(ctx context.Context, request *Request) (protocol.V
 		})
 	}
 
-	added, evicted, err := e.store.HSetWithEviction(key, pairs)
+	added, evicted, err := e.store.HSet(key, pairs)
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -103,7 +103,7 @@ func (e *Executor) handleSAdd(ctx context.Context, request *Request) (protocol.V
 	}
 
 	key := string(request.Args[0])
-	added, evicted, err := e.store.SAddWithEviction(key, request.Args[1:])
+	added, evicted, err := e.store.SAdd(key, request.Args[1:])
 	if err != nil {
 		return nil, storageCommandError(err)
 	}

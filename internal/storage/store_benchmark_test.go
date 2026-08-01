@@ -25,7 +25,7 @@ func BenchmarkStore(b *testing.B) {
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			store.Set("hot", payload, 0)
+			_, _ = store.Set("hot", payload, 0)
 		}
 	})
 
@@ -34,7 +34,7 @@ func BenchmarkStore(b *testing.B) {
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
-			if _, err := store.SetBit("bitmap", int64(i%64), 1); err != nil {
+			if _, _, err := store.SetBit("bitmap", int64(i%64), 1); err != nil {
 				b.Fatalf("SetBit() error = %v", err)
 			}
 		}
@@ -42,7 +42,7 @@ func BenchmarkStore(b *testing.B) {
 
 	b.Run("Get hit", func(b *testing.B) {
 		store := NewStore()
-		store.Set("hot", payload, 0)
+		_, _ = store.Set("hot", payload, 0)
 		b.ReportAllocs()
 
 		for i := 0; i < b.N; i++ {
@@ -69,7 +69,7 @@ func BenchmarkStore(b *testing.B) {
 
 	b.Run("Parallel get hit", func(b *testing.B) {
 		store := NewStore()
-		store.Set("hot", payload, 0)
+		_, _ = store.Set("hot", payload, 0)
 		b.ReportAllocs()
 
 		b.RunParallel(func(pb *testing.PB) {
@@ -89,14 +89,14 @@ func BenchmarkStore(b *testing.B) {
 
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				store.Set("hot", payload, 0)
+				_, _ = store.Set("hot", payload, 0)
 			}
 		})
 	})
 
 	b.Run("Parallel mixed hot key", func(b *testing.B) {
 		store := NewStore()
-		store.Set("hot", payload, 0)
+		_, _ = store.Set("hot", payload, 0)
 		b.ReportAllocs()
 
 		var op atomic.Uint64
@@ -104,7 +104,7 @@ func BenchmarkStore(b *testing.B) {
 			for pb.Next() {
 				switch op.Add(1) % 3 {
 				case 0:
-					store.Set("hot", payload, 0)
+					_, _ = store.Set("hot", payload, 0)
 				case 1:
 					_, _, _ = store.Get("hot")
 				default:
@@ -122,7 +122,7 @@ func BenchmarkStore(b *testing.B) {
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
 				key := fmt.Sprintf("key-%d", counter.Add(1)%128)
-				store.Set(key, payload, 0)
+				_, _ = store.Set(key, payload, 0)
 				_, _, _ = store.Get(key)
 			}
 		})
@@ -130,7 +130,7 @@ func BenchmarkStore(b *testing.B) {
 
 	b.Run("Parallel passive eviction", func(b *testing.B) {
 		store := NewStore()
-		store.Set("expired", payload, time.Now().Add(-time.Millisecond).UnixMilli())
+		_, _ = store.Set("expired", payload, time.Now().Add(-time.Millisecond).UnixMilli())
 		b.ReportAllocs()
 
 		b.RunParallel(func(pb *testing.PB) {
@@ -153,7 +153,7 @@ func BenchmarkStore(b *testing.B) {
 				index := counter.Add(1)
 				key := fmt.Sprintf("ttl-%d", index%64)
 				expiresAt := time.Now().Add(2 * time.Millisecond).UnixMilli()
-				store.Set(key, payload, expiresAt)
+				_, _ = store.Set(key, payload, expiresAt)
 				_, _, _ = store.Get(key)
 			}
 		})
@@ -166,7 +166,7 @@ func BenchmarkStore(b *testing.B) {
 			b.StopTimer()
 			store := NewStore()
 			for _, key := range deleteKeys {
-				store.Set(key, payload, 0)
+				_, _ = store.Set(key, payload, 0)
 			}
 			b.StartTimer()
 
@@ -180,7 +180,7 @@ func BenchmarkStore(b *testing.B) {
 	b.Run("SnapshotAll 1024 strings", func(b *testing.B) {
 		store := NewStore()
 		for _, key := range snapshotKeys {
-			store.Set(key, payload, 0)
+			_, _ = store.Set(key, payload, 0)
 		}
 
 		b.ReportAllocs()

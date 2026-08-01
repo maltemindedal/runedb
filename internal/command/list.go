@@ -16,7 +16,7 @@ func (e *Executor) handleLPush(ctx context.Context, request *Request) (protocol.
 	}
 
 	key := string(request.Args[0])
-	length, evicted, err := e.store.LeftPushWithEviction(key, request.Args[1:])
+	length, evicted, err := e.store.LeftPush(key, request.Args[1:])
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -31,7 +31,7 @@ func (e *Executor) handleRPush(ctx context.Context, request *Request) (protocol.
 	}
 
 	key := string(request.Args[0])
-	length, evicted, err := e.store.RightPushWithEviction(key, request.Args[1:])
+	length, evicted, err := e.store.RightPush(key, request.Args[1:])
 	if err != nil {
 		return nil, storageCommandError(err)
 	}

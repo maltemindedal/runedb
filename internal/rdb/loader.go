@@ -274,7 +274,12 @@ func (l *loader) readEntry(valueType byte, expiresAt int64) error {
 		return nil
 	}
 
-	l.store.Set(string(key), value, expiresAt)
+	// Startup loading runs before maxmemory is configured, so Set cannot evict
+	// or reject today. It is still propagated rather than dropped: the loader
+	// rejects what it cannot fully apply instead of loading partially.
+	if _, err := l.store.Set(string(key), value, expiresAt); err != nil {
+		return fmt.Errorf("store key %q: %w", key, err)
+	}
 	l.stats.LoadedKeys++
 	return nil
 }

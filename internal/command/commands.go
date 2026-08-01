@@ -499,7 +499,7 @@ func (e *Executor) handleSet(ctx context.Context, request *Request) (protocol.Va
 	}
 
 	key := string(request.Args[0])
-	evicted, err := e.store.SetWithEviction(key, request.Args[1], expiresAt)
+	evicted, err := e.store.Set(key, request.Args[1], expiresAt)
 	if err != nil {
 		if errors.Is(err, storage.ErrMemoryLimitExceeded) {
 			return nil, ErrOutOfMemoryError()
@@ -545,7 +545,7 @@ func (e *Executor) handleSetBit(ctx context.Context, request *Request) (protocol
 	}
 
 	key := string(request.Args[0])
-	previous, evicted, err := e.store.SetBitWithEviction(key, offset, bit)
+	previous, evicted, err := e.store.SetBit(key, offset, bit)
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -598,7 +598,7 @@ func (e *Executor) handlePFAdd(ctx context.Context, request *Request) (protocol.
 	}
 
 	key := string(request.Args[0])
-	changed, evicted, err := e.store.PFAddWithEviction(key, request.Args[1:])
+	changed, evicted, err := e.store.PFAdd(key, request.Args[1:])
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -661,7 +661,7 @@ func (e *Executor) handleIncr(ctx context.Context, request *Request) (protocol.V
 	}
 
 	key := string(request.Args[0])
-	value, evicted, err := e.store.IncrementWithEviction(key)
+	value, evicted, err := e.store.Increment(key)
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -685,7 +685,7 @@ func (e *Executor) handleZAdd(ctx context.Context, request *Request) (protocol.V
 	}
 
 	key := string(request.Args[0])
-	added, evicted, err := e.store.ZAddWithEviction(key, entries)
+	added, evicted, err := e.store.ZAdd(key, entries)
 	if err != nil {
 		return nil, storageCommandError(err)
 	}
@@ -722,7 +722,7 @@ func (e *Executor) handleZRange(_ context.Context, request *Request) (protocol.V
 
 func (e *Executor) handleXAdd(ctx context.Context, request *Request) (protocol.Value, error) {
 	key := string(request.Args[0])
-	id, evicted, err := e.store.XAddWithEviction(key, string(request.Args[1]), request.Args[2:])
+	id, evicted, err := e.store.XAdd(key, string(request.Args[1]), request.Args[2:])
 	if err != nil {
 		return nil, storageCommandError(err)
 	}

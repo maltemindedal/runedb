@@ -17,21 +17,21 @@ import (
 
 func TestGenerateRewriteRoundTripsState(t *testing.T) {
 	store := storage.NewStore()
-	store.Set("name", []byte("Stash"), 0)
-	store.Set("expiring", []byte("soon"), time.Now().Add(time.Minute).UnixMilli())
-	if _, err := store.RightPush("letters", [][]byte{[]byte("a"), []byte("b")}); err != nil {
+	_, _ = store.Set("name", []byte("Stash"), 0)
+	_, _ = store.Set("expiring", []byte("soon"), time.Now().Add(time.Minute).UnixMilli())
+	if _, _, err := store.RightPush("letters", [][]byte{[]byte("a"), []byte("b")}); err != nil {
 		t.Fatalf("RightPush() error = %v", err)
 	}
-	if _, err := store.HSet("profile", []storage.HashFieldValue{{Field: "lang", Value: []byte("go")}, {Field: "tier", Value: []byte("senior")}}); err != nil {
+	if _, _, err := store.HSet("profile", []storage.HashFieldValue{{Field: "lang", Value: []byte("go")}, {Field: "tier", Value: []byte("senior")}}); err != nil {
 		t.Fatalf("HSet() error = %v", err)
 	}
-	if _, err := store.SAdd("tags", [][]byte{[]byte("fast"), []byte("durable")}); err != nil {
+	if _, _, err := store.SAdd("tags", [][]byte{[]byte("fast"), []byte("durable")}); err != nil {
 		t.Fatalf("SAdd() error = %v", err)
 	}
-	if _, err := store.ZAdd("leaders", []storage.ZSetEntry{{Member: []byte("alpha"), Score: 1}, {Member: []byte("beta"), Score: 2}}); err != nil {
+	if _, _, err := store.ZAdd("leaders", []storage.ZSetEntry{{Member: []byte("alpha"), Score: 1}, {Member: []byte("beta"), Score: 2}}); err != nil {
 		t.Fatalf("ZAdd() error = %v", err)
 	}
-	if _, err := store.XAdd("events", "1-0", [][]byte{[]byte("type"), []byte("start")}); err != nil {
+	if _, _, err := store.XAdd("events", "1-0", [][]byte{[]byte("type"), []byte("start")}); err != nil {
 		t.Fatalf("XAdd() error = %v", err)
 	}
 

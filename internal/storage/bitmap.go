@@ -41,25 +41,12 @@ func (s *Store) GetBit(key string, offset int64) (int64, bool, error) {
 	return bit, true, nil
 }
 
-// SetBit sets the bit stored at offset for a string value and returns the previous bit.
-func (s *Store) SetBit(key string, offset int64, bit int64) (int64, error) {
-	if err := validateBitmapArguments(offset, bit); err != nil {
-		return 0, err
-	}
-
-	previous, _, err := s.setBit(key, offset, bit)
-	return previous, err
-}
-
-// SetBitWithEviction sets a bit and evicts keys first if maxmemory requires it.
-func (s *Store) SetBitWithEviction(key string, offset int64, bit int64) (int64, []string, error) {
+// SetBit sets the bit stored at offset for a string value and returns the
+// previous bit. When maxmemory is configured it first frees space and reports
+// the keys evicted to make room; otherwise it evicts nothing.
+func (s *Store) SetBit(key string, offset int64, bit int64) (int64, []string, error) {
 	if err := validateBitmapArguments(offset, bit); err != nil {
 		return 0, nil, err
-	}
-
-	if !s.maxMemoryEnabled() {
-		previous, err := s.SetBit(key, offset, bit)
-		return previous, nil, err
 	}
 
 	return s.setBit(key, offset, bit)
