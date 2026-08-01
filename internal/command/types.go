@@ -336,11 +336,7 @@ func (e *Executor) recordEvictedKeys(ctx context.Context, keys []string) {
 		return
 	}
 
-	args := make([][]byte, 0, len(keys))
-	for _, key := range keys {
-		args = append(args, []byte(key))
-	}
-	frame := propagationFrame(&Request{Name: "DEL", Args: args})
+	frame := server.DeleteFrame(keys)
 	if !server.IsReplicationOrigin(ctx) {
 		effects.propagation = append(effects.propagation, frame)
 	}

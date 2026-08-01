@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -299,13 +300,53 @@ func TestStoreValueBehavior(t *testing.T) {
 			},
 		},
 		{
+			name: "SetBit leaves the stored payload intact while accounting",
+			run: func(t *testing.T, store *Store) {
+				t.Helper()
+				if _, err := store.Set("bitmap", []byte{0x00}, 0); err != nil {
+					t.Fatalf("Set() error = %v", err)
+				}
+				store.ConfigureMaxMemory(1<<20, 16)
+				stored := store.valueObjectForTest("bitmap").String
+
+				if _, _, err := store.SetBit("bitmap", 0, 1); err != nil {
+					t.Fatalf("SetBit() error = %v", err)
+				}
+
+				// Accounting sizes a write against the value already under the
+				// key, so an in-range SETBIT must commit a replacement rather
+				// than edit that value where it lies.
+				if stored[0] != 0x00 {
+					t.Fatalf("pre-write payload = %#x, want 0x00 untouched", stored[0])
+				}
+				if got, _, err := store.Get("bitmap"); err != nil {
+					t.Fatalf("Get() error = %v", err)
+				} else if got[0] != 0x80 {
+					t.Fatalf("Get() = %#x, want 0x80", got[0])
+				}
+			},
+		},
+		{
 			name: "SetBit checks memory before sparse allocation",
 			run: func(t *testing.T, store *Store) {
 				t.Helper()
 				store.ConfigureMaxMemory(1, 16)
 
-				if _, _, err := store.SetBit("bitmap", MaxBitmapOffset, 1); !errors.Is(err, ErrMemoryLimitExceeded) {
+				// The rejected payload is half a gigabyte. Allocating it before
+				// checking would zero it under every shard write lock, so the
+				// test measures that it was never allocated, not only that the
+				// call failed.
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				_, _, err := store.SetBit("bitmap", MaxBitmapOffset, 1)
+				runtime.ReadMemStats(&after)
+
+				if !errors.Is(err, ErrMemoryLimitExceeded) {
 					t.Fatalf("SetBit() error = %v, want ErrMemoryLimitExceeded", err)
+				}
+				const allocationBudget = 8 << 20
+				if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationBudget {
+					t.Fatalf("SetBit() allocated %d bytes, want at most %d for a rejected write", allocated, allocationBudget)
 				}
 				if _, ok, err := store.Get("bitmap"); err != nil {
 					t.Fatalf("Get() error = %v", err)
@@ -998,6 +1039,71 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	}
 
 	t.Fatalf("Len() = %d, want 0 after active eviction", store.Len())
+}
+
+// TestStoreActiveEvictionReportsExpiredKeys pins that the background loop names
+// the keys it removed rather than only counting them: the caller turns them into
+// the DEL that reaches replicas, the AOF, and WATCH.
+func TestStoreActiveEvictionReportsExpiredKeys(t *testing.T) {
+	store := NewStore()
+	_, _ = store.Set("gone", []byte("1"), time.Now().Add(-time.Millisecond).UnixMilli())
+	_, _ = store.Set("kept", []byte("2"), 0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reported := make(chan []string, 8)
+	store.SetExpirationListener(func(keys []string) {
+		reported <- keys
+	})
+	store.StartEviction(ctx, 5*time.Millisecond, 10)
+
+	select {
+	case keys := <-reported:
+		if len(keys) != 1 || keys[0] != "gone" {
+			t.Fatalf("expired keys = %v, want [gone]", keys)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("active eviction did not report the expired key")
+	}
+}
+
+// TestStoreAccountedWriteReportsSweptExpiredKeys pins the second door expiry
+// leaves by. With maxmemory on, every accounted write recalculates usage across
+// the whole keyspace and drops the expired keys it passes on the way. That is a
+// sweep, not this write's business, and it has to be reported like the
+// background loop's — otherwise the deletions reach nobody whenever maxmemory is
+// the thing driving them.
+func TestStoreAccountedWriteReportsSweptExpiredKeys(t *testing.T) {
+	store := NewStore()
+	store.ConfigureMaxMemory(1<<20, 16)
+
+	reported := make(chan []string, 8)
+	store.SetExpirationListener(func(keys []string) {
+		reported <- keys
+	})
+
+	// Stored while accounting is already on, so the sweep that removes it is the
+	// one the next write runs rather than anything this one did.
+	if _, err := store.Set("stale", []byte("value"), time.Now().Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatalf("Set(stale) error = %v", err)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("expired keys reported = %v, want none before the key is swept", <-reported)
+	}
+
+	if _, err := store.Set("live", []byte("value"), 0); err != nil {
+		t.Fatalf("Set(live) error = %v", err)
+	}
+
+	select {
+	case keys := <-reported:
+		if len(keys) != 1 || keys[0] != "stale" {
+			t.Fatalf("expired keys = %v, want [stale]", keys)
+		}
+	default:
+		t.Fatal("accounted write did not report the expired key it swept")
+	}
 }
 
 func TestStoreKeyStatsTracksMutations(t *testing.T) {

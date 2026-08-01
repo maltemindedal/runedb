@@ -41,6 +41,21 @@ func MultiResponse(values ...protocol.Value) ExecuteResult {
 	return ExecuteResult{Responses: responses}
 }
 
+// DeleteFrame builds the `DEL` command frame that stands for keys the server
+// removed without a client asking. Both callers that need one — the command
+// executor, for keys evicted under memory pressure, and the server, for keys
+// evicted once their TTL passed — propagate and persist the identical frame, so
+// they build it the same way.
+func DeleteFrame(keys []string) protocol.Array {
+	elements := make([]protocol.Value, 0, len(keys)+1)
+	elements = append(elements, protocol.TextBulkString{Value: "DEL"})
+	for _, key := range keys {
+		elements = append(elements, protocol.BulkString{Data: []byte(key)})
+	}
+
+	return protocol.Array{Elements: elements}
+}
+
 type replicationOriginContextKey struct{}
 
 // WithReplicationOrigin marks a command as originating from the upstream replication stream.
@@ -549,7 +564,7 @@ func (s *Server) startReplicaLink(ctx context.Context, listenerAddr string) {
 			s.logger.Warn("replication stream command failed", "master_addr", masterAddr, "error", execErr)
 			return
 		}
-		if err := s.persistReplicaDurability(result.Durability); err != nil {
+		if err := s.persistDurabilityFrames(result.Durability); err != nil {
 			s.logger.Error("failed to append replicated command to AOF", "master_addr", masterAddr, "error", err)
 			return
 		}

@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -990,6 +992,133 @@ func TestMasterPropagatesMutationsToReplica(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("master did not stop within timeout")
+	}
+}
+
+// TestMasterPropagatesActiveEvictionOfExpiredKey pins that a key the active TTL
+// eviction loop removes is treated as the keyspace mutation it is: the master
+// sends a DEL naming it to its replicas, records that DEL in its AOF, and
+// invalidates any WATCH guarding the key. Without that, a replica keeps serving
+// a key the master has already dropped, and replaying the AOF resurrects it.
+func TestMasterPropagatesActiveEvictionOfExpiredKey(t *testing.T) {
+	aofPath := filepath.Join(t.TempDir(), "appendonly.aof")
+	cfg := testAOFConfig(aofPath)
+
+	logger := stashlogger.New(cfg.LogLevel)
+	store := storage.NewStore()
+	executor := command.NewExecutor(store, logger)
+	srv := server.New(cfg, logger, store, executor)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe(ctx)
+	}()
+
+	addr := waitForAddr(t, srv)
+	replicaConn, replicaParser := attachTestReplica(t, srv, addr)
+
+	clientConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) client error = %v", addr, err)
+	}
+	defer closeTestResource(t, clientConn)
+	clientParser := protocol.NewParser(clientConn)
+
+	// The TTL must outlive the WATCH below, so that the transaction is aborted
+	// by the eviction rather than by the SET that armed it.
+	assertCommandResponse(t, clientConn, clientParser, protocol.SimpleString{Value: "OK"}, "SET", "ephemeral", "value", "PX", "300")
+
+	watcherConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) watcher error = %v", addr, err)
+	}
+	defer closeTestResource(t, watcherConn)
+	watcherParser := protocol.NewParser(watcherConn)
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "WATCH", "ephemeral")
+
+	waitForPropagatedDelete(t, replicaConn, replicaParser, "ephemeral")
+
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "OK"}, "MULTI")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.SimpleString{Value: "QUEUED"}, "SET", "ephemeral", "again")
+	assertCommandResponse(t, watcherConn, watcherParser, protocol.Array{Null: true}, "EXEC")
+
+	cancel()
+	waitForServerStop(t, errCh)
+
+	recorded, err := os.ReadFile(aofPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", aofPath, err)
+	}
+	wantFrame, err := protocol.EncodeValues([]protocol.Value{request("DEL", "ephemeral")})
+	if err != nil {
+		t.Fatalf("EncodeValues() error = %v", err)
+	}
+	if !bytes.Contains(recorded, wantFrame) {
+		t.Fatalf("AOF = %q, want it to contain the eviction frame %q", recorded, wantFrame)
+	}
+}
+
+// attachTestReplica completes the replica handshake on a raw connection and
+// returns it positioned at the start of the propagated command stream.
+func attachTestReplica(t *testing.T, srv *server.Server, addr string) (net.Conn, *protocol.Parser) {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial(%q) replica error = %v", addr, err)
+	}
+	t.Cleanup(func() { closeTestResource(t, conn) })
+
+	parser := protocol.NewParser(conn)
+	assertCommandResponse(t, conn, parser, protocol.SimpleString{Value: "OK"}, "REPLCONF", "listening-port", "6380")
+
+	if err := protocol.WriteValue(conn, request("PSYNC", "?", "-1")); err != nil {
+		t.Fatalf("WriteValue(PSYNC) error = %v", err)
+	}
+	if _, err := parser.Parse(); err != nil {
+		t.Fatalf("Parse() FULLRESYNC error = %v", err)
+	}
+	if _, err := parser.Parse(); err != nil {
+		t.Fatalf("Parse() snapshot error = %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.ReplicaCount() == 1 {
+			return conn, parser
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("ReplicaCount() = %d, want 1", srv.ReplicaCount())
+	return nil, nil
+}
+
+// waitForPropagatedDelete consumes the propagated command stream until the
+// deletion of key arrives, tolerating the writes that armed it.
+func waitForPropagatedDelete(t *testing.T, conn net.Conn, parser *protocol.Parser, key string) {
+	t.Helper()
+
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
+
+	for {
+		propagated, err := decodeReplicaRequest(parser)
+		if err != nil {
+			t.Fatalf("waiting for propagated DEL %q: %v", key, err)
+		}
+		if propagated.Name != "DEL" {
+			continue
+		}
+		if len(propagated.Args) != 1 || string(propagated.Args[0]) != key {
+			t.Fatalf("propagated DEL args = %q, want [%s]", propagated.Args, key)
+		}
+		return
 	}
 }
 

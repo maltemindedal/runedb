@@ -38,6 +38,9 @@ type Store struct {
 	waiters                  *listWaiters
 	loggerMu                 sync.RWMutex
 	logger                   *slog.Logger
+	expirationMu             sync.Mutex
+	expirationListener       func(keys []string)
+	pendingExpired           []string
 	usedMemory               atomic.Int64
 	keyKindCounts            [keyStatsKindCount]atomic.Int64
 	maxMemory                atomic.Int64
@@ -60,35 +63,72 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 	s.logger = logger
 }
 
+// SetExpirationListener registers the sink for keys the store removed because
+// their TTL had passed.
+//
+// Expiry is the one keyspace mutation the store performs on its own initiative
+// rather than on a caller's instruction, which makes it the one a caller cannot
+// otherwise see — and a caller that replicates and persists mutations has to see
+// it. Two paths sweep for it: the background eviction loop, and the keyspace
+// recalculation every accounted write runs. Both report here.
+//
+// A key dropped because the very operation reading it found it expired is not
+// reported: passive expiry is a conclusion any server holding the key reaches
+// from the TTL it already has. The listener runs with no shard lock held, on
+// whichever goroutine noticed the expiry.
+func (s *Store) SetExpirationListener(listener func(keys []string)) {
+	if s == nil {
+		return
+	}
+
+	s.expirationMu.Lock()
+	defer s.expirationMu.Unlock()
+	s.expirationListener = listener
+}
+
+// noteExpiredKeysLocked queues keys removed for expiry while shard locks are
+// held, for publishExpiredKeys to hand on once they are released.
+func (s *Store) noteExpiredKeysLocked(keys []string) {
+	if s == nil || len(keys) == 0 {
+		return
+	}
+
+	s.expirationMu.Lock()
+	defer s.expirationMu.Unlock()
+	s.pendingExpired = append(s.pendingExpired, keys...)
+}
+
+// publishExpiredKeys hands every queued expiry to the listener. Callers must
+// hold no shard lock: the listener reaches replication and durability sinks,
+// which must never be entered under a store lock. It always drains the queue,
+// so an unconfigured listener cannot let it grow.
+func (s *Store) publishExpiredKeys() {
+	if s == nil {
+		return
+	}
+
+	s.expirationMu.Lock()
+	pending := s.pendingExpired
+	s.pendingExpired = nil
+	listener := s.expirationListener
+	s.expirationMu.Unlock()
+
+	if len(pending) == 0 || listener == nil {
+		return
+	}
+
+	listener(pending)
+}
+
 // Set stores a byte slice under the provided key. When maxmemory is configured
 // it first frees space and reports the keys evicted to make room; otherwise it
 // evicts nothing.
 func (s *Store) Set(key string, value []byte, expiresAt int64) ([]string, error) {
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.setStringLocked(key, value, expiresAt, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.setStringLocked(key, value, expiresAt, now, false)
-}
-
-// setStringLocked requires the caller to hold the key's shard write lock, or
-// all shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) setStringLocked(key string, value []byte, expiresAt int64, now int64, accounting bool) ([]string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-	newValue := newStringValue(value, expiresAt)
-
-	if accounting {
-		return s.commitValueWithEvictionLocked(shard, key, current, newValue)
-	}
-
-	s.setKeyLocked(shard, key, newValue)
-	return nil, nil
+	_, evicted, err := writeKey(s, key, func(w keyWrite) (struct{}, []string, error) {
+		evicted, err := w.commit(newStringValue(value, expiresAt))
+		return struct{}{}, evicted, err
+	})
+	return evicted, err
 }
 
 // Get fetches a value from the store, passively evicting it if it has expired.
@@ -182,65 +222,43 @@ func (s *Store) DeleteMany(keys []string) []string {
 // maxmemory is configured it first frees space and reports the keys evicted to
 // make room; otherwise it evicts nothing.
 func (s *Store) Increment(key string) (int64, []string, error) {
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.incrementLocked(key, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.incrementLocked(key, now, false)
-}
-
-// incrementLocked requires the caller to hold the key's shard write lock, or
-// all shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) incrementLocked(key string, now int64, accounting bool) (int64, []string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-
-	if current == nil {
-		newValue := newOwnedStringValue([]byte("1"), 0)
-		if accounting {
-			evicted, err := s.commitValueWithEvictionLocked(shard, key, nil, newValue)
+	return writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		if w.current == nil {
+			evicted, err := w.commit(newOwnedStringValue([]byte("1"), 0))
 			if err != nil {
 				return 0, nil, err
 			}
 			return 1, evicted, nil
 		}
 
-		s.setKeyLocked(shard, key, newValue)
-		return 1, nil, nil
-	}
+		currentValue, err := w.current.StringValue()
+		if err != nil {
+			return 0, nil, err
+		}
+		parsed, err := strconv.ParseInt(string(currentValue), 10, 64)
+		if err != nil || parsed == math.MaxInt64 {
+			return 0, nil, ErrValueNotInteger
+		}
+		parsed++
+		next := []byte(strconv.FormatInt(parsed, 10))
 
-	currentValue, err := current.StringValue()
-	if err != nil {
-		return 0, nil, err
-	}
-	parsed, err := strconv.ParseInt(string(currentValue), 10, 64)
-	if err != nil || parsed == math.MaxInt64 {
-		return 0, nil, ErrValueNotInteger
-	}
-	parsed++
-	next := []byte(strconv.FormatInt(parsed, 10))
+		if !w.accounting {
+			w.current.String = next
+			w.current.touch(w.now)
+			return parsed, nil, nil
+		}
 
-	if accounting {
 		// Size the write against the pre-write value, and leave the counter
-		// untouched if it turns out to breach maxmemory, by replacing the value
-		// rather than editing the string still stored under the key.
-		newValue := newOwnedStringValue(next, current.ExpiresAt)
-		newValue.touch(now)
-		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
+		// untouched if it turns out to breach maxmemory, by committing a
+		// replacement rather than editing the string still stored under the key.
+		newValue := newOwnedStringValue(next, w.current.ExpiresAt)
+		newValue.touch(w.now)
+		evicted, err := w.commit(newValue)
 		if err != nil {
 			return 0, nil, err
 		}
 		return parsed, evicted, nil
-	}
-
-	current.String = next
-	current.touch(now)
-	return parsed, nil, nil
+	})
 }
 
 // LeftPush prepends one or more values to the list stored at key and returns
@@ -457,64 +475,43 @@ func (s *Store) ZAdd(key string, entries []ZSetEntry) (int64, []string, error) {
 		return 0, nil, ErrSyntax
 	}
 
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.zsetAddLocked(key, entries, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.zsetAddLocked(key, entries, now, false)
-}
-
-// zsetAddLocked requires the caller to hold the key's shard write lock, or all
-// shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) zsetAddLocked(key string, entries []ZSetEntry, now int64, accounting bool) (int64, []string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-
-	var (
-		newValue *ValueObject
-		added    int64
-		err      error
-	)
-	if current != nil {
-		newValue = current
-		if accounting {
-			// Size the write against the pre-write value, and leave the sorted
-			// set untouched if it turns out to breach maxmemory, by mutating a
-			// copy rather than the value still stored under the key.
-			newValue, err = current.cloneZSetValue(current.ExpiresAt)
+	return writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		var (
+			newValue *ValueObject
+			added    int64
+			err      error
+		)
+		if w.current != nil {
+			newValue = w.current
+			if w.accounting {
+				// Size the write against the pre-write value, and leave the sorted
+				// set untouched if it turns out to breach maxmemory, by mutating a
+				// copy rather than the value still stored under the key.
+				newValue, err = w.current.cloneZSetValue(w.current.ExpiresAt)
+				if err != nil {
+					return 0, nil, err
+				}
+			}
+			added, err = newValue.zsetAdd(entries)
 			if err != nil {
 				return 0, nil, err
 			}
+		} else {
+			newValue = newZSetValueForEntries(entries, 0)
+			newLen, lenErr := newValue.zsetLen()
+			if lenErr != nil {
+				return 0, nil, lenErr
+			}
+			added = int64(newLen)
 		}
-		added, err = newValue.zsetAdd(entries)
-		if err != nil {
-			return 0, nil, err
-		}
-	} else {
-		newValue = newZSetValueForEntries(entries, 0)
-		newLen, lenErr := newValue.zsetLen()
-		if lenErr != nil {
-			return 0, nil, lenErr
-		}
-		added = int64(newLen)
-	}
-	newValue.touch(now)
+		newValue.touch(w.now)
 
-	if accounting {
-		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
+		evicted, err := w.commit(newValue)
 		if err != nil {
 			return 0, nil, err
 		}
 		return added, evicted, nil
-	}
-
-	s.setKeyLocked(shard, key, newValue)
-	return added, nil, nil
+	})
 }
 
 // ZScores returns the scores of the requested sorted-set members under a
@@ -598,63 +595,42 @@ func (s *Store) XAdd(key, rawID string, values [][]byte) (string, []string, erro
 		return "", nil, ErrSyntax
 	}
 
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.streamAddLocked(key, rawID, values, now, true)
-	}
+	return writeKey(s, key, func(w keyWrite) (string, []string, error) {
+		var (
+			stream    *StreamValue
+			expiresAt int64
+		)
+		if w.current != nil {
+			existing, err := w.current.StreamValue()
+			if err != nil {
+				return "", nil, err
+			}
+			expiresAt = w.current.ExpiresAt
+			stream = existing
+			if w.accounting {
+				// Size the write against the pre-write stream, and leave it
+				// untouched if it turns out to breach maxmemory, by appending to a
+				// copy rather than the stream still stored under the key.
+				stream = cloneStreamValue(existing)
+			}
+		} else {
+			stream = newStream()
+		}
 
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.streamAddLocked(key, rawID, values, now, false)
-}
-
-// streamAddLocked requires the caller to hold the key's shard write lock, or
-// all shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) streamAddLocked(key, rawID string, values [][]byte, now int64, accounting bool) (string, []string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-
-	var (
-		stream    *StreamValue
-		expiresAt int64
-	)
-	if current != nil {
-		existing, err := current.StreamValue()
+		id, err := stream.add(rawID, values, w.now)
 		if err != nil {
 			return "", nil, err
 		}
-		expiresAt = current.ExpiresAt
-		stream = existing
-		if accounting {
-			// Size the write against the pre-write stream, and leave it
-			// untouched if it turns out to breach maxmemory, by appending to a
-			// copy rather than the stream still stored under the key.
-			stream = cloneStreamValue(existing)
-		}
-	} else {
-		stream = newStream()
-	}
 
-	id, err := stream.add(rawID, values, now)
-	if err != nil {
-		return "", nil, err
-	}
+		newValue := newStreamValue(stream, expiresAt)
+		newValue.touch(w.now)
 
-	newValue := newStreamValue(stream, expiresAt)
-	newValue.touch(now)
-
-	if accounting {
-		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
+		evicted, err := w.commit(newValue)
 		if err != nil {
 			return "", nil, err
 		}
 		return id, evicted, nil
-	}
-
-	s.setKeyLocked(shard, key, newValue)
-	return id, nil, nil
+	})
 }
 
 // XRead returns stream entries whose IDs are greater than the supplied ID.
@@ -786,6 +762,7 @@ func (s *Store) ReplaceWith(other *Store) {
 		s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
 	}
 	s.writeUnlockAllShards()
+	s.publishExpiredKeys()
 }
 
 func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {
@@ -1037,7 +1014,44 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, []strin
 		return 0, nil, ErrSyntax
 	}
 
-	length, evicted, err := s.lockAndPushList(key, values, left)
+	length, evicted, err := writeKey(s, key, func(w keyWrite) (int64, []string, error) {
+		var (
+			list      [][]byte
+			expiresAt int64
+		)
+		if w.current != nil {
+			currentList, err := w.current.ListValue()
+			if err != nil {
+				return 0, nil, err
+			}
+			expiresAt = w.current.ExpiresAt
+			list = currentList
+			if w.accounting {
+				// Size the write against the pre-write list, and leave it untouched
+				// if it turns out to breach maxmemory, by appending to a copy rather
+				// than to the slice still stored under the key.
+				list = append([][]byte(nil), currentList...)
+			}
+		}
+
+		additions := cloneList(values)
+		if left {
+			combined := make([][]byte, len(list)+len(additions))
+			for i := range additions {
+				combined[i] = additions[len(additions)-1-i]
+			}
+			copy(combined[len(additions):], list)
+			list = combined
+		} else {
+			list = append(list, additions...)
+		}
+
+		evicted, err := w.commit(newListValue(list, expiresAt))
+		if err != nil {
+			return 0, nil, err
+		}
+		return int64(len(list)), evicted, nil
+	})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -1047,69 +1061,6 @@ func (s *Store) pushList(key string, values [][]byte, left bool) (int64, []strin
 	// in the other order cannot deadlock against this one.
 	s.waiters.notifyOne(key)
 	return length, evicted, nil
-}
-
-func (s *Store) lockAndPushList(key string, values [][]byte, left bool) (int64, []string, error) {
-	now := time.Now().UnixMilli()
-	if s.maxMemoryEnabled() {
-		s.writeLockAllShards()
-		defer s.writeUnlockAllShards()
-		return s.pushListLocked(key, values, left, now, true)
-	}
-
-	shard := s.shardForKey(key)
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	return s.pushListLocked(key, values, left, now, false)
-}
-
-// pushListLocked requires the caller to hold the key's shard write lock, or all
-// shard write locks when accounting is true (eviction touches other shards).
-func (s *Store) pushListLocked(key string, values [][]byte, left bool, now int64, accounting bool) (int64, []string, error) {
-	shard, current := s.prepareExistingValueLocked(key, now)
-
-	var (
-		list      [][]byte
-		expiresAt int64
-	)
-	if current != nil {
-		currentList, err := current.ListValue()
-		if err != nil {
-			return 0, nil, err
-		}
-		expiresAt = current.ExpiresAt
-		list = currentList
-		if accounting {
-			// Size the write against the pre-write list, and leave it untouched
-			// if it turns out to breach maxmemory, by appending to a copy rather
-			// than to the slice still stored under the key.
-			list = append([][]byte(nil), currentList...)
-		}
-	}
-
-	additions := cloneList(values)
-	if left {
-		combined := make([][]byte, len(list)+len(additions))
-		for i := range additions {
-			combined[i] = additions[len(additions)-1-i]
-		}
-		copy(combined[len(additions):], list)
-		list = combined
-	} else {
-		list = append(list, additions...)
-	}
-
-	newValue := newListValue(list, expiresAt)
-	if accounting {
-		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
-		if err != nil {
-			return 0, nil, err
-		}
-		return int64(len(list)), evicted, nil
-	}
-
-	s.setKeyLocked(shard, key, newValue)
-	return int64(len(list)), nil, nil
 }
 
 func normalizeListRange(length int, start, stop int64) (int, int, bool) {

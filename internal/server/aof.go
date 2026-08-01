@@ -117,23 +117,25 @@ func (s *Server) closeAOFWriter() error {
 	return nil
 }
 
-func (s *Server) persistReplicaDurability(values []protocol.Value) error {
+// persistDurabilityFrames appends frames the server itself originated, rather
+// than answered a client with, to the AOF under the configured fsync policy.
+func (s *Server) persistDurabilityFrames(values []protocol.Value) error {
 	if s == nil || s.aofWriter == nil || len(values) == 0 {
 		return nil
 	}
 
 	payload, err := protocol.EncodeValues(values)
 	if err != nil {
-		return fmt.Errorf("server: encode replica durability frames: %w", err)
+		return fmt.Errorf("server: encode durability frames: %w", err)
 	}
 	if s.aofWriter.Policy() == aof.PolicyAlways {
 		if err := s.aofWriter.AppendSync(payload); err != nil {
-			return fmt.Errorf("server: append replica durability frames: %w", err)
+			return fmt.Errorf("server: append durability frames: %w", err)
 		}
 		return nil
 	}
 	if err := s.aofWriter.Append(payload); err != nil {
-		return fmt.Errorf("server: append replica durability frames: %w", err)
+		return fmt.Errorf("server: append durability frames: %w", err)
 	}
 	return nil
 }
@@ -182,6 +184,34 @@ func (s *Server) finalizeMutationEffects(ctx context.Context, durability []proto
 		report := s.propagateToReplicas(propagation)
 		s.recordClientWriteOffset(ctx, report.endOffset)
 	}
+}
+
+// recordExpiredKeys gives an active TTL eviction the same effects a
+// client-issued DEL would have had: it invalidates WATCH on the keys, appends
+// the deletion to the AOF, and forwards it to replicas. The store evicts expired
+// keys on its own schedule, so without this the deletion exists only in this
+// process's memory: replicas keep serving the keys and replaying the AOF
+// restores them.
+func (s *Server) recordExpiredKeys(keys []string) {
+	if s == nil || len(keys) == 0 {
+		return
+	}
+
+	s.watchRegistry.Touch(keys...)
+
+	frames := []protocol.Value{DeleteFrame(keys)}
+	if err := s.persistDurabilityFrames(frames); err != nil {
+		s.logger.Error("failed to append expired key deletion to AOF", "error", err, "expired_keys", len(keys))
+		// Withhold propagation exactly where the client path withholds it: under
+		// appendfsync always, which promises durability before a mutation is
+		// announced. The deferred policies make no such promise, and a replica
+		// left serving a key this server has already dropped is the worse
+		// outcome, so there the failure is logged and the deletion still goes.
+		if s.aofWriter != nil && s.aofWriter.Policy() == aof.PolicyAlways {
+			return
+		}
+	}
+	s.propagateToReplicas(frames)
 }
 
 func persistenceFailureResponse() protocol.ErrorValue {
