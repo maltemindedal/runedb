@@ -18,7 +18,7 @@ func BenchmarkHash(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			store := NewStore()
-			if _, err := store.HSet("h", pairs); err != nil {
+			if _, _, err := store.HSet("h", pairs); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -30,14 +30,14 @@ func BenchmarkHash(b *testing.B) {
 		for i := range pairs {
 			pairs[i] = HashFieldValue{Field: fmt.Sprintf("f%d", i), Value: payload}
 		}
-		if _, err := store.HSet("h", pairs); err != nil {
+		if _, _, err := store.HSet("h", pairs); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
-			if _, err := store.HSet("h", pairs); err != nil {
+			if _, _, err := store.HSet("h", pairs); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -45,7 +45,7 @@ func BenchmarkHash(b *testing.B) {
 
 	b.Run("HGet hit", func(b *testing.B) {
 		store := NewStore()
-		if _, err := store.HSet("h", []HashFieldValue{{Field: "f", Value: payload}}); err != nil {
+		if _, _, err := store.HSet("h", []HashFieldValue{{Field: "f", Value: payload}}); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
@@ -64,7 +64,7 @@ func BenchmarkHash(b *testing.B) {
 		for i := range pairs {
 			pairs[i] = HashFieldValue{Field: fmt.Sprintf("f%d", i), Value: payload}
 		}
-		if _, err := store.HSet("h", pairs); err != nil {
+		if _, _, err := store.HSet("h", pairs); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
@@ -86,7 +86,7 @@ func BenchmarkZSet(b *testing.B) {
 		for i := range entries {
 			entries[i] = ZSetEntry{Member: fmt.Appendf(nil, "m%d", i), Score: float64(i)}
 		}
-		if _, err := store.ZAdd("z", entries); err != nil {
+		if _, _, err := store.ZAdd("z", entries); err != nil {
 			b.Fatal(err)
 		}
 		return store
@@ -129,7 +129,7 @@ func BenchmarkSet(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			store := NewStore()
-			if _, err := store.SAdd("s", members); err != nil {
+			if _, _, err := store.SAdd("s", members); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -141,14 +141,14 @@ func BenchmarkSet(b *testing.B) {
 		for i := range members {
 			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
-		if _, err := store.SAdd("s", members); err != nil {
+		if _, _, err := store.SAdd("s", members); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
-			if _, err := store.SAdd("s", members); err != nil {
+			if _, _, err := store.SAdd("s", members); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -156,7 +156,7 @@ func BenchmarkSet(b *testing.B) {
 
 	b.Run("SIsMember hit", func(b *testing.B) {
 		store := NewStore()
-		if _, err := store.SAdd("s", [][]byte{[]byte("m")}); err != nil {
+		if _, _, err := store.SAdd("s", [][]byte{[]byte("m")}); err != nil {
 			b.Fatal(err)
 		}
 		member := []byte("m")
@@ -180,7 +180,7 @@ func BenchmarkSet(b *testing.B) {
 
 		for i := 0; i < b.N; i++ {
 			store := NewStore()
-			if _, err := store.SAdd("s", members); err != nil {
+			if _, _, err := store.SAdd("s", members); err != nil {
 				b.Fatal(err)
 			}
 			if _, err := store.SRem("s", members); err != nil {
@@ -191,7 +191,7 @@ func BenchmarkSet(b *testing.B) {
 
 	b.Run("SRem miss batch", func(b *testing.B) {
 		store := NewStore()
-		if _, err := store.SAdd("s", [][]byte{[]byte("present")}); err != nil {
+		if _, _, err := store.SAdd("s", [][]byte{[]byte("present")}); err != nil {
 			b.Fatal(err)
 		}
 		members := make([][]byte, 16)
@@ -214,7 +214,7 @@ func BenchmarkSet(b *testing.B) {
 		for i := range members {
 			members[i] = fmt.Appendf(nil, "m%d", i)
 		}
-		if _, err := store.SAdd("s", members); err != nil {
+		if _, _, err := store.SAdd("s", members); err != nil {
 			b.Fatal(err)
 		}
 		b.ReportAllocs()

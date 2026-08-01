@@ -4,86 +4,94 @@ import "time"
 
 // HSet assigns one or more field/value pairs on the hash stored at key and
 // returns the number of newly created fields. Existing fields are overwritten.
-func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, error) {
+// When maxmemory is configured it first frees space and reports the keys
+// evicted to make room; otherwise it evicts nothing.
+func (s *Store) HSet(key string, pairs []HashFieldValue) (int64, []string, error) {
 	if len(pairs) == 0 {
-		return 0, ErrSyntax
+		return 0, nil, ErrSyntax
+	}
+
+	now := time.Now().UnixMilli()
+	if s.maxMemoryEnabled() {
+		s.writeLockAllShards()
+		defer s.writeUnlockAllShards()
+		return s.hashSetLocked(key, pairs, now, true)
 	}
 
 	shard := s.shardForKey(key)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
+	return s.hashSetLocked(key, pairs, now, false)
+}
 
-	now := time.Now().UnixMilli()
-	value, ok := shard.data[key]
-	if ok && isExpired(value, now) {
-		s.deleteKeyLocked(shard, key)
-		ok = false
-	}
-	accounting := s.maxMemoryEnabled()
-	var oldSize int64
-	if accounting && ok {
-		oldSize = s.approximateValueObjectSize(key, value)
-	}
+// hashSetLocked requires the caller to hold the key's shard write lock, or all
+// shard write locks when accounting is true (eviction touches other shards).
+func (s *Store) hashSetLocked(key string, pairs []HashFieldValue, now int64, accounting bool) (int64, []string, error) {
+	shard, current := s.prepareExistingValueLocked(key, now)
 
-	var added int64
-	if ok {
-		var err error
-		added, err = value.hashSet(pairs)
-		if err != nil {
-			return 0, err
-		}
-		value.touch(now)
+	var (
+		newValue *ValueObject
+		added    int64
+		err      error
+	)
+	if current != nil {
+		newValue = current
 		if accounting {
-			newSize := s.approximateValueObjectSize(key, value)
-			s.usedMemory.Add(newSize - oldSize)
+			// Size the write against the pre-write value, and leave the hash
+			// untouched if it turns out to breach maxmemory, by mutating a copy
+			// rather than the value still stored under the key.
+			newValue, err = current.cloneHashValue(current.ExpiresAt)
+			if err != nil {
+				return 0, nil, err
+			}
+		}
+		added, err = newValue.hashSet(pairs)
+		if err != nil {
+			return 0, nil, err
 		}
 	} else {
-		newValue := newHashValueForPairs(pairs, 0)
-		newLen, err := newValue.hashLen()
-		if err != nil {
-			return 0, err
+		newValue = newHashValueForPairs(pairs, 0)
+		newLen, lenErr := newValue.hashLen()
+		if lenErr != nil {
+			return 0, nil, lenErr
 		}
 		added = int64(newLen)
-		s.setKeyLocked(shard, key, newValue)
-		if accounting {
-			s.usedMemory.Add(s.approximateValueObjectSize(key, newValue))
+	}
+	newValue.touch(now)
+
+	if accounting {
+		evicted, err := s.commitValueWithEvictionLocked(shard, key, current, newValue)
+		if err != nil {
+			return 0, nil, err
 		}
+		return added, evicted, nil
 	}
 
-	return added, nil
+	s.setKeyLocked(shard, key, newValue)
+	return added, nil, nil
 }
 
 // HGet returns the value of the supplied field on the hash stored at key.
 func (s *Store) HGet(key, field string) ([]byte, bool, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return nil, false, nil
+	// A missing field and a missing key are both reported as not found, but only
+	// the field case can carry a zero-length value, so the two travel together
+	// rather than relying on a nil payload to mean absent.
+	type hashField struct {
+		value  []byte
+		exists bool
 	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
 
-		s.dropIfStillExpired(shard, key)
-		return nil, false, nil
-	}
-	raw, exists, err := value.hashGet(field)
+	result, _, err := readKey(s, key, func(value *ValueObject) (hashField, error) {
+		raw, exists, err := value.hashGet(field)
+		if err != nil || !exists {
+			return hashField{}, err
+		}
+		return hashField{value: cloneBytes(raw), exists: true}, nil
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, false, err
 	}
-	value.touch(now)
-	if !exists {
-		shard.mu.RUnlock()
-		return nil, false, nil
-	}
-	cloned := cloneBytes(raw)
-	shard.mu.RUnlock()
-
-	return cloned, true, nil
+	return result.value, result.exists, nil
 }
 
 // HDel removes the named fields from the hash stored at key and returns the
@@ -136,31 +144,21 @@ func (s *Store) HDel(key string, fields []string) (int64, error) {
 // HGetAll returns every field/value pair on the hash stored at key. Order is
 // not guaranteed and mirrors Redis semantics.
 func (s *Store) HGetAll(key string) ([]HashFieldValue, error) {
-	now := time.Now().UnixMilli()
-	shard := s.shardForKey(key)
-
-	shard.mu.RLock()
-	value, ok := shard.data[key]
-	if !ok {
-		shard.mu.RUnlock()
-		return []HashFieldValue{}, nil
-	}
-	if isExpired(value, now) {
-		shard.mu.RUnlock()
-
-		s.dropIfStillExpired(shard, key)
-		return []HashFieldValue{}, nil
-	}
-	entries, err := value.hashEntries()
+	entries, found, err := readKey(s, key, func(value *ValueObject) ([]HashFieldValue, error) {
+		entries, err := value.hashEntries()
+		if err != nil {
+			return nil, err
+		}
+		for i := range entries {
+			entries[i].Value = cloneBytes(entries[i].Value)
+		}
+		return entries, nil
+	})
 	if err != nil {
-		shard.mu.RUnlock()
 		return nil, err
 	}
-	value.touch(now)
-	for i := range entries {
-		entries[i].Value = cloneBytes(entries[i].Value)
+	if !found {
+		return []HashFieldValue{}, nil
 	}
-	shard.mu.RUnlock()
-
 	return entries, nil
 }

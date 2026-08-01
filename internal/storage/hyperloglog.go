@@ -38,10 +38,10 @@ var hllRankReciprocal = func() [hllMaxRank + 1]float64 {
 	return table
 }()
 
-// PFAddWithEviction registers elements into a HyperLogLog value, evicting
-// keys first if maxmemory requires it, and reports whether the cardinality
-// estimate changed.
-func (s *Store) PFAddWithEviction(key string, elements [][]byte) (int64, []string, error) {
+// PFAdd registers elements into a HyperLogLog value and reports whether the
+// cardinality estimate changed. When maxmemory is configured it first frees
+// space and reports the keys evicted to make room; otherwise it evicts nothing.
+func (s *Store) PFAdd(key string, elements [][]byte) (int64, []string, error) {
 	now := time.Now().UnixMilli()
 	if s.maxMemoryEnabled() {
 		s.writeLockAllShards()

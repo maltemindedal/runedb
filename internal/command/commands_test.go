@@ -180,7 +180,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "BITCOUNT counts full and ranged strings",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("bitmap", []byte{0xff, 0x00, 0x0f}, 0)
+				_, _ = executor.store.Set("bitmap", []byte{0xff, 0x00, 0x0f}, 0)
 			},
 			request: requestValue("BITCOUNT", "bitmap", "1", "2"),
 			assert: func(t *testing.T, value protocol.Value, err error) {
@@ -381,7 +381,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "DEL ignores expired keys",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("expired", []byte("gone"), time.Now().Add(-time.Millisecond).UnixMilli())
+				_, _ = executor.store.Set("expired", []byte("gone"), time.Now().Add(-time.Millisecond).UnixMilli())
 			},
 			request: requestValue("DEL", "expired"),
 			assert: func(t *testing.T, value protocol.Value, err error) {
@@ -550,7 +550,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "XREAD rejects wrong value type",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("events", []byte("plain"), 0)
+				_, _ = executor.store.Set("events", []byte("plain"), 0)
 			},
 			request: requestValue("XREAD", "STREAMS", "events", "0-0"),
 			assert: func(t *testing.T, _ protocol.Value, err error) {
@@ -584,7 +584,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "LPUSH rejects wrong value type",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("letters", []byte("hello"), 0)
+				_, _ = executor.store.Set("letters", []byte("hello"), 0)
 			},
 			request: requestValue("LPUSH", "letters", "a"),
 			assert: func(t *testing.T, _ protocol.Value, err error) {
@@ -609,7 +609,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "INCR increments existing integer",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("counter", []byte("41"), 0)
+				_, _ = executor.store.Set("counter", []byte("41"), 0)
 			},
 			request: requestValue("INCR", "counter"),
 			assert: func(t *testing.T, value protocol.Value, err error) {
@@ -624,7 +624,7 @@ func TestExecutorExecute(t *testing.T) {
 			name: "INCR rejects non-integer strings",
 			setup: func(t *testing.T, executor *Executor) {
 				t.Helper()
-				executor.store.Set("counter", []byte("hello"), 0)
+				_, _ = executor.store.Set("counter", []byte("hello"), 0)
 			},
 			request: requestValue("INCR", "counter"),
 			assert: func(t *testing.T, _ protocol.Value, err error) {

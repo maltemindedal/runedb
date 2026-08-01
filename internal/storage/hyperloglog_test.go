@@ -10,7 +10,7 @@ import (
 func pfAddForTest(t *testing.T, store *Store, key string, elements [][]byte) (int64, error) {
 	t.Helper()
 
-	changed, _, err := store.PFAddWithEviction(key, elements)
+	changed, _, err := store.PFAdd(key, elements)
 	return changed, err
 }
 
@@ -26,10 +26,10 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 
 				changed, err := pfAddForTest(t, store, "visitors", [][]byte{[]byte("alice")})
 				if err != nil {
-					t.Fatalf("PFAddWithEviction() error = %v", err)
+					t.Fatalf("PFAdd() error = %v", err)
 				}
 				if changed != 1 {
-					t.Fatalf("PFAddWithEviction() changed = %d, want 1", changed)
+					t.Fatalf("PFAdd() changed = %d, want 1", changed)
 				}
 
 				raw, ok, err := store.Get("visitors")
@@ -47,15 +47,15 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 				t.Helper()
 
 				if _, err := pfAddForTest(t, store, "visitors", [][]byte{[]byte("alice"), []byte("bob")}); err != nil {
-					t.Fatalf("PFAddWithEviction() first error = %v", err)
+					t.Fatalf("PFAdd() first error = %v", err)
 				}
 
 				changed, err := pfAddForTest(t, store, "visitors", [][]byte{[]byte("alice"), []byte("bob")})
 				if err != nil {
-					t.Fatalf("PFAddWithEviction() second error = %v", err)
+					t.Fatalf("PFAdd() second error = %v", err)
 				}
 				if changed != 0 {
-					t.Fatalf("PFAddWithEviction() repeated changed = %d, want 0", changed)
+					t.Fatalf("PFAdd() repeated changed = %d, want 0", changed)
 				}
 			},
 		},
@@ -66,18 +66,18 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 
 				changed, err := pfAddForTest(t, store, "visitors", nil)
 				if err != nil {
-					t.Fatalf("PFAddWithEviction() error = %v", err)
+					t.Fatalf("PFAdd() error = %v", err)
 				}
 				if changed != 1 {
-					t.Fatalf("PFAddWithEviction() on missing key changed = %d, want 1", changed)
+					t.Fatalf("PFAdd() on missing key changed = %d, want 1", changed)
 				}
 
 				changed, err = pfAddForTest(t, store, "visitors", nil)
 				if err != nil {
-					t.Fatalf("PFAddWithEviction() second error = %v", err)
+					t.Fatalf("PFAdd() second error = %v", err)
 				}
 				if changed != 0 {
-					t.Fatalf("PFAddWithEviction() on existing key changed = %d, want 0", changed)
+					t.Fatalf("PFAdd() on existing key changed = %d, want 0", changed)
 				}
 
 				count, err := store.PFCount([]string{"visitors"})
@@ -110,7 +110,7 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 
 				elements := [][]byte{[]byte("alice"), []byte("bob"), []byte("carol")}
 				if _, err := pfAddForTest(t, store, "visitors", elements); err != nil {
-					t.Fatalf("PFAddWithEviction() error = %v", err)
+					t.Fatalf("PFAdd() error = %v", err)
 				}
 
 				count, err := store.PFCount([]string{"visitors"})
@@ -133,7 +133,7 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 					elements = append(elements, fmt.Appendf(nil, "element-%d", i))
 				}
 				if _, err := pfAddForTest(t, store, "visitors", elements); err != nil {
-					t.Fatalf("PFAddWithEviction() error = %v", err)
+					t.Fatalf("PFAdd() error = %v", err)
 				}
 
 				count, err := store.PFCount([]string{"visitors"})
@@ -153,10 +153,10 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 				first := [][]byte{[]byte("alice"), []byte("bob")}
 				second := [][]byte{[]byte("bob"), []byte("carol"), []byte("dave")}
 				if _, err := pfAddForTest(t, store, "morning", first); err != nil {
-					t.Fatalf("PFAddWithEviction(morning) error = %v", err)
+					t.Fatalf("PFAdd(morning) error = %v", err)
 				}
 				if _, err := pfAddForTest(t, store, "evening", second); err != nil {
-					t.Fatalf("PFAddWithEviction(evening) error = %v", err)
+					t.Fatalf("PFAdd(evening) error = %v", err)
 				}
 
 				count, err := store.PFCount([]string{"morning", "evening", "missing"})
@@ -172,12 +172,12 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 			name: "PFAdd and PFCount reject non-string values with wrong type",
 			run: func(t *testing.T, store *Store) {
 				t.Helper()
-				if _, err := store.LeftPush("numbers", [][]byte{[]byte("one")}); err != nil {
+				if _, _, err := store.LeftPush("numbers", [][]byte{[]byte("one")}); err != nil {
 					t.Fatalf("LeftPush() error = %v", err)
 				}
 
 				if _, err := pfAddForTest(t, store, "numbers", [][]byte{[]byte("alice")}); !errors.Is(err, ErrWrongType) {
-					t.Fatalf("PFAddWithEviction() error = %v, want ErrWrongType", err)
+					t.Fatalf("PFAdd() error = %v, want ErrWrongType", err)
 				}
 				if _, err := store.PFCount([]string{"numbers"}); !errors.Is(err, ErrWrongType) {
 					t.Fatalf("PFCount() error = %v, want ErrWrongType", err)
@@ -188,10 +188,10 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 			name: "PFAdd and PFCount reject plain string values as invalid HyperLogLogs",
 			run: func(t *testing.T, store *Store) {
 				t.Helper()
-				store.Set("greeting", []byte("hello"), 0)
+				_, _ = store.Set("greeting", []byte("hello"), 0)
 
 				if _, err := pfAddForTest(t, store, "greeting", [][]byte{[]byte("alice")}); !errors.Is(err, ErrNotHyperLogLog) {
-					t.Fatalf("PFAddWithEviction() error = %v, want ErrNotHyperLogLog", err)
+					t.Fatalf("PFAdd() error = %v, want ErrNotHyperLogLog", err)
 				}
 				if _, err := store.PFCount([]string{"greeting"}); !errors.Is(err, ErrNotHyperLogLog) {
 					t.Fatalf("PFCount() error = %v, want ErrNotHyperLogLog", err)
@@ -207,10 +207,10 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 				for i := hllHeaderSize; i < len(payload); i++ {
 					payload[i] = 0xFF
 				}
-				store.Set("forged", payload, 0)
+				_, _ = store.Set("forged", payload, 0)
 
 				if _, err := pfAddForTest(t, store, "forged", [][]byte{[]byte("alice")}); !errors.Is(err, ErrNotHyperLogLog) {
-					t.Fatalf("PFAddWithEviction() error = %v, want ErrNotHyperLogLog", err)
+					t.Fatalf("PFAdd() error = %v, want ErrNotHyperLogLog", err)
 				}
 				if _, err := store.PFCount([]string{"forged"}); !errors.Is(err, ErrNotHyperLogLog) {
 					t.Fatalf("PFCount() error = %v, want ErrNotHyperLogLog", err)
@@ -226,7 +226,7 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 				for i := hllHeaderSize; i < len(payload); i++ {
 					payload[i] = hllMaxRank
 				}
-				store.Set("saturated", payload, 0)
+				_, _ = store.Set("saturated", payload, 0)
 
 				count, err := store.PFCount([]string{"saturated"})
 				if err != nil {
@@ -243,7 +243,7 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 				t.Helper()
 
 				if _, err := pfAddForTest(t, store, "visitors", [][]byte{[]byte("alice")}); err != nil {
-					t.Fatalf("PFAddWithEviction() error = %v", err)
+					t.Fatalf("PFAdd() error = %v", err)
 				}
 				if !store.expireKeyForTest("visitors", 1) {
 					t.Fatal("expireKeyForTest() = false, want true")
@@ -251,10 +251,10 @@ func TestStoreHyperLogLogBehavior(t *testing.T) {
 
 				changed, err := pfAddForTest(t, store, "visitors", [][]byte{[]byte("bob")})
 				if err != nil {
-					t.Fatalf("PFAddWithEviction() after expiry error = %v", err)
+					t.Fatalf("PFAdd() after expiry error = %v", err)
 				}
 				if changed != 1 {
-					t.Fatalf("PFAddWithEviction() after expiry changed = %d, want 1", changed)
+					t.Fatalf("PFAdd() after expiry changed = %d, want 1", changed)
 				}
 
 				count, err := store.PFCount([]string{"visitors"})
