@@ -38,6 +38,9 @@ type Store struct {
 	waiters                  *listWaiters
 	loggerMu                 sync.RWMutex
 	logger                   *slog.Logger
+	expirationMu             sync.Mutex
+	expirationListener       func(keys []string)
+	pendingExpired           []string
 	usedMemory               atomic.Int64
 	keyKindCounts            [keyStatsKindCount]atomic.Int64
 	maxMemory                atomic.Int64
@@ -58,6 +61,63 @@ func (s *Store) SetLogger(logger *slog.Logger) {
 	s.loggerMu.Lock()
 	defer s.loggerMu.Unlock()
 	s.logger = logger
+}
+
+// SetExpirationListener registers the sink for keys the store removed because
+// their TTL had passed.
+//
+// Expiry is the one keyspace mutation the store performs on its own initiative
+// rather than on a caller's instruction, which makes it the one a caller cannot
+// otherwise see — and a caller that replicates and persists mutations has to see
+// it. Two paths sweep for it: the background eviction loop, and the keyspace
+// recalculation every accounted write runs. Both report here.
+//
+// A key dropped because the very operation reading it found it expired is not
+// reported: passive expiry is a conclusion any server holding the key reaches
+// from the TTL it already has. The listener runs with no shard lock held, on
+// whichever goroutine noticed the expiry.
+func (s *Store) SetExpirationListener(listener func(keys []string)) {
+	if s == nil {
+		return
+	}
+
+	s.expirationMu.Lock()
+	defer s.expirationMu.Unlock()
+	s.expirationListener = listener
+}
+
+// noteExpiredKeysLocked queues keys removed for expiry while shard locks are
+// held, for publishExpiredKeys to hand on once they are released.
+func (s *Store) noteExpiredKeysLocked(keys []string) {
+	if s == nil || len(keys) == 0 {
+		return
+	}
+
+	s.expirationMu.Lock()
+	defer s.expirationMu.Unlock()
+	s.pendingExpired = append(s.pendingExpired, keys...)
+}
+
+// publishExpiredKeys hands every queued expiry to the listener. Callers must
+// hold no shard lock: the listener reaches replication and durability sinks,
+// which must never be entered under a store lock. It always drains the queue,
+// so an unconfigured listener cannot let it grow.
+func (s *Store) publishExpiredKeys() {
+	if s == nil {
+		return
+	}
+
+	s.expirationMu.Lock()
+	pending := s.pendingExpired
+	s.pendingExpired = nil
+	listener := s.expirationListener
+	s.expirationMu.Unlock()
+
+	if len(pending) == 0 || listener == nil {
+		return
+	}
+
+	listener(pending)
 }
 
 // Set stores a byte slice under the provided key. When maxmemory is configured
@@ -702,6 +762,7 @@ func (s *Store) ReplaceWith(other *Store) {
 		s.recalculateUsedMemoryLocked(time.Now().UnixMilli())
 	}
 	s.writeUnlockAllShards()
+	s.publishExpiredKeys()
 }
 
 func (s *Store) snapshotAllLocked(now int64) ([]SnapshotEntry, SnapshotStats) {

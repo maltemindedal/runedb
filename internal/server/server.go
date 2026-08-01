@@ -108,6 +108,7 @@ func New(cfg config.Config, logger *slog.Logger, store *storage.Store, executor 
 	}
 	if store != nil {
 		store.SetLogger(logger)
+		store.SetExpirationListener(srv.recordExpiredKeys)
 	}
 	if provider, ok := executor.(watchRegistryProvider); ok {
 		srv.watchRegistry = provider.WatchRegistry()
@@ -178,7 +179,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	// being cancelled as much as on the ordinary one.
 	evictionCtx, stopEviction := context.WithCancel(ctx)
 	defer stopEviction()
-	evictionDone := s.store.StartEviction(evictionCtx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize, s.recordExpiredKeys)
+	evictionDone := s.store.StartEviction(evictionCtx, s.cfg.EvictionInterval, s.cfg.EvictionSampleSize)
 	if s.cfg.IsReplica() {
 		s.handlerWG.Add(1)
 		go s.startReplicaLink(ctx, listener.Addr().String())

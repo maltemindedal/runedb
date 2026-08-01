@@ -199,7 +199,7 @@ func (s *Server) recordExpiredKeys(keys []string) {
 
 	s.watchRegistry.Touch(keys...)
 
-	frames := []protocol.Value{deleteFrame(keys)}
+	frames := []protocol.Value{DeleteFrame(keys)}
 	if err := s.persistDurabilityFrames(frames); err != nil {
 		s.logger.Error("failed to append expired key deletion to AOF", "error", err, "expired_keys", len(keys))
 		// Withhold propagation exactly where the client path withholds it: under
@@ -212,16 +212,6 @@ func (s *Server) recordExpiredKeys(keys []string) {
 		}
 	}
 	s.propagateToReplicas(frames)
-}
-
-func deleteFrame(keys []string) protocol.Array {
-	elements := make([]protocol.Value, 0, len(keys)+1)
-	elements = append(elements, protocol.TextBulkString{Value: "DEL"})
-	for _, key := range keys {
-		elements = append(elements, protocol.BulkString{Data: []byte(key)})
-	}
-
-	return protocol.Array{Elements: elements}
 }
 
 func persistenceFailureResponse() protocol.ErrorValue {

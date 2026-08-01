@@ -8,15 +8,13 @@ import (
 
 const defaultSampleSize = 20
 
-// StartEviction launches the background TTL eviction loop, naming the keys each
-// pass removed to onExpired. Active eviction is a keyspace mutation the store
-// cannot publish on its own, so onExpired is where it becomes visible outside
-// this process — as replication, durability, and WATCH invalidation.
+// StartEviction launches the background TTL eviction loop, reporting the keys
+// each pass removed through the store's expiration listener.
 //
 // It returns a channel closed once the loop has exited, so a caller whose
-// onExpired writes to resources it later tears down can order that teardown
-// after the loop. Cancelling ctx stops the loop.
-func (s *Store) StartEviction(ctx context.Context, interval time.Duration, sampleSize int, onExpired func(keys []string)) <-chan struct{} {
+// listener writes to resources it later tears down can order that teardown after
+// the loop. Cancelling ctx stops the loop.
+func (s *Store) StartEviction(ctx context.Context, interval time.Duration, sampleSize int) <-chan struct{} {
 	done := make(chan struct{})
 	if interval <= 0 {
 		close(done)
@@ -50,12 +48,10 @@ func (s *Store) StartEviction(ctx context.Context, interval time.Duration, sampl
 				}
 
 				s.logDebug("background eviction removed expired keys", "removed", len(expired), "sample_size", sampleSize)
-				if onExpired != nil {
-					// Reported once evictExpiredSample has released every shard
-					// lock it took: onExpired reaches sinks outside the store,
-					// which must never be entered while holding one.
-					onExpired(expired)
-				}
+				// Published once evictExpiredSample has released every shard lock
+				// it took: the listener reaches sinks outside the store, which
+				// must never be entered while holding one.
+				s.publishExpiredKeys()
 			}
 		}
 	}()
@@ -78,6 +74,7 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) []string {
 		value, ok := shard.data[keys[0]]
 		if ok && isExpired(value, now) {
 			s.deleteKeyLocked(shard, keys[0])
+			s.noteExpiredKeysLocked(keys)
 			return keys
 		}
 
@@ -104,5 +101,6 @@ func (s *Store) evictExpiredSample(now int64, sampleSize int) []string {
 		}
 	}
 
+	s.noteExpiredKeysLocked(expired)
 	return expired
 }

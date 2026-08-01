@@ -1028,7 +1028,7 @@ func TestStoreActiveEvictionRemovesExpiredKeys(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	store.StartEviction(ctx, 5*time.Millisecond, 10, nil)
+	store.StartEviction(ctx, 5*time.Millisecond, 10)
 
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -1053,9 +1053,10 @@ func TestStoreActiveEvictionReportsExpiredKeys(t *testing.T) {
 	defer cancel()
 
 	reported := make(chan []string, 8)
-	store.StartEviction(ctx, 5*time.Millisecond, 10, func(keys []string) {
+	store.SetExpirationListener(func(keys []string) {
 		reported <- keys
 	})
+	store.StartEviction(ctx, 5*time.Millisecond, 10)
 
 	select {
 	case keys := <-reported:
@@ -1064,6 +1065,44 @@ func TestStoreActiveEvictionReportsExpiredKeys(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("active eviction did not report the expired key")
+	}
+}
+
+// TestStoreAccountedWriteReportsSweptExpiredKeys pins the second door expiry
+// leaves by. With maxmemory on, every accounted write recalculates usage across
+// the whole keyspace and drops the expired keys it passes on the way. That is a
+// sweep, not this write's business, and it has to be reported like the
+// background loop's — otherwise the deletions reach nobody whenever maxmemory is
+// the thing driving them.
+func TestStoreAccountedWriteReportsSweptExpiredKeys(t *testing.T) {
+	store := NewStore()
+	store.ConfigureMaxMemory(1<<20, 16)
+
+	reported := make(chan []string, 8)
+	store.SetExpirationListener(func(keys []string) {
+		reported <- keys
+	})
+
+	// Stored while accounting is already on, so the sweep that removes it is the
+	// one the next write runs rather than anything this one did.
+	if _, err := store.Set("stale", []byte("value"), time.Now().Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatalf("Set(stale) error = %v", err)
+	}
+	if len(reported) != 0 {
+		t.Fatalf("expired keys reported = %v, want none before the key is swept", <-reported)
+	}
+
+	if _, err := store.Set("live", []byte("value"), 0); err != nil {
+		t.Fatalf("Set(live) error = %v", err)
+	}
+
+	select {
+	case keys := <-reported:
+		if len(keys) != 1 || keys[0] != "stale" {
+			t.Fatalf("expired keys = %v, want [stale]", keys)
+		}
+	default:
+		t.Fatal("accounted write did not report the expired key it swept")
 	}
 }
 

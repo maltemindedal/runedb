@@ -9,7 +9,7 @@ TTLs are stored internally as absolute Unix millisecond timestamps. Expired keys
 - **Passively**, when a read touches an expired key. The read behaves as though the key is gone.
 - **Actively**, by a background loop that samples keys on a fixed interval.
 
-Both are always on; there is no flag to disable them.
+Both are always on; there is no flag to disable them. With `--maxmemory` set there is a third: every accounted write re-measures the whole keyspace and drops the expired keys it passes, which reclaims them faster than sampling alone would.
 
 ```bash
 # Sample 50 keys every 250ms instead of the default 20 every 100ms
@@ -23,7 +23,7 @@ go run ./cmd/stash --eviction-interval 250ms --eviction-sample-size 50
 
 The active loop samples rather than scanning the full keyspace, so expired keys that are never read are removed probabilistically rather than immediately. A larger sample size reclaims memory sooner at the cost of more work per pass. A non-positive sample size falls back to the built-in default.
 
-An active eviction is published like any other write — see [Evictions are replicated and made durable](#evictions-are-replicated-and-made-durable) below. A passive one is not, and does not need to be: it is a read noticing a deadline that every server holding the key can read for itself.
+Either sweep — the background loop or the accounted-write recalculation — is published like any other write; see [Evictions are replicated and made durable](#evictions-are-replicated-and-made-durable) below. A passive removal is not, and does not need to be: it is a read noticing a deadline that every server holding the key can read for itself.
 
 ## Memory-pressure eviction
 
@@ -65,7 +65,7 @@ maxmemory_human:100.00M
 
 ## Evictions are replicated and made durable
 
-An eviction is a keyspace mutation, so it is not confined to the server that performed it. Whenever memory pressure or the active TTL loop removes keys, the server synthesises a `DEL` frame naming them and treats it like any other write:
+An eviction is a keyspace mutation, so it is not confined to the server that performed it. Whenever memory pressure or a TTL sweep removes keys, the server synthesises a `DEL` frame naming them and treats it like any other write:
 
 - it is **propagated** to attached replicas, so a replica does not keep serving a key the master has dropped;
 - it is **appended to the AOF**, so replaying the log does not resurrect the key;

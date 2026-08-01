@@ -37,6 +37,7 @@ func (s *Store) ConfigureMaxMemory(limit int64, sampleSize int) {
 		s.usedMemory.Store(0)
 	}
 	s.writeUnlockAllShards()
+	s.publishExpiredKeys()
 }
 
 // MaxMemory returns the configured approximate keyspace memory limit in bytes.
@@ -64,6 +65,7 @@ func (s *Store) EnforceMaxMemory() ([]string, error) {
 		return nil, nil
 	}
 
+	defer s.publishExpiredKeys()
 	s.writeLockAllShards()
 	defer s.writeUnlockAllShards()
 
@@ -206,19 +208,26 @@ func (s *Store) commitStringWithEvictionLocked(shard *Shard, key string, oldValu
 	return evicted, nil
 }
 
+// recalculateUsedMemoryLocked re-measures the whole keyspace, dropping the
+// expired keys it passes on the way. Those drops are a sweep rather than the
+// caller's own mutation, so they are queued for the expiration listener instead
+// of being folded into whatever the caller is returning.
 func (s *Store) recalculateUsedMemoryLocked(now int64) int64 {
 	used := int64(0)
+	var expired []string
 	for i := range s.shards {
 		shard := &s.shards[i]
 		for key, value := range shard.data {
 			if isExpired(value, now) {
 				s.removeKeyLocked(shard, key)
+				expired = append(expired, key)
 				continue
 			}
 			used += s.approximateValueObjectSize(key, value)
 		}
 	}
 	s.usedMemory.Store(used)
+	s.noteExpiredKeysLocked(expired)
 	return used
 }
 

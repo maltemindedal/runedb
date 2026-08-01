@@ -146,6 +146,10 @@ func writeKey[T any](s *Store, key string, fn func(w keyWrite) (T, []string, err
 	// without holding their locks.
 	accounting := s.maxMemoryEnabled()
 	if accounting {
+		// Registered before the unlock below so it runs after it: an accounted
+		// write recalculates the keyspace and sweeps expired keys out of it, and
+		// the listener that hears about them must not be entered under a lock.
+		defer s.publishExpiredKeys()
 		s.writeLockAllShards()
 		defer s.writeUnlockAllShards()
 	} else {
