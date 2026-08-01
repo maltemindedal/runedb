@@ -179,6 +179,33 @@ func (s *Store) commitValueWithEvictionLocked(shard *Shard, key string, oldValue
 	return evicted, nil
 }
 
+// commitStringWithEvictionLocked stores a string payload of length bytes under
+// key, written by fill, and reports the keys evicted to make room for it.
+//
+// It is commitValueWithEvictionLocked for a value that does not exist yet. A
+// string's size follows from its length alone, so the write is sized, and
+// evicted for, before the payload is allocated: SETBIT can address an offset
+// half a gigabyte out, and that buffer must not be allocated and zeroed under
+// every shard write lock only for the write to be rejected.
+func (s *Store) commitStringWithEvictionLocked(shard *Shard, key string, oldValue *ValueObject, length int, expiresAt int64, now int64, fill func(payload []byte)) ([]string, error) {
+	oldSize := s.approximateValueObjectSize(key, oldValue)
+	newSize := s.approximateStringValueObjectSize(key, length, expiresAt)
+
+	evicted, err := s.ensureMemoryAvailableLocked(newSize-oldSize, protectedKeys(key))
+	if err != nil {
+		return nil, err
+	}
+
+	payload := make([]byte, length)
+	fill(payload)
+	newValue := newOwnedStringValue(payload, expiresAt)
+	newValue.touch(now)
+
+	s.setKeyLocked(shard, key, newValue)
+	s.usedMemory.Add(newSize - oldSize)
+	return evicted, nil
+}
+
 func (s *Store) recalculateUsedMemoryLocked(now int64) int64 {
 	used := int64(0)
 	for i := range s.shards {

@@ -55,13 +55,10 @@ func (s *Store) SetBit(key string, offset int64, bit int64) (int64, []string, er
 			return previous, nil, nil
 		}
 
-		payload := make([]byte, max(byteIndex+1, len(data)))
-		copy(payload, data)
-		setBitInByte(&payload[byteIndex], mask, bit)
-		newValue := newOwnedStringValue(payload, expiresAt)
-		newValue.touch(w.now)
-
-		evicted, err := w.commit(newValue)
+		evicted, err := w.commitString(max(byteIndex+1, len(data)), expiresAt, func(payload []byte) {
+			copy(payload, data)
+			setBitInByte(&payload[byteIndex], mask, bit)
+		})
 		if err != nil {
 			return 0, nil, err
 		}

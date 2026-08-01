@@ -102,8 +102,29 @@ func (w keyWrite) commit(newValue *ValueObject) ([]string, error) {
 	return nil, nil
 }
 
-// writeKey applies fn to the value stored at key while the write locks a write
-// of that key needs are held, and reports the keys evicted to make room for it.
+// commitString stores a string payload of length bytes under the key, written
+// by fill, and reports the keys evicted to make room for it.
+//
+// commit takes a value that already exists, which is the wrong shape when the
+// payload is the expensive part of the write: SETBIT can address an offset half
+// a gigabyte out, and that buffer must not be allocated and zeroed under every
+// shard write lock only for the write to be rejected. A string's size follows
+// from its length alone, so this decides the write before it calls fill.
+func (w keyWrite) commitString(length int, expiresAt int64, fill func(payload []byte)) ([]string, error) {
+	if w.accounting {
+		return w.store.commitStringWithEvictionLocked(w.shard, w.key, w.current, length, expiresAt, w.now, fill)
+	}
+
+	payload := make([]byte, length)
+	fill(payload)
+	newValue := newOwnedStringValue(payload, expiresAt)
+	newValue.touch(w.now)
+	return w.commit(newValue)
+}
+
+// writeKey applies fn to the value stored at key while holding the write locks
+// that a write of that key needs, and reports the keys evicted to make room for
+// it.
 //
 // It is the write-path counterpart to readKey, and owns everything a write of a
 // single key must get right before the operation itself: taking one clock

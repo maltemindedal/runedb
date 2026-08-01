@@ -201,10 +201,15 @@ func (s *Server) recordExpiredKeys(keys []string) {
 
 	frames := []protocol.Value{deleteFrame(keys)}
 	if err := s.persistDurabilityFrames(frames); err != nil {
-		// Same rule the client path applies when durability fails: a mutation
-		// this server could not record is not one it announces onward.
 		s.logger.Error("failed to append expired key deletion to AOF", "error", err, "expired_keys", len(keys))
-		return
+		// Withhold propagation exactly where the client path withholds it: under
+		// appendfsync always, which promises durability before a mutation is
+		// announced. The deferred policies make no such promise, and a replica
+		// left serving a key this server has already dropped is the worse
+		// outcome, so there the failure is logged and the deletion still goes.
+		if s.aofWriter != nil && s.aofWriter.Policy() == aof.PolicyAlways {
+			return
+		}
 	}
 	s.propagateToReplicas(frames)
 }

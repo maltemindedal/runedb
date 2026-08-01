@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -331,8 +332,21 @@ func TestStoreValueBehavior(t *testing.T) {
 				t.Helper()
 				store.ConfigureMaxMemory(1, 16)
 
-				if _, _, err := store.SetBit("bitmap", MaxBitmapOffset, 1); !errors.Is(err, ErrMemoryLimitExceeded) {
+				// The rejected payload is half a gigabyte. Allocating it before
+				// checking would zero it under every shard write lock, so the
+				// test measures that it was never allocated, not only that the
+				// call failed.
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				_, _, err := store.SetBit("bitmap", MaxBitmapOffset, 1)
+				runtime.ReadMemStats(&after)
+
+				if !errors.Is(err, ErrMemoryLimitExceeded) {
 					t.Fatalf("SetBit() error = %v, want ErrMemoryLimitExceeded", err)
+				}
+				const allocationBudget = 8 << 20
+				if allocated := after.TotalAlloc - before.TotalAlloc; allocated > allocationBudget {
+					t.Fatalf("SetBit() allocated %d bytes, want at most %d for a rejected write", allocated, allocationBudget)
 				}
 				if _, ok, err := store.Get("bitmap"); err != nil {
 					t.Fatalf("Get() error = %v", err)
